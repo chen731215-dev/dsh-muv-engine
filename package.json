@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "dsh-muv-engine",
   "version": "0.1.0",
   "description": "DSH 原生 MUV 引擎 —— 替代 MagVarUpdate：正则脚本执行、变量状态追踪、iframe 状态栏渲染、Zod 校验",

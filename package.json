@@ -1,0 +1,26 @@
+{
+  "name": "dsh-muv-engine",
+  "version": "0.1.0",
+  "description": "DSH 原生 MUV 引擎 —— 替代 MagVarUpdate：正则脚本执行、变量状态追踪、iframe 状态栏渲染、Zod 校验",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "cordis.patch.yml"],
+  "keywords": ["dsh", "dsh-plugin", "muv", "magvarupdate", "tavern"],
+  "license": "CC-BY-NC-SA-4.0",
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web" }
+  },
+  "engines": { "node": ">=20" },
+  "peerDependencies": {
+    "dsh-muv-table": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "dsh-muv-table": { "optional": true }
+  }
+}

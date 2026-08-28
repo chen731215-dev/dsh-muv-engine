@@ -1,7 +1,7 @@
 {
   "name": "dsh-muv-engine",
-  "version": "0.1.0",
-  "description": "DSH 原生 MUV 引擎 —— 替代 MagVarUpdate：正则脚本执行、变量状态追踪、iframe 状态栏渲染、Zod 校验",
+  "version": "0.2.0",
+  "description": "DSH 原生 MUV 引擎 —— 正则脚本执行、变量追踪、状态栏渲染、LaTeX 渲染、宏展开（random/pick/roll）、标签 CSS 美化",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -9,16 +9,17 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
-  "files": ["lib", "cordis.patch.yml"],
+  "files": ["lib", "cordis.patch.yml", "CHANGELOG.md"],
   "keywords": ["dsh", "dsh-plugin", "muv", "magvarupdate", "tavern"],
   "license": "PolyForm-Noncommercial-Copyleft-1.0.0",
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": { "platform": "web" }
   },
-  "repository": {"type": "git", "url": "git+https://github.com/chen731215-dev/dsh-muv-engine.git"}, "engines": { "node": ">=20" },
+  "repository": {"type": "git", "url": "git+https://github.com/chen731215-dev/dsh-muv-engine.git"},
+  "engines": { "node": ">=20" },
   "peerDependencies": {
-    "dsh-muv-table": "^0.1.0"
+    "dsh-muv-table": "^0.2.0"
   },
   "peerDependenciesMeta": {
     "dsh-muv-table": { "optional": true }

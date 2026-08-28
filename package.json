@@ -1,6 +1,6 @@
 {
   "name": "dsh-muv-engine",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH 原生 MUV 引擎 —— 正则脚本执行、变量追踪、状态栏渲染、LaTeX 渲染、宏展开（random/pick/roll）、标签 CSS 美化",
   "type": "module",
   "main": "lib/index.js",

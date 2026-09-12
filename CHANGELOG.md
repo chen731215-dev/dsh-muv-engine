@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.3.3 (2026-09-13)
+
+### 🐛 修复
+
+- **`<choice>` 单数标签不渲染**：选项解析写死了 `/<choices>…<\/choices>/`，
+  而相当多的角色卡写的是单数 `<choice>…</choice>`（例如从 SillyTavern 导入的卡），
+  结果整块选项**原样当文本显示**、点不了。改为 `/<choices?>…<\/choices?>/` 同时兼容单复数。
+- **第 5 个及以后的选项会露出编号**：前缀剥离只认 `A-D` / `1-4`，超出范围的选项会带着
+  `5. ` 一起渲染。放宽到 `A-H` / `1-9` / 一~九。
+
+### 📝 注意：状态栏需要卡片里带「状态栏」正则脚本
+
+`<StatusPlaceHolderImpl/>` 要渲染成 iframe 状态栏，必须能从角色卡里取到 HTML 模板：
+
+```js
+extractStatusBarHtml(scripts)
+  // 需要 scriptName 含「状态栏」且 findRegex === '<StatusPlaceHolderImpl/>'，
+  // 取它的 replaceString 作为 HTML
+```
+
+只写占位符、没有这条正则脚本的卡片，状态栏**渲染不出任何内容**。
+缺失时不会报错，只是占位符被原样保留。
+
+---
+
 ## v0.3.2 (2026-09-13)
 
 ### 🐛 修复

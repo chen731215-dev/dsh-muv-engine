@@ -1,6 +1,6 @@
 {
   "name": "dsh-muv-engine",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "DSH 原生 MUV 引擎 —— 正则脚本、变量追踪、状态栏、LaTeX、宏展开、标签 CSS、visual 代码块渲染（信纸/终端/报纸/手机）",
   "type": "module",
   "main": "lib/index.js",
@@ -18,8 +18,11 @@
   },
   "repository": {"type": "git", "url": "git+https://github.com/chen731215-dev/dsh-muv-engine.git"},
   "engines": { "node": ">=20" },
+  "dependencies": {
+    "dsh-muv-table": "^0.2.2"
+  },
   "peerDependencies": {
-    "dsh-muv-table": "^0.2.0"
+    "dsh-muv-table": "^0.2.2"
   },
   "peerDependenciesMeta": {
     "dsh-muv-table": { "optional": true }

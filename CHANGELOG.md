@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.3.2 (2026-09-13)
+
+### 🐛 修复
+
+- **跨包导入路径错误会导致 DSH 完全无法启动**：`lib/index.js` 与 `lib/var-tracker.js`
+  使用了 `'../../muv-table/lib/*.js'`。从 `node_modules/dsh-muv-engine/lib/` 回退两级会解析到
+  `node_modules/muv-table/`，但依赖包名是 **`dsh-muv-table`**，npm 上也不存在名为 `muv-table` 的包。
+
+  实测三种布局全部失败：
+
+  ```
+  flat 布局      -> Cannot find module '...\node_modules\muv-table\lib\muv-parser.js'
+  pnpm 符号链接  -> Cannot find module '...\.pnpm\dsh-muv-engine@0.3.1\node_modules\muv-table\...'
+  hoisted 布局   -> Cannot find module '...\node_modules\muv-table\lib\initvar-parser.js'
+  ```
+
+  后果不止于本插件：模块 import 失败会让该 loader 行激活失败，而 DSH 的 `boot()` 末尾会执行
+  `assertEntriesActivated()`，**任何一行未激活就抛错并销毁上下文 —— 整个 DSH 起不来**。
+  而 `dsh plugin add` 会把所有声明了 `dsh.bundle` 的依赖自动加入 `dsh.profile.bundles`，
+  所以 README 里的安装命令执行后重启必然失败。
+
+  改为裸包名 `dsh-muv-table/lib/*`。
+
+### 📦 依赖
+
+- 新增 `dsh-muv-table: ^0.2.2`。此前只有 optional `peerDependencies`，
+  安装本包时不会带上依赖，导致上面的导入必然解析失败。
+
+---
+
 ## v0.3.0 (2026-08-31)
 
 ### ✨ 新功能（融合 dsh-visual-render）

@@ -1,7 +1,7 @@
 {
   "name": "dsh-muv-engine",
   "version": "0.3.3",
-  "description": "DSH 原生 MUV 引擎 —— 正则脚本、变量追踪、状态栏、LaTeX、宏展开、标签 CSS、visual 代码块渲染（信纸/终端/报纸/手机）",
+  "description": "DSH 原生 MUV 引擎 —— 正则脚本、变量追踪、状态栏、LaTeX、宏展开、标签 CSS、visual 代码块渲染（信纸/终端/报纸/手机）。需与伴生插件 dsh-muv-table 一起安装",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

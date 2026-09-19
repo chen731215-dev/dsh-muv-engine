@@ -1,0 +1,30 @@
+{
+  "name": "dsh-muv-engine",
+  "version": "0.3.4",
+  "description": "DSH 原生 MUV 引擎 —— 正则脚本、变量追踪、状态栏、LaTeX、宏展开、标签 CSS、visual 代码块渲染（信纸/终端/报纸/手机）。需与伴生插件 dsh-muv-table 一起安装",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "cordis.patch.yml", "CHANGELOG.md"],
+  "keywords": ["dsh", "dsh-plugin", "muv", "magvarupdate", "tavern"],
+  "license": "PolyForm-Noncommercial-Copyleft-1.0.0",
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web" }
+  },
+  "repository": {"type": "git", "url": "git+https://github.com/chen731215-dev/dsh-muv-engine.git"},
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "dsh-muv-table": "^0.2.2"
+  },
+  "peerDependencies": {
+    "dsh-muv-table": "^0.2.2"
+  },
+  "peerDependenciesMeta": {
+    "dsh-muv-table": { "optional": true }
+  }
+}

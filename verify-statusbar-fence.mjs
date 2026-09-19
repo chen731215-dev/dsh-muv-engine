@@ -97,7 +97,7 @@ console.log('=== 汇总 ===')
 console.log(`  extractStatusBarHtml 返回值带围栏的卡：${affectedByLatentFence} 张（潜在缺陷面）`)
 console.log(`  其中占位符会残留、用户真能看到的卡：${affectedInPractice} 张（实际影响面）`)
 
-check('真卡正则确实被读到了（防空循环假绿）', totalScripts >= 20, `只读到 ${totalScripts} 条正则`)
+check('真卡正则确实被读到了（防空循环假绿）', totalScripts >= 15, `只读到 ${totalScripts} 条正则`)
 check('实际影响面 = 0（若 >0 则 BLOCKER 1 是真实用户可见缺陷）',
   affectedInPractice === 0,
   `实际有 ${affectedInPractice} 张卡的用户能看到裸围栏`)

@@ -548,6 +548,9 @@ node verify-visual.mjs <old-client.js>  # 74（渲染矩阵 + 真实消息形状
 $env:MUV_EDGE="C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 node verify-statusbar-layout.mjs        # 真浏览器布局门禁（状态栏单列 + 角色名独立块）
 node verify-decorate-dom.mjs            # 真浏览器装饰门禁（markdown 存活 + 选项仍渲染）
+node verify-release.mjs pre             # ★ 发布门禁：工作区干净 + HEAD + 包内关键文件
+#   发布后： node verify-release.mjs post 0.3.8 0.2.11 2.4.2
+#   （registry 真的取得到 + tarball 里关键文件都在；publish 打印成功 ≠ 发布成功）
 cd ..\dsh-muv-table
 node test-png-card.mjs; node test-muv-parser.mjs; node test-preset-resolve.mjs   # 28 / 76 / 30
 ```

@@ -466,8 +466,22 @@ check('★ 引导脚本的源码里没有裸的 </script> 字面量（拼出来�
 check('引导脚本确实闭合了 script 标签', boot.startsWith('<script>') && boot.endsWith('</script>'))
 check('只发一个数字（postMessage），不发 HTML/不发卡内内容',
   boot.includes('postMessage') && !/innerHTML|outerHTML/.test(boot))
-check('测量用 documentElement/body 的 scrollHeight 取最大',
-  boot.includes('scrollHeight') && boot.includes('Math.max'))
+// ★ 度量指标：必须是「内容包围盒」，不能是 documentElement/body 的 scrollHeight。
+// 这些卡写着 `html,body{height:100%}`，那两个值都等于**视口高**（= iframe 当前高度），
+// 报回去是不动点：实测「正文美化」内容只有 ~251px，起始 600/900/1500 → 报 600/900/1500。
+// 真浏览器三档收敛验证见 verify-frame-height.mjs。
+check('★ 用内容包围盒度量（getBoundingClientRect 逐个元素取最大下沿）',
+  boot.includes('getBoundingClientRect') && boot.includes('getElementsByTagName'))
+check('★ 排除 fixed / sticky（否则视口高会被算成内容高）',
+  boot.includes('fixed') && boot.includes('sticky'))
+check('排除 display:none / visibility:hidden / 零尺寸元素',
+  boot.includes('"none"') && boot.includes('"hidden"'))
+check('每个元素取 max(rect.height, scrollHeight)（兜住被 overflow 裁掉的子元素）',
+  boot.includes('Math.max(r.height,el.scrollHeight'))
+check('包围盒量不出来时才退回 body.scrollHeight 兜底',
+  /e>0\?e:/.test(boot) && boot.includes('document.body.scrollHeight'))
+check('.muv-frame 度量不带 documentElement.scrollHeight（那是视口回显）',
+  !boot.includes('document.documentElement.scrollHeight'))
 check('有 ResizeObserver + 防抖 + 定时兜底',
   boot.includes('ResizeObserver') && /setTimeout\(m,150\)/.test(boot) && /setTimeout\(m,700\)/.test(boot))
 
@@ -523,6 +537,79 @@ for (const bad of [undefined, null, {}, { __muvFrameHeight: 'NaN' }, { __muvFram
   handle({ data: bad, source: heightFrames[0].contentWindow })
 }
 check('★ 非数字/负数/无关负载一律不改高度', heightFrames[0].style.height === kept, heightFrames[0].style.height)
+// 差值阈值：亚像素/小抖动不该引发连续改高 + 重排
+heightFrames[0].style.height = '900px'
+handle({ data: { __muvFrameHeight: 904 }, source: heightFrames[0].contentWindow })
+check('★ 差值 <8px 时不动高度（防抖动引发连续重排）', heightFrames[0].style.height === '900px', heightFrames[0].style.height)
+handle({ data: { __muvFrameHeight: 940 }, source: heightFrames[0].contentWindow })
+check('差值 >=8px 时正常改高', heightFrames[0].style.height === '940px', heightFrames[0].style.height)
+
+// ── 10. 酒馆路径（window._tavernRenderTags）也要把围栏整页文档转成 iframe ──────
+//
+// `renderFencedHtml` 的调用点原来全在 `beautifyMuv`（DSH 原生路径）。酒馆面板走的是
+// `window._tavernRenderTags`（它的唯一调用者是 tavern bundle 的 beautifyContentEl），
+// 那条路径**不转**围栏文档 —— 实测 9 条真卡文档里 8 条原样带着 ``` 围栏与裸
+// `<!DOCTYPE html>` 进了 `contentEl.innerHTML`。后果不是"不好看"：卡文档里的 <style>
+// 是全局生效的，`html,body{height:100%}` 和一堆绝对定位元素会泄漏进整个聊天 DOM。
+console.log('\n[10] 酒馆路径：围栏整页文档 → iframe')
+
+// `_tavernRenderTags` 是**赋值式**的（`window._tavernRenderTags = function(text) {`），
+// 不是 `function name(` 声明，所以走 marker + 配平。
+function extractAssignedFunction(src, marker) {
+  const at = src.indexOf(marker)
+  if (at < 0) throw new Error('找不到赋值式函数: ' + marker)
+  const text = sliceBalanced(src, src.indexOf('function', at))
+  if (!text) throw new Error('配平失败: ' + marker)
+  return text
+}
+
+const tagSource = extractAssignedFunction(SRC, 'window._tavernRenderTags = function')
+const tagLifted = new Map()
+const tagLift = (n) => {
+  if (tagLifted.has(n)) return tagLifted.get(n)
+  let text = null
+  try { text = extractFunction(SRC, n) } catch (_) { text = null }
+  tagLifted.set(n, text)
+  return text
+}
+let tagQueue = []
+for (const mm of tagSource.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) if (tagLift(mm[1])) tagQueue.push(mm[1])
+const tagHave = new Set()
+// 赋值式函数体是匿名的（`function(text) {…}`），要挂个名字才能当语句执行。
+let tagCode = 'var _tavernRenderTags = ' + tagSource + '\n\n'
+while (tagQueue.length) {
+  const n = tagQueue.shift()
+  if (tagHave.has(n)) continue
+  const b = tagLift(n)
+  if (!b) continue
+  tagHave.add(n)
+  tagCode += b + '\n\n'
+  for (const mm of b.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) if (!tagHave.has(mm[1]) && tagLift(mm[1])) tagQueue.push(mm[1])
+}
+const renderTags = new Function('MUV_CARD_SANDBOX', 'document', 'window',
+  tagCode + '\nreturn _tavernRenderTags')(sandbox, { querySelectorAll: () => [] }, {})
+
+const fencedMsg = '前言\n\n```html\n<!DOCTYPE html>\n<html><body><p>x</p><script>var s = "```";</script></body></html>\n```\n\n后记'
+const tagOut = renderTags(fencedMsg)
+check('★ 酒馆路径把围栏整页文档转成了 iframe', (tagOut.match(/muv-iframe/g) || []).length === 1,
+  'iframe=' + (tagOut.match(/muv-iframe/g) || []).length)
+check('★ srcdoc 是转义的（消息里没有裸 DOCTYPE）', !/<!DOCTYPE html>/i.test(tagOut), tagOut.slice(0, 120))
+check('★ 可见文本里没有残留的围栏反引号', !tagOut.replace(/srcdoc="[\s\S]*?"/, '').includes('`'),
+  JSON.stringify(tagOut.replace(/srcdoc="[\s\S]*?"/, '[srcdoc]').slice(0, 80)))
+check('围栏外的正文保留', tagOut.includes('前言') && tagOut.includes('后记'))
+check('iframed 文档的沙箱仍是 allow-scripts（不给 allow-same-origin）',
+  tagOut.includes('sandbox="allow-scripts"') && !tagOut.includes('allow-same-origin'))
+check('普通 js 代码块仍原样不动', renderTags('```js\nvar a = 1;\n```') === '```js\nvar a = 1;\n```',
+  renderTags('```js\nvar a = 1;\n```'))
+// ★ 早插 iframe 的意义：卡文档进 srcdoc 之后，后面的标签/媒体正则再也碰不到它内部
+check('★ 卡文档内部的 <video> 没有被媒体正则改写（它已经在 srcdoc 里了）', (() => {
+  const out = renderTags('```html\n<!DOCTYPE html><html><body><video src="card.mp4"></video></body></html>\n```')
+  return out.includes('&lt;video src=&quot;card.mp4&quot;&gt;') || out.includes('&lt;video src="card.mp4"&gt;')
+})(), tagOut.slice(0, 100))
+// 其它通用标签仍照常工作（证明早插 iframe 没把后面的流程挡掉）
+check('围栏之外的 <video src> 仍然补 controls', /<video[^>]*\bcontrols\b/.test(renderTags('<video src="a.mp4"></video>')),
+  renderTags('<video src="a.mp4"></video>'))
+check('围栏之外的 <插图> 仍然转换', renderTags('<插图>海边</插图>').includes('muv-illustration'))
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)
 process.exit(fail ? 1 : 0)

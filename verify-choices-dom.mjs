@@ -30,11 +30,13 @@ function check(name, cond, detail) {
 
 const SRC = clientSource()
 
-// 卫生层要跑的函数（都是从源码里逐字提取的真实实现）
+// 卫生层要跑的函数（都是从源码里逐字提取的真实实现）。
+// ⚠️ 漏一个依赖就会在 muvSanitizeNode 的某个 try 里抛 ReferenceError —— 这一步是**静默**
+// 失效的（按钮不出现但页面不报错），所以列表要和 muvSanitizeNode 里实际调的步骤对齐。
 const NEEDED = [
   'escHtmlBasic', 'muvCleanText', 'muvStripOpt', 'muvBuildChoices', 'parseChoiceOptions',
-  'muvRenderOpts', 'muvStyleTavernOpts', 'muvTextWithBreaks', 'muvFindChoiceRange',
-  'muvRenderChoices', 'muvSanitizeNode',
+  'muvRenderOpts', 'muvStyleTavernOpts', 'muvTextWithBreaks', 'locateInWalked', 'muvFindChoiceRange',
+  'normalizeStatusHeader', 'muvFoldStatusHeader', 'muvRenderChoices', 'muvSanitizeNode',
 ]
 let code = ''
 for (const n of NEEDED) {

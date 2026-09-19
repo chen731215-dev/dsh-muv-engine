@@ -30,6 +30,21 @@ git clone https://github.com/chen731215-dev/dsh-muv-table.git  dsh-muv-table
 git clone https://github.com/chen731215-dev/dsh-tavern-v2.git  dsh-tavern-v2
 ```
 
+### 恢复步骤是否真的可用？—— 已实测
+
+本节这套步骤**不是推测出来的**：`verify-handoff-restore.mjs` 会克隆到全新临时目录
+（不碰开发树）逐项验证，然后清理。跑一次就知道文档有没有过时：
+
+```powershell
+node C:\dsh-muv-engine\verify-handoff-restore.mjs
+```
+
+2026-09-20 实测结果（15/15 通过）：三个仓库均可克隆、关键文件齐全、
+`node_modules` 未被带进来、克隆出来的树上测试全通过
+（engine 84 + 32、table 28 + 56 + 30）、`diag.mjs` 能找到 `dsh-muv-table`。
+
+> 首次运行时它抓到过一个真问题：`test-client-render.mjs` **提交了但没推送**，
+> 克隆拿不到 —— 换机时那个文件会丢。**所以改完记得 push，光 commit 不够。**
 ### 方式 B：从本地快照
 
 如果 GitHub 不可达，用 `C:\dsh-handoff\` 下的快照包（见同目录）。

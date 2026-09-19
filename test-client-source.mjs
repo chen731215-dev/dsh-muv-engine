@@ -21,6 +21,7 @@ const CLIENT_PATH = new URL('./lib/client.js', import.meta.url)
 export const RENDER_FN_NAMES = [
   'renderFencedHtml',
   'renderMediaTags',
+  'parseChoiceOptions',
   'cardHtmlIframe',
   'withFrameHeightBootstrap',
   'onMuvFrameHeightMessage',
@@ -32,6 +33,7 @@ export const RENDER_FN_NAMES = [
 const RENDER_EXPORTS = [
   'renderFencedHtml',
   'renderMediaTags',
+  'parseChoiceOptions',
   'cardHtmlIframe',
   'withFrameHeightBootstrap',
   'onMuvFrameHeightMessage',
@@ -55,9 +57,27 @@ export function clientSource() {
  * @returns {string} the function's full source text
  */
 export function extractFunction(src, name) {
-  const start = src.indexOf('    function ' + name + '(')
-  if (start < 0) throw new Error('function not found in lib/client.js: ' + name)
+  const marks = ['    function ' + name + '(', '      function ' + name + '(',
+    '    async function ' + name + '(', '      async function ' + name + '(']
+  for (const mark of marks) {
+    const start = src.indexOf('\n' + mark)
+    if (start < 0) continue
+    const text = sliceBalanced(src, start + 1)
+    if (text) return text
+  }
+  throw new Error('function not found in lib/client.js: ' + name)
+}
+
+/**
+ * 从 `start`（`function` / `async function` 关键字处）配平到函数体结束。
+ * 字符串 / 模板 / 正则 / 注释里的花括号不算数（引导脚本那种"字符串里的代码"会骗过老实计数器）。
+ * @param {string} src
+ * @param {number} start
+ * @returns {string|null}
+ */
+function sliceBalanced(src, start) {
   let i = src.indexOf('{', start)
+  if (i < 0) return null
   let depth = 0
   let state = 'code'
   for (; i < src.length; i++) {
@@ -81,7 +101,7 @@ export function extractFunction(src, name) {
       if (c === state) state = 'code'
     }
   }
-  throw new Error('unbalanced braces while extracting: ' + name)
+  return null
 }
 
 /**

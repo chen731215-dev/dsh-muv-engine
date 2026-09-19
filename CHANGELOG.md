@@ -1,5 +1,108 @@
 # Changelog
 
+## v0.3.8 (2026-09-20)
+
+> 说明：v0.3.7 是 `allow-same-origin` 的安全回退版，记录在下面 v0.3.6 一节里。
+
+### 🔴 修复：酒馆面板里「卡的整页 HTML 被内联进聊天 DOM，卡样式泄漏到整个面板」
+
+`renderFencedHtml`（把围栏整页文档转成 iframe）**只挂在 DSH 原生消息路径上**；
+酒馆面板走的是另一条 `_tavernRenderTags`，它不做这一步，而面板是
+`contentEl.innerHTML = html`。于是卡文档里的 `<style>`（全局生效）和
+`html,body{height:100%}` 直接落进聊天 DOM —— 这就是「状态栏只剩一个头部条 / 满屏代码文本 /
+内容列被压扁」的机制。
+实测：**9 条真卡整页文档里 8 条**在这条路径上没有被转成 iframe。
+修法是一行，插在**转义还原之后**（DSH 若把标签转义成 `&lt;!DOCTYPE`，放在还原之前会认不出来）。
+进 srcdoc 之后卡自己的标记全被转义，后续媒体/标签正则再也碰不到卡页面内部。
+
+### 🔴 修复：装饰消息会把整条消息的 markdown 抹掉
+
+`_decorateOne` 用 `body.innerText` 取文本再 `body.innerHTML = html` 写回。
+`innerText` 返回的是**渲染后**的文本 —— `**粗体**` 读出来就是 `粗体`、`##` 读出来就是标题、
+代码块读出来是裸代码，**格式信息在写回时已经不存在了，不可逆**。
+真实命中率：`异世界农场` 的 `**` 有 352 处、`涩涩提瓦特` 604、`食人世界` 792。
+只对**含 muv 标记**的消息触发，所以症状是「有的消息正常、有的突然全变纯文字」。
+
+改成分两类逐类处理（**只补丁需要变的那一段，其余 DOM 原样留着**）：
+1. **纯 `<choices>` 消息**：补上 DOM 层的选项渲染器 `muvRenderChoices`，然后让
+   `beautifyMuv` 在 `normalized === text` 时原样返回，整条替换根本不触发。
+   （注：`muvSanitizeNode` 的 docblock 早就写着「这一步会把 `<choices>` 变按钮」，
+   但**当时 DOM 层并没有这个渲染器** —— 注释描述的是意图，不是事实。）
+2. **带 `『📅…|⏰…|📍…』` 表头 / `<StatusPlaceHolderImpl/>` 的消息**：
+   表头折叠搬到 DOM 层（`muvFoldStatusHeader`，规则与 `normalizeStatusHeader` 复用同一份），
+   `applyDecoratedHtml` 增加「占位符文本段」的落点。
+
+**验证方式（`verify-decorate-dom.mjs`，真浏览器 + 真实模块 + 真实 `_decorateOne` + 真实 DOM）**：
+
+| 消息 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 纯 `<choices>` | `strong/h2/pre/li = 0/0/0/0`（选项仍有 2） | `1/1/1/2` + 选项 2 |
+| 表头 + 占位符 | `0/0/0/0`（状态栏仍有 1） | `1/1/1/2` + 状态栏 1 |
+
+### 修复：iframe 固定 600px 会裁掉真卡内容
+
+实测（内容包围盒，与起始高度无关）：`ERA 状态栏` 926px、`主页` 2082px、`正文美化` 241px
+—— 而 iframe 写死 600px，`主页` 被裁 **约 71%**，截图里 "Profile." 卡片被从中间切断。
+改成**跨源 `postMessage` 自动撑高**（**不加 `allow-same-origin`**：同源后卡内探测
+`window.parent.document` 的代码会全部变活，见 HANDOFF §9）：
+子文档自己量、只回一个数字；父页校验 `event.source` 就是某个 `iframe.muv-iframe` 的
+`contentWindow`（不查 origin —— 沙箱是不透明来源，其 origin 恒为 `"null"`），
+值夹取 `[160, 2400]`，差值 < 8px 不动，**只改高度、不 eval/不插入/不转发**；
+收不到报数就维持 600px，**不会比修之前更差**。
+
+⚠️ 度量指标是关键：`documentElement.scrollHeight` / `body.scrollHeight` 在
+`html,body{height:100%}` 的卡上**等于视口高**，会形成不动点（正文美化内容仅 241px，
+却会把你给它的任何高度原样报回）。必须用**内容包围盒**。
+
+### 修复：状态栏字段被塞进三列网格 / 角色名没有独立块
+
+- `.muv-sb-sub` 的 `grid-template-columns: 245px 245px 245px` 是「两个字段挤在一行」的真正根因。
+  早先那次修复改的是 `.muv-sb-body{flex-direction:column}` —— **改错了选择器**，bug 没修掉只换了触发条件。
+- `.muv-sb-char` / `.muv-sb-char-name` 这套 CSS 类**渲染器从来不输出**（yaml / free 两个级联都没用），
+  角色名只是一行夹在字段流里的加粗字。现在两个级联都输出独立角色块。
+- 顺带清掉一个死类 `.muv-sb-empty`：卡没有状态栏正则、变量也读不到时，
+  `<StatusPlaceHolderImpl/>` 会原样留在消息里被用户看见。
+
+### 修复：`extractStatusBarHtml` 不剥「无语言标记」的裸围栏
+
+真卡写的是裸 ```` ``` ````，而原实现只匹配带 `html` 语言标记的围栏，
+于是首尾反引号被带进 srcdoc，卡页面上多出两行反引号文本。
+现在只在**同时满足**「围栏包住整串」且「剥出来确实是整页文档」时才剥一层 ——
+普通 js 代码块、非整页文档、只有单边围栏都不动。
+
+### 修复：媒体标签解析会改写卡自己的代码 / 吞掉属性里的 `>`
+
+- 卡自带 `<script>` 里的 `<audio>/<video>` 是**代码不是标记**，老实现照改不误：
+  实测把 `const AUDIO_RE = /<audio>(.*?)<\/audio>/g;` 改成了 div，还把
+  `let lastName = '';` 转义成 `&#39;&#39;`（**JS 语法错误，整页脚本报废**）。
+  现在 `<script>…</script>` 范围内一律不动。
+- `<video data-x="a>b" src="m.mp4">` 里的 `>` 在引号内，不算标签结束（`readStartTag` 引号感知）。
+- 「有属性但没 src」的媒体元素（由卡的 JS 随后赋 src，如 `<video id="carVid">`）
+  **原样保留** —— 降级成占位会让卡里的 `getElementById` 拿不到元素。只有**一个属性都没有**的
+  裸提示词才降级成占位。
+
+### 修复：围栏配对按 markdown 语义（不再被文档内部的代码围栏腰斩）
+
+收尾围栏要求反引号数 ≥ 开围栏且独占一行；开围栏必须独占一行、信息串不含反引号。
+四反引号围栏、CRLF 都覆盖。旧实现在文档正文含三反引号时会**腰斩 + 让剩余 HTML 裸奔在 iframe 外面**。
+
+### 修复：卫生 pass 一个 `try` 包住多步 → 前一步失败静默带走后面几步
+
+一次探针少注入一个依赖 → 表头折叠抛 `ReferenceError` → 选项按钮等后面几类**一起没渲染**，
+而页面不报任何错。改成每步独立 `try` + 各自 `console.error`。
+
+### 修复：取状态栏片段的写死正则
+
+原为 `/<div class="muv-statusbar-wrap"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/`，
+**假定末尾恰好连着三个 `</div>`**；真实产物里卡自带整页 HTML 时是 `<iframe…></iframe>`
+（零个内层 div）、空状态是两个 → 匹配不上就静默退化成「整条替换」（markdown 又全灭）。
+改成按 div 深度配平扫描。
+
+### 测试
+
+`test-client-render` 71 → **137**、新增 `test-regex-engine` **21**、`test-status-cascade` **84**。
+真浏览器门禁：`verify-visual.mjs` **76**、`verify-statusbar-layout.mjs`、`verify-decorate-dom.mjs`。
+
 ## v0.3.6 (2026-09-20)
 
 ### 🔴 更正：llow-same-origin 已回退（0.3.6 引入的安全回归）

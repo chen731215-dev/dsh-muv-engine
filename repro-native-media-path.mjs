@@ -17,7 +17,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { clientSource } from './test-client-source.mjs'
+import { clientSource, extractFunction, loadClientRenderers } from './test-client-source.mjs'
 
 let fail = 0
 function check(name, cond, detail) {
@@ -128,6 +128,35 @@ if (!fs.existsSync(FE)) {
     app.every(a => !a.s.includes('DOMPurify') && !a.s.includes('dompurify')))
 }
 
+console.log('\n=== ④ 修法的岔路：字符串整条写回 vs DOM 段替换（先量化，别猜） ===')
+
+// 派单里原先的建议是「把 _tavernRenderTags 的等价步骤接到 _decorateOne 里
+// applyDecoratedHtml **之前**（对 html 字符串做）」。那条建议早于 markdown 的发现，
+// 所以现在必须先证明它还会不会踩 markdown：媒体渲染的产物里**没有任何状态栏片段**，
+// 于是 applyDecoratedHtml 会落到「!cardMatch ⇒ body.innerHTML = html」那条最后手段上，
+// 而那正是把 innerText 写回去、markdown 永久变平的那条路。
+let mediaRendered = null
+let wrapExtract = null
+let applySrc = null
+try {
+  applySrc = extractFunction(SRC, 'applyDecoratedHtml')
+  mediaRendered = loadClientRenderers().renderMediaTags('<video src="a.mp4"></video>')
+  wrapExtract = new Function('document', 'MUV_CARD_SANDBOX',
+    [extractFunction(SRC, 'escHtml'), extractFunction(SRC, 'escAttr'), extractFunction(SRC, 'extractStatusWrap')]
+      .join('\n') + '\nreturn extractStatusWrap')({ querySelectorAll: () => [] }, 'allow-scripts')
+} catch (e) {
+  console.log('  SKIP 取函数失败: ' + e.message)
+}
+if (mediaRendered !== null && wrapExtract) {
+  console.log('  媒体渲染产物: ' + JSON.stringify(mediaRendered))
+  check('媒体渲染产物里没有状态栏片段',
+    wrapExtract(mediaRendered) === null, JSON.stringify(wrapExtract(mediaRendered)))
+  check('★ 因此「字符串整条写回」会落到 applyDecoratedHtml 的最后手段（body.innerHTML = html）',
+    /body\.innerHTML = html/.test(applySrc))
+  console.log('  ⇒ 结论：④ 必须做 **DOM 段替换**（像 muvRenderChoices 那样只换那一段），')
+  console.log('     不能在 _decorateOne 里把字符串整条写回 —— 那会把刚修好的 markdown 再抹一次。')
+}
+
 console.log('\n=== 结论 ===')
 console.log('  ① 原生路径的引擎侧对媒体标签完全不可达：renderMediaTags 只挂在')
 console.log('     window._tavernRenderTags 上，而它的唯一调用者是酒馆面板。')
@@ -137,6 +166,7 @@ console.log('     controls/preload；DSH 自己的 markdown 管线也没开 allo
 console.log('     原始 HTML 不会被原样输出成可播放元素。')
 console.log('  → 结论：不是"DSH 已经渲染正常"，而是这条链在原生路径上整个缺失。')
 console.log('     浏览器侧最终观感（裸标签文本 vs 无 controls 的空元素）请用 verify-visual.mjs 复核。')
+console.log('  → ④ 的实现方式：**DOM 段替换**（上面两条断言给出理由）。')
 
 console.log('\n=== 结果: ' + (fail ? fail + ' 项失败' : '全部通过') + ' ===')
 process.exit(fail ? 1 : 0)

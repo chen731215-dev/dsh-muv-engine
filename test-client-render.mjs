@@ -754,5 +754,31 @@ check('有收敛上限', /guard < \d+/.test(mediaRenderSrc))
 console.log('  NOTE 真浏览器判据（真元素 + controls + onerror 被丢 + markdown 存活）在')
 console.log('       verify-media-dom.mjs。')
 
+// ── 14. 第三类：变量块 / 推演块 / 摘要块在原生路径的 DOM 渲染 ──────────────────
+//
+// 原生路径这些标签一个渲染器都没有（只有酒馆路径的 `_tavernRenderTags` 有），
+// 于是 `<UpdateVariable>{…JSON…}</UpdateVariable>` 原样显示给用户。
+// 现在收进折叠卡；内容一律 `textContent`（JSON 里的 `<img onerror>` 只会是文本）。
+console.log('\n[14] 变量块 / 推演块 / 摘要块（DOM）')
+
+const varBlocksSrc = extractFunction(SRC, 'muvRenderVariableBlocks')
+check('★ 认出三种变量块标签（VariableEdit / VariableInsert / UpdateVariable）',
+  /\(VariableEdit\|VariableInsert\|UpdateVariable\)/.test(varBlocksSrc), varBlocksSrc.slice(0, 100))
+check('★ <VariableThink> 与 <Abstract> 也在这一类里',
+  varBlocksSrc.includes('<VariableThink>') && varBlocksSrc.includes('<Abstract>'))
+check('复用酒馆路径同样的 class（样式共用）',
+  varBlocksSrc.includes("'muv-varedit'") && varBlocksSrc.includes("'muv-varthink'") && varBlocksSrc.includes("'muv-abstract'"))
+check('JSON 能解析就美化缩进（与酒馆路径一致）', varBlocksSrc.includes('JSON.stringify(JSON.parse(raw), null, 2)'))
+const detailsSrc = extractFunction(SRC, 'muvDetailsBlock')
+check('★ 折叠卡正文用 textContent（不解析 HTML）', detailsSrc.includes('textContent') && !/\.innerHTML/.test(detailsSrc))
+check('★ 挂在卫生 pass 上、独立 try', extractFunction(SRC, 'muvSanitizeNode').includes('muvRenderVariableBlocks(md)'))
+const replaceSrc = extractFunction(SRC, 'muvReplaceTagBlocks')
+check('通用块替换：跳过 script/style 里的文本', replaceSrc.includes("'script, style'"))
+check('通用块替换：有收敛上限', /guard < limit/.test(replaceSrc))
+check('通用块替换：决定不处理时推过这一段继续找（不是 break）',
+  /from = hit\.index \+ hit\[0\]\.length; continue/.test(replaceSrc))
+console.log('  NOTE 真浏览器判据（折叠卡成型 + JSON 美化 + 不解析 HTML + 无注入 + markdown 存活）')
+console.log('       在 verify-varblocks-dom.mjs。')
+
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)
 process.exit(fail ? 1 : 0)

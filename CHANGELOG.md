@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.5 (2026-09-20)
+
+### 📦 发布内容修正
+
+- **把 `diag.mjs` 与 `test-status-cascade.mjs` 纳入 npm 包**。0.3.4 的 README 让用户跑
+  `node diag.mjs` / `node test-status-cascade.mjs`，但 `files` 字段没列这两个文件，
+  从 npm 安装的人根本拿不到 —— 文档与包内容不一致。现在一并发布，按 README 的说明
+  即可直接在本机复现诊断与回归。
+- `README.md` 显式列入 `files`（npm 本来也会自动带上，写明是为了让发布内容一目了然）。
+
+> 0.3.4 的功能改动见下。
+
 ## v0.3.4 (2026-09-20)
 
 ### 🐛 修复：状态栏只剩一个头部条（YAML 形态丢角色与字段）

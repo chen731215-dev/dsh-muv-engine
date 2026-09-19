@@ -63,6 +63,14 @@ B. 先在入口扎营
 <p>&lt;插图&gt;海边日落&lt;/插图&gt;</p>
 <p>&lt;video src="https://example.invalid/a.mp4"&gt;&lt;/video&gt;</p>
 <p>&lt;audio src="https://example.invalid/b.mp3"&gt;&lt;/audio&gt;</p>`,
+  // 媒体渲染把**模型/卡提供的标签文本**变成真实元素。如果直接 innerHTML，
+  // 就等于把 `onerror=` 请进 DSH 自己的页面（同源执行）。
+  // 这条消息专门带 `on*`，用来**独立验证**「属性白名单 + 丢弃 on*」这条安全声明
+  // —— 安全声明不能采信，只能实测（我在 allow-same-origin 上吃过这个亏）。
+  D_xss: `${MARKDOWN}
+<p>&lt;video src="https://example.invalid/x.mp4" onerror="window.__pwned=1"&gt;&lt;/video&gt;</p>
+<p>&lt;audio controls onerror="window.__pwned=2"&gt;&lt;/audio&gt;</p>
+<p>&lt;插图&gt;&lt;img src=x onerror="window.__pwned=3"&gt;&lt;/插图&gt;</p>`,
 }
 
 /** 每条消息「该渲染出来的东西」——**两个方向都要钉**：markdown 不能丢，功能也不能丢。 */
@@ -70,6 +78,7 @@ const NEEDS = {
   A_choices: ['choiceBtns'],
   B_header: ['statusBars'],
   C_media: ['videos', 'illustrations'],
+  D_xss: ['videos', 'illustrations'],
 }
 
 const page = `<!DOCTYPE html>
@@ -105,6 +114,7 @@ ${Object.keys(MESSAGES).map((k) => `  <div class="cap">${k}</div>\n  <div class=
         + ' iframes=' + count(k, 'iframe')
         + ' videos=' + count(k, 'video') + ' audios=' + count(k, 'audio')
         + ' imgs=' + count(k, 'img') + ' illustrations=' + count(k, '.muv-illustration')
+        + ' pwned=' + (typeof window.__pwned === 'undefined' ? 0 : window.__pwned)
         + ' literalStars=' + (/\\*\\*/.test(txt) ? 1 : 0);
       var pre = document.createElement('pre');
       pre.className = 'verdict';
@@ -180,6 +190,10 @@ if (!verdicts.length) {
 
 const clean = (s) => s.replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
 let bad = 0
+const check = (name, cond, detail) => {
+  console.log('  ' + (cond ? 'OK   ' : 'FAIL ') + name + (cond || !detail ? '' : '  -> ' + detail))
+  if (!cond) bad++
+}
 const seen = new Set()
 for (const raw of verdicts) {
   const v = clean(raw)
@@ -199,6 +213,21 @@ for (const raw of verdicts) {
 // 防空循环：每条消息都必须有结果
 for (const k of Object.keys(MESSAGES)) {
   if (!seen.has(k)) { console.log(`\n  [${k}] FAIL 没有实测结果（fixture 没跑到这条）`); bad++ }
+}
+
+// ── 注入安全：独立验证「属性白名单 + 丢弃 on*」这条声明 ─────────────────────
+// `D_xss` 里的标签带 `onerror="window.__pwned=N"`。src 指向不存在的域名 ⇒ 必然触发 error ⇒
+// 只要处理器活着，`window.__pwned` 就会被赋值。不看实现、只看这个可观测事实。
+console.log('\n=== 注入安全（on* 是否被丢弃）===')
+{
+  const pwned = verdicts.map((v) => Number((/pwned=(\d+)/.exec(clean(v)) || [])[1] || 0))
+  const worst = Math.max(0, ...pwned)
+  check('没有任何注入的 on* 处理器被执行（window.__pwned 未被赋值）', worst === 0,
+    'window.__pwned = ' + worst + ' —— 模型/卡提供的属性被执行了')
+  // 同时确认「元素确实被建出来了」：否则上面那条会因为"什么都没渲染"而假绿
+  const dVerdict = clean(verdicts.find((v) => v.indexOf('msg=D_xss') >= 0) || '')
+  const vids = Number((/videos=(\d+)/.exec(dVerdict) || [])[1] || 0)
+  check('D_xss 的媒体元素确实被建出来了（防止上一条假绿）', vids >= 1, 'videos=' + vids)
 }
 console.log(bad ? `\n=== 装饰链路门禁: ${bad} 项未通过 ===` : '\n=== 装饰链路门禁: 全部通过 ===')
 process.exit(bad ? 1 : 0)

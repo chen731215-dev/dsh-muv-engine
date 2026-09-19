@@ -23,21 +23,69 @@ function check(name, cond, detail) {
 }
 
 /**
- * 从源码里提取一个具名函数的完整文本（花括号配平）。
- * 用配平而不是正则，是因为函数体里有正则字面量和嵌套花括号。
+ * 从源码里提取一个具名函数的完整文本。
+ *
+ * 三个必须处理的坑（都是踩出来的）：
+ *  1. **花括号配平必须区分字符串/正则/注释里的 `{` `}`**：引导脚本就是拼在字符串
+ *     里的 JavaScript（`'function m(){try{'`），老实计数器会当场多算两个 `{`，
+ *     把函数从中间截断，`new Function` 报一个看不懂的 SyntaxError。
+ *  2. **声明必须带缩进**才认（`\n    function name(`）：字符串里那一份没有缩进，
+ *     于是不会被误当成顶层声明。裸 `indexOf('function name(')` 会先命中字符串里
+ *     那一份，提取出来的"函数"是从字符串中间开始的半截。
+ *  3. 提取结果**必须能解析**（`new Function` 不抛）才算数；前面的候选串成但解析不了
+ *     就换下一个，而不是把坏片段交给调用方。
+ *
+ * 不用「从 0 扫一遍看当前位置在不在字符串里」的办法：`/` 是正则还是除号在词法上
+ * 不可判定，整文件扫描一定会跑偏（client.js 里有除法），比这个办法更脆。
  */
 function extractFunction(src, name) {
-  const start = src.indexOf('function ' + name + '(')
-  if (start < 0) throw new Error('找不到函数 ' + name)
-  let i = src.indexOf('{', start)
-  if (i < 0) throw new Error('找不到函数体 ' + name)
-  let depth = 0
-  for (let j = i; j < src.length; j++) {
-    const c = src[j]
-    if (c === '{') depth++
-    else if (c === '}') { depth--; if (depth === 0) return src.slice(start, j + 1) }
+  const needles = ['\n    function ' + name + '(', '\n      function ' + name + '(', 'function ' + name + '(']
+  let lastError = null
+  for (const needle of needles) {
+    let at = src.indexOf(needle)
+    while (at !== -1) {
+      const start = needle.startsWith('\n') ? at + 1 : at
+      const text = sliceBalanced(src, start)
+      if (text) {
+        try {
+          new Function(text)
+          return text
+        } catch (e) { lastError = e }
+      }
+      at = src.indexOf(needle, at + 1)
+    }
   }
-  throw new Error('花括号不配平 ' + name)
+  throw new Error('找不到可解析的函数 ' + name + (lastError ? '（' + lastError.message + '）' : ''))
+}
+
+/** 从 `start`（`function` 关键字处）配平到函数体结束；字符串/正则/注释感知。 */
+function sliceBalanced(src, start) {
+  let i = src.indexOf('{', start)
+  if (i < 0) return null
+  let depth = 0
+  let state = 'code'
+  for (; i < src.length; i++) {
+    const c = src[i], n = src[i + 1]
+    if (state === 'code') {
+      if (c === '/' && n === '/') { state = 'line'; i++; continue }
+      if (c === '/' && n === '*') { state = 'block'; i++; continue }
+      if (c === "'" || c === '"' || c === '`') { state = c; continue }
+      if (c === '/') { state = 'regex'; continue }
+      if (c === '{') depth++
+      else if (c === '}') { depth--; if (depth === 0) return src.slice(start, i + 1) }
+    } else if (state === 'regex') {
+      if (c === '\\') { i++; continue }
+      if (c === '/') state = 'code'
+    } else if (state === 'line') {
+      if (c === '\n') state = 'code'
+    } else if (state === 'block') {
+      if (c === '*' && n === '/') { state = 'code'; i++ }
+    } else {
+      if (c === '\\') { i++; continue }
+      if (c === state) state = 'code'
+    }
+  }
+  return null
 }
 
 /** 取一个 var 声明的字面量值。 */
@@ -71,19 +119,33 @@ const escHtmlBasic = new Function(extractFunction(SRC, 'escHtmlBasic') + '; retu
  */
 function buildFrom(names, deps, ret) {
   const have = new Set()
+  const lifted = new Map()
+  /**
+   * 取函数源码；取不到（或取到的片段解析不了）返回 null。
+   * 自动发现是**怀疑制**的：它扫函数体里所有 `名字(` 形态，字符串里的代码也算，
+   * 所以一定会出现"疑似依赖其实不是顶层函数"（引导脚本里的 `m(` / `s(`）。
+   * 怀疑错了就跳过，不能让测试崩掉。
+   */
+  const lift = (n) => {
+    if (lifted.has(n)) return lifted.get(n)
+    let text = null
+    try { text = extractFunction(SRC, n) } catch (_) { text = null }
+    lifted.set(n, text)
+    return text
+  }
   const queue = [...names]
   let src = ''
   while (queue.length) {
     const n = queue.shift()
     if (have.has(n)) continue
-    if (!SRC.includes('function ' + n + '(')) continue
+    const body = lift(n)
+    if (!body) continue
     have.add(n)
-    const body = extractFunction(SRC, n)
     src += body + '\n'
     // 扫函数体里出现的调用名，看看 client.js 里有没有同名函数
     for (const m of body.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
       const callee = m[1]
-      if (!have.has(callee) && SRC.includes('function ' + callee + '(')) queue.push(callee)
+      if (!have.has(callee) && lift(callee)) queue.push(callee)
     }
   }
   const keys = Object.keys(deps)
@@ -376,6 +438,91 @@ check('代码块预览 frame 不给 allow-scripts', !/sandbox', 'allow-same-orig
 check('renderDoc 仍带 CSP 兜底（default-src none）', /default-src\s*\\'none\\'/.test(SRC))
 check('卡 HTML 的 iframe 一律走 MUV_CARD_SANDBOX 常量（没有第二处写死的值）',
   !/srcdoc[\s\S]{0,120}?sandbox="allow-scripts"/.test(SRC))
+
+// ── 9. 卡 HTML iframe 的自动撑高（跨源 postMessage） ─────────────────────────
+//
+// 卡 HTML iframe 的沙箱是 `allow-scripts`（**没有** allow-same-origin，见 [1]），
+// 所以父页读不到 `contentDocument.scrollHeight`。写死 600px 会把真卡裁掉
+// （实测：ERA 状态栏 894px、主页 1635px）。撑高只能靠子文档自己报了多少。
+// 这一节钉住机制本身：注入点、注入物的文本安全性、父页的校验与夹取。
+console.log('\n[9] 卡 HTML iframe 自动撑高（postMessage）')
+
+const heightFrames = [{ contentWindow: { n: 'A' }, style: { height: '600px' } },
+  { contentWindow: { n: 'B' }, style: { height: '600px' } }]
+const frameApi = buildFrom(
+  // 显式列出入口：`onMuvFrameHeightMessage` 是被 `addEventListener(…, fn, false)` 引用的
+  // （不是 `fn(` 形态），自动发现看不到它，所以这里直接点名。
+  ['cardHtmlIframe', 'onMuvFrameHeightMessage', 'withFrameHeightBootstrap', 'muvFrameBootstrap', 'muvFrameHeightLimits'],
+  { escAttr, escHtmlBasic, MUV_CARD_SANDBOX: sandbox, document: { querySelectorAll: () => heightFrames } },
+  '{cardHtmlIframe, withFrameHeightBootstrap, onMuvFrameHeightMessage, muvFrameBootstrap, muvFrameHeightLimits}')
+
+const boot = frameApi.muvFrameBootstrap()
+const lim = frameApi.muvFrameHeightLimits()
+
+check('夹取范围是 [160, 2400]', lim.min === 160 && lim.max === 2400, JSON.stringify(lim))
+check('★ 引导脚本不含反引号', !boot.includes('`'), boot.slice(0, 60))
+check('★ 引导脚本的源码里没有裸的 </script> 字面量（拼出来才不会截断内联的插件脚本）',
+  !extractFunction(SRC, 'muvFrameBootstrap').includes('</script>'))
+check('引导脚本确实闭合了 script 标签', boot.startsWith('<script>') && boot.endsWith('</script>'))
+check('只发一个数字（postMessage），不发 HTML/不发卡内内容',
+  boot.includes('postMessage') && !/innerHTML|outerHTML/.test(boot))
+check('测量用 documentElement/body 的 scrollHeight 取最大',
+  boot.includes('scrollHeight') && boot.includes('Math.max'))
+check('有 ResizeObserver + 防抖 + 定时兜底',
+  boot.includes('ResizeObserver') && /setTimeout\(m,150\)/.test(boot) && /setTimeout\(m,700\)/.test(boot))
+
+// 注入点：只做末尾追加，且只认不在 <script> 里的最后一个 </body>
+const docHtml = '<!DOCTYPE html><html><body><p>hi</p></body></html>'
+const framed = frameApi.withFrameHeightBootstrap(docHtml)
+check('插在 </body> 之前', framed.indexOf('__muvH') < framed.indexOf('</body>'))
+check('没有 </body> 时接在末尾', frameApi.withFrameHeightBootstrap('<p>x</p>').endsWith('</script>'))
+check('只注入一次', (framed.match(/window\.__muvH=1/g) || []).length === 1)
+check('重复注入无害（已注入则原样返回）', frameApi.withFrameHeightBootstrap(framed) === framed)
+// 卡自己的 JS 里可能出现 `document.write("</body>")` 这样的字符串；插进去就会切断卡的代码。
+// 断言要拿**卡那一份** </script> 比，不能拿全局最后一个 —— 引导脚本自己也有个 </script>。
+const bodyInScript = '<html><body><div>ok</div><script>document.write("</body>")</script></body></html>'
+const injected = frameApi.withFrameHeightBootstrap(bodyInScript)
+const cardScript = '<script>document.write("</body>")</script>'
+check('★ 卡自己的 <script> 逐字节不变（含字符串里的 </body>）', injected.includes(cardScript),
+  JSON.stringify(injected.slice(0, 120)))
+check('★ 引导脚本落在卡内 <script> 之后（没插进它的范围里）',
+  injected.indexOf('window.__muvH=1') > injected.indexOf(cardScript) + cardScript.length,
+  '注入位置=' + injected.indexOf('window.__muvH=1') + ' 卡脚本结束=' + (injected.indexOf(cardScript) + cardScript.length))
+// 极端情形：文档里唯一的 </body> 就在卡内 script 里 → 必须改成末尾追加，否则会切断代码
+const onlyInsideScript = '<html><body><script>var s = "</body>";</script></html>'
+const injected2 = frameApi.withFrameHeightBootstrap(onlyInsideScript)
+check('★ 唯一 </body> 落在 script 里时改为末尾追加', injected2.endsWith('</script>') && injected2.includes('var s = "</body>";'),
+  JSON.stringify(injected2.slice(-80)))
+
+// cardHtmlIframe：唯一出口、沙箱常量、srcdoc 转义、默认高度兜底
+const built = frameApi.cardHtmlIframe(docHtml)
+check('cardHtmlIframe 产出恰好 1 个 iframe', (built.match(/<iframe/g) || []).length === 1, built.slice(0, 80))
+check('沙箱走 MUV_CARD_SANDBOX（allow-scripts，无 allow-same-origin）',
+  built.includes('sandbox="allow-scripts"') && !built.includes('allow-same-origin'))
+check('默认高度仍是 600px（收不到报数时的兜底，不比修之前差）', built.includes('height:600px'))
+check('srcdoc 是转义过的（里面没有裸双引号/尖括号）',
+  /srcdoc="[^"]*"/.test(built) && !/srcdoc="[^"]*<[^"]*"/.test(built))
+check('srcdoc 里带着引导脚本', built.includes('__muvH'))
+
+// 父页处理器：只认自己的 iframe、夹取、非数字丢弃
+const handle = frameApi.onMuvFrameHeightMessage
+handle({ data: { __muvFrameHeight: 894 }, source: heightFrames[0].contentWindow })
+check('采纳自己 iframe 报的高度（894）', heightFrames[0].style.height === '894px', heightFrames[0].style.height)
+check('不动别的 iframe', heightFrames[1].style.height === '600px')
+handle({ data: { __muvFrameHeight: 1635 }, source: heightFrames[1].contentWindow })
+check('主页的 1635 也照收', heightFrames[1].style.height === '1635px')
+const snapshot = heightFrames.map(f => f.style.height).join(',')
+handle({ data: { __muvFrameHeight: 9999 }, source: {} })
+check('★ 陌生 source 的消息被丢弃', heightFrames.map(f => f.style.height).join(',') === snapshot)
+handle({ data: { __muvFrameHeight: 99999 }, source: heightFrames[0].contentWindow })
+check('上限夹到 2400（恶意卡不能把页面撑坏）', heightFrames[0].style.height === '2400px', heightFrames[0].style.height)
+handle({ data: { __muvFrameHeight: 1 }, source: heightFrames[0].contentWindow })
+check('下限夹到 160', heightFrames[0].style.height === '160px', heightFrames[0].style.height)
+const kept = heightFrames[0].style.height
+for (const bad of [undefined, null, {}, { __muvFrameHeight: 'NaN' }, { __muvFrameHeight: -1 }, { __muvFrameHeight: {} }, 42]) {
+  handle({ data: bad, source: heightFrames[0].contentWindow })
+}
+check('★ 非数字/负数/无关负载一律不改高度', heightFrames[0].style.height === kept, heightFrames[0].style.height)
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)
 process.exit(fail ? 1 : 0)

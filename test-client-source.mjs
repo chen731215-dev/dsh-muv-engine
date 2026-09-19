@@ -13,16 +13,30 @@ import fs from 'node:fs'
 
 const CLIENT_PATH = new URL('./lib/client.js', import.meta.url)
 
-/** All functions the render tests execute, in dependency order. */
+/**
+ * Entry points the render tests execute. Dependencies are discovered automatically
+ * (see loadClientRenderers), so adding a helper to client.js does not require editing
+ * this list — only the entry points live here.
+ */
 export const RENDER_FN_NAMES = [
-  'escHtmlBasic',
-  'escAttr',
-  'findClosingFence',
   'renderFencedHtml',
-  'readStartTag',
-  'attrValue',
-  'dropAttr',
   'renderMediaTags',
+  'cardHtmlIframe',
+  'withFrameHeightBootstrap',
+  'onMuvFrameHeightMessage',
+  'muvFrameBootstrap',
+  'muvFrameHeightLimits',
+]
+
+/** Everything `loadClientRenderers` returns. */
+const RENDER_EXPORTS = [
+  'renderFencedHtml',
+  'renderMediaTags',
+  'cardHtmlIframe',
+  'withFrameHeightBootstrap',
+  'onMuvFrameHeightMessage',
+  'muvFrameBootstrap',
+  'muvFrameHeightLimits',
 ]
 
 export function clientSource() {
@@ -72,14 +86,52 @@ export function extractFunction(src, name) {
 
 /**
  * Evaluate the shipped render helpers and return them as real functions.
- * @returns {{renderFencedHtml: Function, renderMediaTags: Function}}
+ *
+ * `document` is injected so the parent-side message handler can be exercised in Node
+ * with a fake `querySelectorAll`; in the browser it is simply the real document.
+ * @param {object} [doc] `document` stub used by the frame-height handler
+ * @returns {{renderFencedHtml: Function, renderMediaTags: Function, cardHtmlIframe: Function,
+ *   withFrameHeightBootstrap: Function, onMuvFrameHeightMessage: Function,
+ *   muvFrameBootstrap: Function, muvFrameHeightLimits: Function, sandbox: string}}
  */
-export function loadClientRenderers() {
+export function loadClientRenderers(doc) {
   const src = clientSource()
-  const code = RENDER_FN_NAMES.map(n => extractFunction(src, n)).join('\n\n')
-  const build = new Function('MUV_CARD_SANDBOX', code +
-    '\nreturn { renderFencedHtml: renderFencedHtml, renderMediaTags: renderMediaTags }')
-  // The sandbox value is read from the source too, so a change there is visible here.
-  const sandbox = /var MUV_CARD_SANDBOX\s*=\s*'([^']*)'/.exec(src)
-  return build(sandbox ? sandbox[1] : 'allow-scripts')
+  const sandboxDecl = /var MUV_CARD_SANDBOX\s*=\s*'([^']*)'/.exec(src)
+
+  // 依赖自动发现：扫函数体里出现的 `名字(`，凡是真的能从顶层源码里提取出来的就一起带上。
+  // 写死依赖列表会在源码每次重构后**报错**而不是报失败，那是噪音不是信号；而
+  // "提取不到就跳过"是必需的——引导脚本那种"字符串里的代码"会让扫描命中 `m(` 这类
+  // 并不存在的顶层函数。
+  const lifted = new Map()
+  const lift = (name) => {
+    if (lifted.has(name)) return lifted.get(name)
+    let text = null
+    try { text = extractFunction(src, name) } catch (_) { text = null }
+    lifted.set(name, text)
+    return text
+  }
+  const have = new Set()
+  const queue = [...RENDER_FN_NAMES]
+  let code = ''
+  while (queue.length) {
+    const name = queue.shift()
+    if (have.has(name)) continue
+    const body = lift(name)
+    if (!body) continue
+    have.add(name)
+    code += body + '\n\n'
+    for (const mm of body.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
+      const callee = mm[1]
+      if (!have.has(callee) && lift(callee)) queue.push(callee)
+    }
+  }
+
+  const build = new Function('MUV_CARD_SANDBOX', 'document', code + '\nreturn {' +
+    RENDER_EXPORTS.map(n => n + ': ' + n).join(', ') +
+    '}')
+  const out = build(sandboxDecl ? sandboxDecl[1] : 'allow-scripts',
+    doc || { querySelectorAll: () => [] })
+  out.sandbox = sandboxDecl ? sandboxDecl[1] : 'allow-scripts'
+  out.liftedNames = [...have]
+  return out
 }

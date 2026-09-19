@@ -546,12 +546,27 @@ node test-status-cascade.mjs            # 84
 node test-client-render.mjs             # 113
 node verify-visual.mjs <old-client.js>  # 74（渲染矩阵 + 真实消息形状 + 酒馆路径 + 真卡文档过媒体改写）
 $env:MUV_EDGE="C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-node verify-statusbar-layout.mjs        # 真浏览器布局门禁
+node verify-statusbar-layout.mjs        # 真浏览器布局门禁（状态栏单列 + 角色名独立块）
+node verify-decorate-dom.mjs            # 真浏览器装饰门禁（markdown 存活 + 选项仍渲染）
 cd ..\dsh-muv-table
 node test-png-card.mjs; node test-muv-parser.mjs; node test-preset-resolve.mjs   # 28 / 76 / 30
 ```
 
 ### 15.2 本轮验证日志（engine `3bd2f67` / table `aef7569`）
+
+> **`verify-decorate-dom.mjs` 是唯一一个在真浏览器里跑「真实模块 + 真实 `_decorateOne` + 真实 DOM」的门禁。**
+> `lib/client.js` 是 `window.__ModuleLoader__.load({factory})` 形态，而 `exports.apply` 是**零参**函数
+> （不需要 Cordis 上下文），所以整个模块可以在页面里原样启动，再调真实的
+> `window.MuvEngine.decorateMessage(el)`。它支持 `MUV_CLIENT_SRC=<文件>` 指向任意一份源码做对照。
+> 这一轮的对照结果是整轮最有说服力的一条证据：
+
+| `lib/client.js` | `<strong>` | `<h2>` | `<pre>` | `<li>` | `.muv-choice-btn` |
+| --- | --- | --- | --- | --- | --- |
+| 已提交 `2994c2c`（修复前） | **0** | **0** | **0** | **0** | 2 |
+| 修复后 | 1 | 1 | 1 | 2 | 2 |
+
+装饰**前**两者都是 `strong=1 h2=1 pre=1 li=2` —— 所以这不是「判据测不到东西」，是修复真的生效。
+**别只看「现在通过了」：没有这一栏对照，两种情况的输出长得一模一样。**
 
 | 项 | 结果 |
 | --- | --- |

@@ -39,7 +39,9 @@ function check(name, cond, detail) {
  * 不可判定，整文件扫描一定会跑偏（client.js 里有除法），比这个办法更脆。
  */
 function extractFunction(src, name) {
-  const needles = ['\n    function ' + name + '(', '\n      function ' + name + '(', 'function ' + name + '(']
+  const needles = ['\n    function ' + name + '(', '\n      function ' + name + '(',
+    '\n    async function ' + name + '(', '\n      async function ' + name + '(',
+    'function ' + name + '(', 'async function ' + name + '(']
   let lastError = null
   for (const needle of needles) {
     let at = src.indexOf(needle)
@@ -610,6 +612,49 @@ check('★ 卡文档内部的 <video> 没有被媒体正则改写（它已经在
 check('围栏之外的 <video src> 仍然补 controls', /<video[^>]*\bcontrols\b/.test(renderTags('<video src="a.mp4"></video>')),
   renderTags('<video src="a.mp4"></video>'))
 check('围栏之外的 <插图> 仍然转换', renderTags('<插图>海边</插图>').includes('muv-illustration'))
+
+// ── 11. markdown 不丢：`<choices>` 改走 DOM 层（第一类迁移） ──────────────────
+//
+// `_decorateOne` 的整条替换（`body.innerHTML = html`）用的输入是 `innerText` ——
+// `**`/`##`/``` 早就被 DSH 渲染掉了，写回去就把 markdown 永久抹掉。所以 `<choices>`
+// 不能再走那条路：DOM 层新增 muvRenderChoices()，挂在 muvSanitizeNode 上。
+// **真浏览器证明在 verify-choices-dom.mjs**（按钮出现 + <strong>/<h2>/<pre><code> 仍在）；
+// 这里钉住源码层的形状，防止有人把那条路又接回字符串替换。
+console.log('\n[11] <choices> 走 DOM 层（markdown 不丢）')
+
+const choiceParse = buildFrom(['parseChoiceOptions'], {}, 'parseChoiceOptions')
+check('换行分隔的选项', choiceParse('A. 甲\nB. 乙\nC. 丙').join('|') === '甲|乙|丙', JSON.stringify(choiceParse('A. 甲\nB. 乙\nC. 丙')))
+check('★ 单行塌成空格也能拆（DSH 把整块渲染进同一个 <p> 时的形态）',
+  choiceParse('A. 甲 B. 乙 C. 丙').join('|') === '甲|乙|丙', JSON.stringify(choiceParse('A. 甲 B. 乙 C. 丙')))
+check('中文顿号 / 括号 / 数字前缀都认',
+  choiceParse('A、甲\nb) 乙\n1. 丙\n2）丁').join('|') === '甲|乙|丙|丁',
+  JSON.stringify(choiceParse('A、甲\nb) 乙\n1. 丙\n2）丁')))
+check('项目符号分隔', choiceParse('• 甲\n• 乙').join('|') === '甲|乙', JSON.stringify(choiceParse('• 甲\n• 乙')))
+check('跳过「请选择/选项/行动」这类引导行',
+  choiceParse('请选择：\nA. 甲\nB. 乙').join('|') === '甲|乙', JSON.stringify(choiceParse('请选择：\nA. 甲\nB. 乙')))
+check('空内容返回空数组', choiceParse('').length === 0 && choiceParse('   ').length === 0)
+
+// 源码形状：两条路径必须共用同一份解析，DOM 实现必须挂进卫生 pass
+check('★ replaceChoices 与 muvRenderChoices 共用 parseChoiceOptions（两条路径不会各说各话）', (() => {
+  const rc = extractFunction(SRC, 'replaceChoices')
+  const rd = extractFunction(SRC, 'muvRenderChoices')
+  return rc.includes('parseChoiceOptions(') && rd.includes('parseChoiceOptions(')
+})())
+check('★ muvRenderChoices 挂在 muvSanitizeNode 上（否则跳过 round-trip 后按钮不会出现）',
+  extractFunction(SRC, 'muvSanitizeNode').includes('muvRenderChoices('))
+check('★ DOM 定位区分 <br>/块级换行（不用 textContent 直接拼，选项会粘成一个）',
+  extractFunction(SRC, 'muvFindChoiceRange').includes('muvTextWithBreaks(')
+  && extractFunction(SRC, 'muvTextWithBreaks').includes("'BR'"))
+check('选项按钮用 textContent 而不是 innerHTML（模型文本不经过 HTML 解析）', (() => {
+  const b = extractFunction(SRC, 'muvBuildChoices')
+  return b.includes('createTextNode') && !/\.innerHTML\s*=/.test(b)
+})())
+check('★ 文本没被改动时 beautifyMuv 原样返回（不再整条替换 ⇒ markdown 保住）', (() => {
+  const bm = extractFunction(SRC, 'beautifyMuv')
+  return /if \(normalized === text\) return normalized/.test(bm)
+})())
+console.log('  NOTE 整条替换是否不再发生、markdown 是否存活，由 verify-choices-dom.mjs（真浏览器）')
+console.log('       与主代理的 verify-visual.mjs 端到端判据共同盯住。')
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)
 process.exit(fail ? 1 : 0)

@@ -150,7 +150,73 @@ node C:\dsh-muv-engine\diag.mjs --preset <预设id> --msg-file <消息文本文�
 
 ---
 
-## 7. 凭据
+## 7. 子代理（`@aiwayds/dsh-subagent-registry`）
+
+三个预置 agent 在 `~/.dsh/agents/`：`oldfox.md`（老法师/审查）、`rubber-duck.md`（小黄鸭/视觉）、
+`workhorse.md`（牛马狗/干活）。
+
+**换机后这三个文件不会自己跟过来** —— 它们不在任何 git 仓库里。要么把 `~/.dsh/agents/`
+整个目录拷过去，要么让插件重新植入预置（只在目录为空时植入）。
+
+### 踩过的三个坑（都已修好，换机后要照做）
+
+**① `tools.restrict() names unknown global tool "subagent"` —— 三个 agent 全部调不起来**
+
+插件硬编码了叶子禁用列表：
+
+```js
+// node_modules/@aiwayds/dsh-subagent-registry/lib/tool-run-agent.js
+export const SPAWN_TOOL_NAMES = ['subagent', 'subagent_fork', 'workflow', 'ralph'];
+// deep:0 → deny = [...SPAWN_TOOL_NAMES, toolName]
+```
+
+而本部署**没有 `subagent` 这个工具**（只有 `subagent_fork`），`tools.restrict()` 遇到未知
+工具名直接抛错。**修法**：在 `~/.dsh/profiles/web/cordis.patch.yml` 加 id 定向配置覆盖
+（非空 `leafDenyTools` 会整体替换默认列表）：
+
+```yaml
+- id: dsh-subagent-registry
+  config:
+    leafDenyTools: [subagent_fork, workflow, ralph, use_agent]
+```
+
+需要重启生效。
+
+**② agent 文件里的 provider 根本不存在**
+
+预置文件写的是 `volc-ark-plan/...` 和 `digitalvolvo/...`，但本机注册的只有四个 provider：
+
+| provider | 模型 |
+|---|---|
+| `opencode-go` | deepseek-v4-flash、**deepseek-v4-flash-vision-exp** |
+| `bailian` | deepseek-v4-flash-0731、kimi-k2.7-code、glm-5.2、qwen-vl-max、qwen-vl-plus |
+| `jiyuan2` | deepseek-v4-flash、deepseek-v4-pro |
+| `google` | gemini-2.5-pro |
+
+（见 `~/.dsh/settings.yaml` 的 `llm-pi-ai.providers`）
+报错形如 `no adapter registered for provider "volc-ark-plan"`。
+
+**③ `bailian` 会拦截成人内容 —— 这个项目里用不了**
+
+```
+400 data_inspection_failed: Input text data may contain inappropriate content.
+```
+
+本项目的角色扮演内容会被阿里云百炼的内容审查直接拒掉。另外 `bailian` 的模型也不声明
+reasoning 能力，设 `thinking` 会报 `does not support reasoning effort`。
+**结论：这个项目优先用 `opencode-go`。**
+
+### 当前可用配置（已验证三个都能起来）
+
+三个 agent 全部指向 `opencode-go/deepseek-v4-flash-vision-exp`，保留各自的 thinking 档位
+（oldfox `high` / rubber-duck `max` / workhorse `high`），`deep: 0` 叶子。
+
+改动 agent 文件**下次调用即生效，不用重启**（新文件也是，只是不会出现在 use_agent 名册里
+直到重启）。原始文件备份在 `~/.dsh/agents/_bak-20260920-030706/`。
+
+---
+
+## 8. 凭据
 
 本次推送用的 GitHub PAT 与 npm token **已出现在对话记录里**，
 用完请**立即吊销重发**（GitHub 那个权限极广，含 `admin:org`）。

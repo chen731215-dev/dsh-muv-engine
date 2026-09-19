@@ -521,6 +521,12 @@ comment: "[initvar]变量初始化勿开"    enabled: false
 
 ### 15.1 发布前置条件
 
+> **PC-0｜`npm publish` 打包的是**工作区文件**，不是 git 提交。**
+> 发布前必须确认**工作区干净**，且等于刚刚验过的那一个提交（`git status --porcelain` 为空）。
+> 本次开发期间 `lib/client.js` 长期处于「已改但未提交」状态 —— 在这种状态下发版，
+> 会把一个**从未验证过的半成品**发到 npm，而且 `npm publish` 照样打印成功。
+> 发版动作应当是：`git status` 为空 → 确认 HEAD == 已验证的 hash → `npm publish`。
+
 > **PC-1｜高度自动撑高必须在真实页面复验后才能宣布可用。**
 > 现状：`cardHtmlIframe` / 帧高引导脚本 / `onMuvFrameHeightMessage` 从写出至今**从未在 3080 的真实页面里执行过**
 > —— 3080 进程是 03:31 启动的，而该功能是之后写入磁盘的（Node 启动时缓存 ES 模块）。

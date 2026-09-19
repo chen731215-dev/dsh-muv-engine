@@ -568,6 +568,16 @@ node test-png-card.mjs; node test-muv-parser.mjs; node test-preset-resolve.mjs  
 装饰**前**两者都是 `strong=1 h2=1 pre=1 li=2` —— 所以这不是「判据测不到东西」，是修复真的生效。
 **别只看「现在通过了」：没有这一栏对照，两种情况的输出长得一模一样。**
 
+门禁覆盖**两类标记**（逐类迁移，一类一条）。当前状态：
+
+| 消息 | 标记 | markdown | 该渲染的东西 | 结论 |
+| --- | --- | --- | --- | --- |
+| `A_choices` | 纯 `<choices>` | 存活 | 选项按钮 ×2 | **PASS**（第一类已修） |
+| `B_header` | `『📅…\|⏰…\|📍…』` 表头 + `<StatusPlaceHolderImpl/>` | **全灭** | 状态栏已出现 ×1 | **FAIL**（第二类待修） |
+
+`B_header` 的 `strong=0 h2=0 pre=0 li=0` 就是第二类的验收基线：
+修好之后它必须变成 `strong=1 h2=1 pre=1 li=2` **且** `statusBars>=1`。
+
 | 项 | 结果 |
 | --- | --- |
 | 围栏按 markdown 语义配对 | ✅ 五卡 9 条整页文档各 1 个 iframe、正文逐字、无残渣；**合成用例上旧实现确实腰斩+残渣裸奔**（有反证） |

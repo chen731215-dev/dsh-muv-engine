@@ -4,18 +4,24 @@
 // 它的行为**只由真实的 DOM 语义决定**（`innerText` 返回渲染后文本、`closest()`、
 // `innerHTML` 解析规则），字符串断言和 Node 里的假 DOM 都测不到。
 //
-// 判据（就是「装饰不该毁掉 markdown，但必须渲染出选项」）：
-//   - 装饰后 `<strong>` / `<h2>` / `<pre><code>` / `<li>` **仍在**（markdown 未被抹掉）
-//   - 且 `.muv-choice-btn` **出现**（选项仍然渲染）
-// 只满足后者 = 用户看到的正文全变纯文字；只满足前者 = 选项没了（用户最初的抱怨）。
+// 两条被测消息，对应两类标记（逐类迁移，一类一条）：
+//   A_choices —— 纯 `<choices>` 消息（第一类）
+//   B_header  —— 带 `『📅…|⏰…|📍…』` 表头 + `<StatusPlaceHolderImpl/>`（第二类）
+//
+// 对每条消息的判据都是两件事**同时**成立：
+//   ① markdown 存活：`<strong>` / `<h2>` / `<pre><code>` / `<li>` 仍在
+//   ② 该渲染的东西真的渲染了：A 要 `.muv-choice-btn`，B 要 `.muv-statusbar-wrap`
+// 只满足② = 用户看到的正文全变纯文字（实测：真实消息里 `**` 有 352/604/792 处）；
+// 只满足① = 选项/状态栏没了（用户最初的抱怨）。**两个方向都必须钉住。**
 //
 // 做法：`lib/client.js` 是 `window.__ModuleLoader__.load({ factory })` 形态，而
 // `exports.apply` 是**零参**函数（不需要 Cordis 上下文），所以整个模块可以在页面里
 // 原样加载并启动。之后调真实的 `window.MuvEngine.decorateMessage(el)`。
-// `fetch` 打桩成失败：这样 `beautifyMuv` 的卡片分支被跳过，走的是**本地的 choices 路径**
+// `fetch` 打桩成失败：这样 `beautifyMuv` 的卡片分支被跳过，走的是**本地路径**
 // —— 也正是我们要测的那条。
 //
 // 运行：$env:MUV_EDGE="...\msedge.exe"; node verify-decorate-dom.mjs
+// 对照：$env:MUV_CLIENT_SRC="<另一份 client.js>" 可指向任意版本做修复前后对比。
 
 import { readFileSync, writeFileSync, mkdirSync, openSync } from 'node:fs'
 import path from 'node:path'
@@ -34,55 +40,69 @@ mkdirSync(OUT, { recursive: true })
 // 内联进 <script> 时必须打断 `</script`，否则会把宿主页面当场截断
 const INLINED = CLIENT.replace(/<\/script/gi, '<\\/script')
 
-const MESSAGE_HTML = `
+const MARKDOWN = `
 <h2>午后 · 遗迹入口</h2>
 <p>这是 <strong>粗体</strong>、<em>斜体</em>、<code>内联代码</code>。</p>
 <pre><code>const a = 1</code></pre>
-<ul><li>列表项一</li><li>列表项二</li></ul>
+<ul><li>列表项一</li><li>列表项二</li></ul>`
+
+const MESSAGES = {
+  A_choices: `${MARKDOWN}
 <p>安柏压低声音：「这里的风不对劲。」</p>
 <p>&lt;choices&gt;
 A. 悄悄摸进遗迹
 B. 先在入口扎营
-&lt;/choices&gt;</p>
-`
+&lt;/choices&gt;</p>`,
+  B_header: `<p>『📅2026年8月26日|⏰10:00|📍遗迹入口』</p>${MARKDOWN}
+<p>安柏压低声音：「这里的风不对劲。」</p>
+<p>&lt;StatusPlaceHolderImpl/&gt;</p>`,
+}
+
+const NEEDS = { A_choices: 'choiceBtns', B_header: 'statusBars' }
 
 const page = `<!DOCTYPE html>
 <html lang="zh"><head><meta charset="utf-8"><title>decorate-dom</title>
 <style>
   html,body{margin:0;padding:0;background:#16181d;color:#d7dae0;font:14px/1.7 "Microsoft YaHei",system-ui,sans-serif}
   body{padding:14px}.wrap{max-width:760px;margin:0 auto}
-  .cap{font:12px monospace;color:#8b93a1;margin:0 0 8px}
-  #host{border:1px dashed #3a4048;border-radius:6px;padding:10px}
+  .cap{font:12px monospace;color:#8b93a1;margin:14px 0 6px}
+  .host{border:1px dashed #3a4048;border-radius:6px;padding:10px}
 </style></head>
 <body>
 <div class="wrap">
   <div class="cap">装饰链路门禁：真实模块 + 真实 _decorateOne + 真实 DOM</div>
-  <div id="host"><div id="msg" class="_markdown_abc123_7">${MESSAGE_HTML}</div></div>
+${Object.keys(MESSAGES).map((k) => `  <div class="cap">${k}</div>\n  <div class="host"><div id="msg_${k}" class="_markdown_abc123_7">${MESSAGES[k]}</div></div>`).join('\n')}
 </div>
 
 <script>window.__ModuleLoader__ = { load: function (m) { window.__mod = m } };</script>
 <script>${INLINED}</script>
 <script>
 (function () {
+  var KEYS = ${JSON.stringify(Object.keys(MESSAGES))};
   var notes = [];
-  function count(sel) { return document.querySelectorAll(sel).length; }
+  function msg(k) { return document.getElementById('msg_' + k) }
+  function count(k, sel) { var m = msg(k); return m ? m.querySelectorAll(sel).length : -1 }
   function emit(state) {
-    var msg = document.getElementById('msg');
-    var txt = msg ? msg.innerText : '';
-    var v = 'VERDICT state=' + state
-      + ' strong=' + count('#msg strong')
-      + ' h2=' + count('#msg h2')
-      + ' pre=' + count('#msg pre')
-      + ' li=' + count('#msg li')
-      + ' choiceBtns=' + count('.muv-choice-btn')
-      + ' iframes=' + count('#msg iframe')
-      + ' literalStars=' + (/\\*\\*/.test(txt) ? 1 : 0)
-      + ' notes=' + notes.join('|');
-    var pre = document.createElement('pre');
-    pre.id = 'verdict';
-    pre.textContent = v;
-    pre.style.cssText = 'position:fixed;left:0;bottom:0;z-index:2147483647;background:#000;color:#0f0;font:11px monospace;padding:4px;margin:0;white-space:pre-wrap;max-width:100%';
-    document.body.appendChild(pre);
+    for (var i = 0; i < KEYS.length; i++) {
+      var k = KEYS[i], m = msg(k), txt = m ? m.innerText : '';
+      var v = 'VERDICT msg=' + k + ' state=' + state
+        + ' strong=' + count(k, 'strong') + ' h2=' + count(k, 'h2')
+        + ' pre=' + count(k, 'pre') + ' li=' + count(k, 'li')
+        + ' choiceBtns=' + count(k, '.muv-choice-btn')
+        + ' statusBars=' + count(k, '.muv-statusbar-wrap')
+        + ' iframes=' + count(k, 'iframe')
+        + ' literalStars=' + (/\\*\\*/.test(txt) ? 1 : 0);
+      var pre = document.createElement('pre');
+      pre.className = 'verdict';
+      pre.textContent = v;
+      pre.style.cssText = 'position:fixed;left:0;bottom:' + (i * 22) + 'px;z-index:2147483647;background:#000;color:#0f0;font:11px monospace;padding:2px 4px;margin:0;white-space:nowrap;max-width:100%;overflow:hidden';
+      document.body.appendChild(pre);
+    }
+    var n = document.createElement('pre');
+    n.id = 'notes';
+    n.textContent = 'NOTES ' + notes.join('|');
+    n.style.cssText = 'position:fixed;right:0;bottom:0;z-index:2147483647;background:#111;color:#8b93a1;font:10px monospace;padding:2px;margin:0';
+    document.body.appendChild(n);
   }
   window.addEventListener('error', function (e) { notes.push('onerror:' + e.message); });
 
@@ -96,14 +116,16 @@ const page = `<!DOCTYPE html>
 
   // 先记录**装饰前**的状态：这是"markdown 本来是好的"的证据
   setTimeout(function () {
-    var msg = document.getElementById('msg');
-    notes.push('before(strong=' + count('#msg strong') + ',h2=' + count('#msg h2') + ',pre=' + count('#msg pre') + ',li=' + count('#msg li') + ')');
-    try {
-      if (window.MuvEngine && typeof window.MuvEngine.decorateMessage === 'function') {
-        window.MuvEngine.decorateMessage(msg);
-        notes.push('decorate=called');
-      } else { notes.push('decorate=MISSING(window.MuvEngine)') }
-    } catch (e) { notes.push('decorate=THROW:' + e.message) }
+    for (var i = 0; i < KEYS.length; i++) {
+      var k = KEYS[i];
+      notes.push('before(' + k + ':strong=' + count(k, 'strong') + ',h2=' + count(k, 'h2') + ',pre=' + count(k, 'pre') + ',li=' + count(k, 'li') + ')');
+      try {
+        if (window.MuvEngine && typeof window.MuvEngine.decorateMessage === 'function') {
+          window.MuvEngine.decorateMessage(msg(k));
+          notes.push('decorate(' + k + ')=called');
+        } else { notes.push('decorate=MISSING(window.MuvEngine)') }
+      } catch (e) { notes.push('decorate(' + k + ')=THROW:' + e.message) }
+    }
   }, 80);
 
   setTimeout(function () { emit('after') }, 1400);
@@ -114,6 +136,7 @@ const page = `<!DOCTYPE html>
 const file = path.join(OUT, 'decorate-dom.html')
 writeFileSync(file, page, 'utf8')
 console.log('=== fixture 已生成 ===')
+console.log('  源码: ' + SRC_PATH)
 console.log('  ' + file + '（内联了真实 lib/client.js，' + CLIENT.length + ' 字符）')
 
 const EDGE = process.env.MUV_EDGE
@@ -132,26 +155,35 @@ execFileSync(EDGE, [
 ], { stdio: ['ignore', openSync(domFile, 'w'), openSync(path.join(OUT, 'decorate-dom.err.txt'), 'w')] })
 
 const dom = readFileSync(domFile, 'utf8')
-const verdicts = [...dom.matchAll(/VERDICT state=after[^<\n]*/g)].map((m) => m[0].trim())
+const verdicts = [...dom.matchAll(/VERDICT msg=[\w]+ state=after[^<\n]*/g)].map((m) => m[0].trim())
 console.log('\n=== 浏览器实测 ===')
 if (!verdicts.length) {
   console.log('  没拿到 VERDICT —— 装饰链路没跑起来（fixture 有问题，不是产品结论）')
-  const note = dom.match(/notes=[^<\n]*/)
-  if (note) console.log('  ' + note[0])
+  const note = dom.match(/NOTES[^<\n]*/)
+  if (note) console.log('  ' + note[0].replace(/&gt;/g, '>'))
   process.exit(1)
 }
-const v = verdicts[0].replace(/&gt;/g, '>').replace(/&amp;/g, '&')
-const num = (k) => Number((new RegExp(k + '=(\\d+)').exec(v) || [])[1] || 0)
-console.log('  ' + v)
 
-const markdownKept = num('strong') >= 1 && num('h2') >= 1 && num('pre') >= 1 && num('li') >= 1
-const choicesRendered = num('choiceBtns') >= 1
-console.log('\n=== 判据 ===')
-console.log('  markdown 存活（strong/h2/pre/li 都在）: ' + (markdownKept ? '是' : '**否**'))
-console.log('  选项已渲染（.muv-choice-btn）        : ' + (choicesRendered ? '是' : '**否**'))
-
+const clean = (s) => s.replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
 let bad = 0
-if (!choicesRendered) { console.log('  FAIL 选项没有渲染出来 —— 用户的原始抱怨会复现'); bad++ }
-if (!markdownKept) { console.log('  FAIL markdown 被抹掉（装饰 = 整条消息 DOM 被重写）'); bad++ }
+const seen = new Set()
+for (const raw of verdicts) {
+  const v = clean(raw)
+  const key = (/msg=([\w]+)/.exec(v) || [])[1]
+  seen.add(key)
+  const num = (k) => Number((new RegExp('\\b' + k + '=(\\d+)').exec(v) || [])[1] || 0)
+  const markdownKept = num('strong') >= 1 && num('h2') >= 1 && num('pre') >= 1 && num('li') >= 1
+  const need = NEEDS[key] || 'choiceBtns'
+  const featureOk = num(need) >= 1
+  const ok = markdownKept && featureOk
+  if (!ok) bad++
+  console.log(`\n  [${key}] ${ok ? 'PASS' : 'FAIL'}`)
+  console.log('    ' + v)
+  console.log(`    markdown 存活=${markdownKept ? '是' : '**否**'}   ${need}>=1=${featureOk ? '是' : '**否**'}`)
+}
+// 防空循环：每条消息都必须有结果
+for (const k of Object.keys(MESSAGES)) {
+  if (!seen.has(k)) { console.log(`\n  [${k}] FAIL 没有实测结果（fixture 没跑到这条）`); bad++ }
+}
 console.log(bad ? `\n=== 装饰链路门禁: ${bad} 项未通过 ===` : '\n=== 装饰链路门禁: 全部通过 ===')
 process.exit(bad ? 1 : 0)

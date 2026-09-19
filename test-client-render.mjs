@@ -231,5 +231,142 @@ function srcdocOf(out) {
   console.log('  NOTE 四反引号围栏 -> ' + (isIframe(out) ? '已识别（已修）' : '不识别（仍是已知缺陷）'))
 }
 
+// ── 6. 上面那三条"已知缺陷"转成**会失败的断言** ──────────────────────────────
+//
+// [5] 的 NOTE 只是给人看的诊断，永远不会让 CI 变红 —— 一个修好了、下次又被改回去的
+// 缺陷会静默复活。下面把同一个行为钉成正向断言（内容有重叠是有意的：NOTE 负责
+// 可读性，check 负责把关）。
+console.log('\n[6] 已修缺陷的正向断言')
+
+{
+  const out = renderMediaTags('<video src="a.mp4" />')
+  check('自闭合 <video src/> 补了 controls', /<video[^>]*\bcontrols\b/.test(out), out)
+  check('自闭合 <video src/> 补了 preload', /preload="metadata"/.test(out), out)
+  check('自闭合 <video src/> 留着 src', /src="a\.mp4"/.test(out), out)
+  check('自闭合 <video src/> 不再吐出自闭合斜杠', !out.includes('/>'), out)
+  const au = renderMediaTags("<audio src='x.mp3' />")
+  check('自闭合 <audio src/> 同样补 controls', /<audio[^>]*\bcontrols\b/.test(au), au)
+}
+
+{
+  const out = renderMediaTags('<video data-x="a>b" src="m.mp4"></video>')
+  check('属性含 > 时 src 仍被认出', /src="m\.mp4"/.test(out), out)
+  check('属性含 > 时媒体没被降级成占位', !/muv-audio|muv-video-ph|🎬/.test(out), out)
+  check('属性含 > 时另一个属性也留着', out.includes('data-x="a>b"'), out)
+  check('属性含 > 时没写出第二个 class 属性', !/class="[^"]*"\s+class=/.test(out), out)
+}
+
+// 卡自带 class 必须与 muv-media 合并：写成两个 class 属性时浏览器只认第一个，
+// 卡自己的样式（_足控天堂2 的 .cg-char-thumb 等）会整体失效。
+{
+  const out = renderMediaTags('<video class="cg-thumb" src="x.mp4"></video>')
+  check('卡自带 class 与 muv-media 合并', out.includes('class="muv-media cg-thumb"'), out)
+}
+
+// 「没有 src」有两种，处理必须不同：
+//   ① 一个属性都没有 = 模型随手写的提示词 → 降级成占位；
+//   ② 有属性但没 src  = 先占位、稍后由卡的 JS 赋 src（`<video id="carVid">`）→ 一动不动。
+//      降级会让卡里的 getElementById('carVid') 找不到元素。
+{
+  const kept = '<video id="carVid" playsinline preload="metadata"></video>'
+  check('无 src 但有属性的媒体元素原样不动', renderMediaTags(kept) === kept, renderMediaTags(kept))
+  check('src="" 仍按媒体处理（那是"空 src"不是"没 src"）',
+    /<video[^>]*src=""/.test(renderMediaTags('<video id="v" src=""></video>')))
+  const bare = '<video>雨声白噪音</video>'
+  check('真正的裸提示词仍然降级成占位', /muv-video-ph/.test(renderMediaTags(bare)) && !/<video/.test(renderMediaTags(bare)))
+}
+
+// 卡自带页面里的 <script> 也会出现同一批标签，那是**代码**不是标记：
+// 正则字面量 /<audio>(.*?)<\/audio>/g、注释里的示例、以及拼接出来的标签。
+// 改它等于改卡的程序（实测：旧实现会把 AUDIO_RE 字面量换成 <div class="muv-audio">，
+// 音频功能静默失效）。见 repro-media-script-corruption.mjs。
+{
+  const src = '<script>const R = /<audio>(.*?)<\\/audio>/g;</script><audio>提示</audio>'
+  const out = renderMediaTags(src)
+  check('卡内 <script> 里的 <audio> 原样不动', out.includes('/<audio>(.*?)<\\/audio>/g;'), out)
+  check('script 之外的裸 <audio> 仍降级占位', out.includes('🎵 提示'), out)
+}
+
+// ── 7. 真实卡（缺卡时 SKIP，不是 FAIL） ─────────────────────────────────────
+//
+// 合成用例负责精确覆盖分支，真机卡负责证明「现在能用的东西没有被改坏」：
+// 三条 56/46/205 KB 的 HTML 正则，以及卡自己 <script> 里的媒体元素。
+let findCard = null, readPngCard = null
+try {
+  ({ findCard } = await import('./../dsh-muv-table/test-cards.mjs'))
+  ({ readPngCard } = await import('./../dsh-muv-table/lib/png-card.js'))
+} catch (_) { /* SKIP below */ }
+
+const cardFile = findCard ? (findCard('_足控天堂2') || findCard('足控天堂2')) : null
+if (!cardFile || !readPngCard) {
+  console.log('\n[7] 真实卡 SKIP（找不到 足控天堂2 卡，或 dsh-muv-table 不在同级目录）')
+} else {
+  console.log('\n[7] 真实卡：足控天堂2')
+  const card = readPngCard(cardFile)
+  const data = card.data && typeof card.data === 'object' ? card.data : card
+  const scripts = Array.isArray(data.extensions?.regex_scripts) ? data.extensions.regex_scripts : []
+  const fenced = scripts.filter(s => String(s?.replaceString || '').includes('```'))
+  const withMedia = scripts.filter(s => /<(audio|video)/.test(String(s?.replaceString || '')))
+
+  check('三条大 HTML 正则都在', fenced.length === 3, 'fenced=' + fenced.length)
+  for (const s of fenced) {
+    const rep = String(s.replaceString)
+    const out = renderFencedHtml(rep)
+    check('「' + s.scriptName + '」→ 恰好 1 个 iframe', (out.match(/muv-iframe/g) || []).length === 1,
+      'iframe=' + (out.match(/muv-iframe/g) || []).length)
+    check('「' + s.scriptName + '」→ 整个替换串都进了 srcdoc（' + rep.length + ' 字）',
+      out.startsWith('<div class="muv-statusbar-wrap"><iframe') && out.endsWith('</iframe></div>'),
+      JSON.stringify(out.slice(0, 50)) + ' … ' + JSON.stringify(out.slice(-30)))
+    check('「' + s.scriptName + '」→ 没有半截 HTML 以裸文本残留', !/<\/html>|<\/script>|<\/body>/.test(out))
+  }
+
+  const scriptBodies = r => [...String(r).matchAll(/<script\b[\s\S]*?<\/script\s*>/gi)].map(m => m[0]).join('\n@@@\n')
+  let scriptTouched = 0, placeholders = 0, lost = 0
+  for (const s of withMedia) {
+    const rep = String(s.replaceString)
+    const out = renderMediaTags(rep)
+    if (scriptBodies(rep) !== scriptBodies(out)) scriptTouched++
+    placeholders += (out.match(/class="muv-(?:audio|video-ph)"/g) || []).length
+    if ((out.match(/<(?:audio|video)\b/gi) || []).length !== (rep.match(/<(?:audio|video)\b/gi) || []).length) lost++
+    check('「' + s.scriptName + '」→ 没有写出第二个 class 属性', !/class="[^"]*"\s+class=/.test(out))
+  }
+  check('★ 卡自己的 <script> 一个字节都没被改', scriptTouched === 0, '被改的正则数=' + scriptTouched)
+  check('★ 没有真实媒体被降级成占位', placeholders === 0, '占位数=' + placeholders)
+  check('★ 媒体元素数量没变（没有元素消失）', lost === 0, '数量变化的正则数=' + lost)
+
+  const main = String((scripts.find(s => s.scriptName === '主页') || {}).replaceString || '')
+  if (main) {
+    const out = renderMediaTags(main)
+    check('★ <video id="carVid">（无 src、由卡的 JS 填）保住了', /<video[^>]*id="carVid"/.test(out))
+    // 属性顺序会被重排（controls/preload 统一提到前面），所以先把整个标签抓出来再逐项查。
+    const coverTag = /<video[^>]*id="cover-vid"[^>]*>/.exec(out)
+    check('有 src 的 <video id="cover-vid"> 仍可播放',
+      !!coverTag && /\bsrc="https?:/.test(coverTag[0]) && /\bcontrols\b/.test(coverTag[0]),
+      coverTag ? coverTag[0].slice(0, 140) : '找不到该标签')
+  }
+  const era = String((scripts.find(s => s.scriptName === 'ERA 状态栏') || {}).replaceString || '')
+  if (era) {
+    const out = renderMediaTags(era)
+    check('卡自带 class="cg-…" 的媒体元素保住了自己的 class',
+      out.includes('cg-char-thumb') && out.includes('cg-scene-thumb') && out.includes('cg-fs-main-img'))
+  }
+}
+
+// ── 8. 两条 iframe 路径的沙箱口径 ───────────────────────────────────────────
+//
+// [1] 钉住了「卡 HTML」的沙箱常量。还有第二条 iframe 路径：代码块的实时预览
+// （renderDoc / buildView），它用 allow-same-origin **是必要的** —— 父页要读
+// frame.contentDocument 量高度（sizeFrame），不给就永远量不到。
+// 它同时**不给 allow-scripts**，所以里面没有任何东西能执行，也就够不到父页。
+// 两条路径口径不同是各自需求决定的，不是不一致的疏漏；但谁把 allow-scripts
+// 加进预览路径，就等于重开 0.3.6 那个洞，所以这里一起钉住。
+console.log('\n[8] iframe 沙箱口径（两条路径）')
+check('代码块预览 frame 保留 allow-same-origin（量高度要用）', SRC.includes("sandbox', 'allow-same-origin'"))
+check('代码块预览 frame 不给 allow-scripts', !/sandbox', 'allow-same-origin allow-scripts'/.test(SRC)
+  && !/sandbox', 'allow-scripts allow-same-origin'/.test(SRC))
+check('renderDoc 仍带 CSP 兜底（default-src none）', /default-src\s*\\'none\\'/.test(SRC))
+check('卡 HTML 的 iframe 一律走 MUV_CARD_SANDBOX 常量（没有第二处写死的值）',
+  !/srcdoc[\s\S]{0,120}?sandbox="allow-scripts"/.test(SRC))
+
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)
 process.exit(fail ? 1 : 0)

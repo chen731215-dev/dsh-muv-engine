@@ -296,3 +296,33 @@ cd C:\dsh-tavern-v2;  npm.cmd publish
 **更general的教训**：安全相关的默认值不能靠类比（「别的项目也这样」）或推测
 （「不放开就会失败」）来定。**先拿真数据实测**——这次只需读一遍卡的 HTML 就能发现
 理由不成立。
+
+---
+
+## 10. 已知缺口：没有标签的 `[initvar]` 世界书条目
+
+`异世界农场.png` 的初始变量**不在卡文本里**，而在世界书条目
+`[initvar]变量初始化勿开`（`enabled: false`）的 `content` 里：
+
+```
+comment: "[initvar]变量初始化勿开"   enabled: false
+content: 时间:\n  日期: '05-20'\n  星期: 周日\n…\n种族好感度:\n  凛原族: 0\n…
+```
+
+**content 里只有裸 YAML，没有 `<initvar>` 标签**，所以按标签扫描的候选集
+（first_mes / description / scenario / alternate_greetings / 世界书 / helper）
+**永远扫不到它** —— 该卡的 `schemas` 至今仍为 0。这不是 bug，是数据不属于「带标签的块」。
+
+### 建议的修法（**未实现**，留给后续判断）
+
+「彻底找不到变量块时，找 `comment` 以 `[initvar]` 开头的世界书条目，把 content 当 initvar 解析」。
+预计 `异世界农场` 从 0 → 3 组（时间/种族好感度/个人好感度）。
+
+**为什么当时没做**：这引入「注释前缀」这层新判定，而前缀的语义区分不明确 ——
+`苍玄界` 的对应条目叫 `[mvu_update]变量输出格式`（是**文档**不是数据）。若 `[initvar]`
+在某些卡里也是文档，就会解析出一张垃圾表。
+**要做的话请加三道闸**：① 只在其它来源全部落空时启用；② 要求 content 解析出的对象
+非空；③ 响应里标 `schemaSource: 'worldbook-initvar'`，让来源可见。
+
+现状已由 `test-muv-parser.mjs` 第 [10] 节钉住（含「content 里没有 `<initvar>` 标签」的断言），
+将来实现后该断言需要相应更新。

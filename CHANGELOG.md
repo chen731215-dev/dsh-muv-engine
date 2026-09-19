@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.3.6 (2026-09-20)
+
+### ✨ 让角色卡自带的整页 HTML 真的渲染出来
+
+社区卡（如「足控天堂」）的 `主页` / `正文美化` / `ERA状态栏` 三条正则，产出的
+是**一整个 HTML 文档**（实测 56 / 45 / 205 KB），并用 markdown 围栏包起来：
+
+    ```\n<!DOCTYPE html>\n<html>…几十 KB…</html>\n```
+
+**问题**：在 SillyTavern 里这是「把这段当 HTML 渲染」的约定，但 DSH 的 markdown
+渲染器会老实把它当**代码块**——用户看到的是几十 KB 原始 HTML 文本，界面完全出不来。
+
+**修法**：新增 `renderFencedHtml()`，只挑**确实是 HTML 文档**的围栏（内容以
+`<!DOCTYPE` 或 `<html` 开头）改走 iframe `srcdoc` 渲染；普通代码块
+（```js / ```python / 无语言标记）**原样不动**——误伤代码块比不渲染更糟。
+
+### ✨ `<video>` / `<audio>` 渲染成真实播放器
+
+- 带 `src` 的标签原样保留为可播放元素，并补 `controls` 与 `preload="metadata"`
+  （卡里可能一次给多个媒体，默认 `preload=auto` 会把整段都预载下来）
+- 只有模型随手写的**裸提示词**（`<audio>轻快的BGM</audio>`，无 src）才降级成文字占位
+- 抽成具名函数 `renderMediaTags()`，便于回归测试直接取源码执行
+
+### ⚠️ iframe 沙箱放开到 `allow-scripts allow-same-origin`
+
+只给 `allow-scripts` 会让文档拿到**不透明来源**：`localStorage` 直接抛异常，
+从 CDN 以 ES module 拉 Vue/Pinia 也可能失败——而卡的 HTML 正是这么写的。
+
+**安全含义必须说清楚**：两者同时给出，等价于让卡里的 JavaScript 以「本站一等公民」
+身份运行，能碰到父文档、读写本来源的 cookie 与 storage。**卡是第三方代码，这是一次
+真实的信任决策。** 之所以默认开启：SillyTavern 对卡的 HTML/JS 完全不做沙箱，本插件
+开了之后仍比它更严（禁顶层跳转、禁表单提交、禁弹窗）。不信任某张卡时，把
+`MUV_CARD_SANDBOX` 改回 `'allow-scripts'` 即可——状态栏的**结构化**渲染不走 iframe，
+不受影响。
+
 ## v0.3.5 (2026-09-20)
 
 ### 📦 发布内容修正

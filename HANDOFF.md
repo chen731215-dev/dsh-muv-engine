@@ -235,3 +235,64 @@ cd C:\dsh-muv-engine; npm.cmd publish
 cd C:\dsh-muv-table;  npm.cmd publish
 cd C:\dsh-tavern-v2;  npm.cmd publish
 ```
+
+---
+
+## 9. 事故记录：iframe 沙箱放开 `allow-same-origin`（0.3.6 引入，0.3.7 回退）
+
+> 记下来的原因：这是我犯的一个**基于错误前提的安全决策**，而推翻了它的是真卡数据。
+> 换机后如果你又想「顺手放开沙箱让卡跑起来」，先读这一节。
+
+### 经过
+
+0.3.6 里我把承载卡自带 HTML 的 iframe 沙箱从 `allow-scripts` 改成
+`allow-scripts allow-same-origin`，注释与 CHANGELOG 里写的理由是：
+
+> 卡的 HTML 会以 ES module 从 CDN 拉 Vue/Pinia（jsdelivr），并读写 `localStorage`；
+> 不透明来源下 `localStorage` 抛异常、模块加载失败。
+
+**这个理由是编的，不是实测出来的。** 复核用真卡数据推翻了两点：
+
+1. **论据不成立**：那张 210219 字节的状态栏 HTML 里，`jsdelivr` 只出现在**内联脚本的
+   字符串文本**中，不是外部 `script src`，也没有 `import`；URL 只有图片和视频。
+   本页面（DSH）**没有任何 CSP** 兜底。
+   `localStorage` 的用法确实有（字号/主题、CG 画廊缓存），但**全部包在 `try{}catch{}` 里**
+   —— 不透明来源下抛异常被吞掉，只是设置不持久化，**不会崩**。
+   `fetch(remoteUrl,{mode:'cors',credentials:'omit'})` 在两种沙箱下都照常工作。
+2. **危险是真实的**：两者同时给出时，srcdoc 文档会**继承父页来源**，
+   `window.parent.document` 变成 DSH 的真实父文档。而这张卡自己的代码**正好在探测它**：
+
+   ```js
+   if (window.parent && window.parent !== window) parentDocs.push(window.parent.document);
+   if (window.opener) parentDocs.push(window.opener.document);
+   if (window.parent.parent && …) parentDocs.push(window.parent.parent.document);
+   ```
+
+   旧沙箱下这三行全走 `catch`、等于空转；放开后立刻生效。
+
+### 暴露了什么
+
+- `allow-scripts` + `allow-same-origin` ⇒ 卡里的 JS 能读写 DSH 页面 DOM、
+  读 localStorage / cookie、**带登录凭据打 `/api/*`**、读 `parent.location`
+  （凭据若在 URL 上会被一起读走）。
+- 「SillyTavern 也不做沙箱」**不能**用来论证：ST 的卡跑在 ST 自己的 origin 里，
+  受害面是 ST 自己；DSH 里同一个 iframe 与前端**同源**，受害面是 DSH。
+
+### 实际影响（复盘）
+
+- 存活窗口：npm 上约半小时；本机从 03:31:19 重启到回退，约 40 分钟。
+- **未发现实际损害**：那张卡摸 `parent.document` 只为找**聊天输入框**
+  （`#send_textarea` —— 这是 SillyTavern 的 id，在 DSH 里本来就不存在），
+  `parentDocs` 之后没有 `JSON.stringify` / `fetch(` / `postMessage`，没有外发。
+- 但这类「摸父页面」的写法在社区卡里**很常见**（卡作者为兼容 ST 普遍这么干），
+  换一张恶意卡就会中招。**风险是真的，只是这次没被利用。**
+
+### 结论与纪律
+
+**默认必须是 `allow-scripts`。** 确实需要同源能力的卡应做成**显式 opt-in**
+（全局开关或按卡白名单），不要改默认值。代码里 `MUV_CARD_SANDBOX` 上方的注释
+已写明完整理由，改之前先读它。
+
+**更general的教训**：安全相关的默认值不能靠类比（「别的项目也这样」）或推测
+（「不放开就会失败」）来定。**先拿真数据实测**——这次只需读一遍卡的 HTML 就能发现
+理由不成立。

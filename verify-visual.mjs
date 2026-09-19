@@ -236,6 +236,44 @@ function makeRenderer(src) {
   return buildFrom(src, ['renderFencedHtml'], { MUV_CARD_SANDBOX: sandboxOf(src) }, 'renderFencedHtml')
 }
 
+/**
+ * 把**真实的高度监听运行时代码**逐字取出来，供内联进 fixture 页面。
+ *
+ * 为什么必须这样：fixture 页面如果只有静态 HTML，就没有客户端运行时 ——
+ * `ensureFrameHeightListener` 从未注册，iframe 永远停在 600px。
+ * 红队读我生成的 `tavern-inline.html` 时正是这么读的，并把它当成「度量被污染」的证据
+ * （结论是错的：那只是缺运行时）。补上真实代码后，fixture 自己就能撑高，
+ * 于是「iframe 高度是否脱离 600px」变成一个**浏览器实测**的判据。
+ */
+function heightRuntimeSource() {
+  const names = new Set(['ensureFrameHeightListener', 'onMuvFrameHeightMessage'])
+  // 这两个函数可能还依赖别的 Frame 相关小函数（如 muvFrameHeightLimits），一并带上
+  for (const m of SRC.matchAll(/\n[ \t]+function\s+(\w*[Ff]rame\w*)\s*\(/g)) names.add(m[1])
+  let out = ''
+  for (const n of names) {
+    try { out += extractFunction(SRC, n) + '\n' } catch (_) { /* 名字对不上就跳过 */ }
+  }
+  const consts = Object.values(moduleVarStatements(SRC)).join('\n')
+  return consts + '\n' + out + '\n' +
+    'if (typeof ensureFrameHeightListener === "function") ensureFrameHeightListener();'
+}
+
+/** 页面尾部探针：量 iframe 的实际高度，写成一行可 grep 的 VERDICT。 */
+const HEIGHT_PROBE = '<script>setTimeout(function(){' +
+  'var f=document.querySelector("iframe.muv-iframe");' +
+  'var inline=f?f.style.height:"none";' +
+  'var real=f?Math.round(f.getBoundingClientRect().height):-1;' +
+  'var d=document.createElement("pre");d.id="heightVerdict";' +
+  'd.textContent="HEIGHTVERDICT iframeInline="+inline+" iframeReal="+real+" heightAppliedTo="+(f?f.getAttribute("style"):"none");' +
+  'd.style.cssText="position:fixed;left:0;bottom:0;z-index:2147483647;background:#000;color:#0f0;font:12px monospace;padding:4px;margin:0";' +
+  'document.body.appendChild(d);},2600);<\/script>'
+
+/** 给 fixture 页面注入真实高度运行时 + 探针。 */
+function withHeightRuntime(bodyHtml) {
+  return bodyHtml + '\n<script>/* 以下为 lib/client.js 逐字提取的真实代码 */<\/script>\n<script>' +
+    heightRuntimeSource().replace(/<\/script/gi, '<\\/script') + '<\/script>\n' + HEIGHT_PROBE
+}
+
 /** escAttr 的逆运算。顺序必须与 escAttr 相反：&amp; 放最后，否则会把转义结果再解一次。 */
 function unescapeAttr(s) {
   return String(s)
@@ -552,7 +590,7 @@ if (renderTavern && targets.length) {
   const file = path.join(OUT, 'tavern-inline.html')
   writeFileSync(file, PAGE(
     `酒馆路径内联「${t.card} / ${t.script}」的后果 —— 含 iframe=${inlined.includes('<iframe')}`,
-    body, 'tavern-inline'), 'utf8')
+    withHeightRuntime(body), 'tavern-inline'), 'utf8')
   fixtures.push({ name: 'tavern-inline', file, png: path.join(OUT, 'tavern-inline.png') })
   console.log(`  已生成 tavern-inline.html（输出 ${inlined.length} 字，含 iframe=${inlined.includes('<iframe')}）`)
 }
@@ -643,6 +681,47 @@ check('真实消息形状下围栏也被正确转成 iframe（正文逐字）', 
     const sc = [...out.matchAll(/ srcdoc="/g)].length
     check('两个 srcdoc 都在', sc === 2, '实际 ' + sc)
   }
+}
+
+// ── 8. 真实消息（服务端正则产出）在两条路径上的渲染 ────────────────────────
+//
+// 前面几节用的都是「卡的正则替换串」，那是**中间产物**。这一节用服务端
+// `/api/muv-engine/apply-regex-card` 对一条**真 AI 回复**跑完之后的完整文本
+// （`rewritten.txt`，213,953 字，含 `<VariableInsert>`、裸围栏整页文档、`<video>`），
+// 也就是两条渲染路径真正吃到的东西。
+console.log('\n=== 8. 真实消息的两条路径 ===')
+const REAL_MSG = path.join(os.tmpdir(), 'muv-visual', 'rewritten.txt')
+if (existsSync(REAL_MSG)) {
+  const real = readFileSync(REAL_MSG, 'utf8')
+  console.log(`  真实消息 ${real.length} 字`)
+  const tavernOut = renderTavern ? String(renderTavern(real) || '') : ''
+  const dshOut = String(renderNew(real) || '')
+  const count = (s, re) => (s.match(re) || []).length
+  for (const [label, out] of [['酒馆 _tavernRenderTags', tavernOut], ['DSH beautifyMuv(renderFencedHtml)', dshOut]]) {
+    console.log(`  ${label}: 输出=${out.length}字 iframe=${count(out, /<iframe\b/g)} 裸反引号段=${count(out, /`{3,}/g)} 裸<!DOCTYPE>=${count(out, /<!doctype\s+html/gi)}`)
+  }
+  check('真实消息在酒馆路径上也转成了 iframe', count(tavernOut, /<iframe\b/g) >= 1,
+    'iframe=0 —— 卡整页 HTML 会原样进 innerHTML')
+  check('真实消息在酒馆路径上不再残留裸围栏', count(tavernOut, /`{3,}/g) === 0,
+    '残留 ' + count(tavernOut, /`{3,}/g) + ' 段反引号')
+  const asJs = (s) => JSON.stringify(s).replace(/<\/script/gi, '<\\/script').replace(/<!--/g, '<\\!--')
+  const mk = (name, cap, html) => {
+    const body = [
+      '<div class="chat">',
+      '  <div class="msg">上一条消息：这段排版应保持正常。</div>',
+      `  <div class="msg" id="realMsg"><span style="color:#8b93a1">（${name} 渲染结果在此 innerHTML 注入）</span></div>`,
+      '  <div class="msg">下一条消息：<b>如果这段排版被改变、页面被撑长，就说明卡的 CSS 泄漏了。</b></div>',
+      '</div>',
+      '<script>document.getElementById("realMsg").innerHTML = ' + asJs(html) + ';<\/script>',
+    ].join('\n')
+    const file = path.join(OUT, name + '.html')
+    writeFileSync(file, PAGE(cap, withHeightRuntime(body), name), 'utf8')
+    fixtures.push({ name, file, png: path.join(OUT, name + '.png') })
+  }
+  mk('real-tavern', '真实消息 → <b>酒馆路径</b> → innerHTML（修复后应是一个自适应 iframe）', tavernOut)
+  mk('real-dsh', '真实消息 → <b>DSH 原生路径</b>（renderFencedHtml）→ innerHTML', dshOut)
+} else {
+  console.log('  （没有 rewritten.txt，跳过；它由服务端 apply-regex-card 对一条真回复产出）')
 }
 
 // ── 汇总 ────────────────────────────────────────────────────────────────────

@@ -557,6 +557,94 @@ if (renderTavern && targets.length) {
   console.log(`  已生成 tavern-inline.html（输出 ${inlined.length} 字，含 iframe=${inlined.includes('<iframe')}）`)
 }
 
+// ── 7. 真实消息形状（盲区补测） ─────────────────────────────────────────────
+//
+// ⚠ 这一节的存在本身就是个教训：上面 [1] 测的是**裸替换串**（围栏恰好在第 0 位），
+// 而真实消息里围栏是被包起来的 ——
+//     <div class="muv-statusbar-wrap">```\n<!DOCTYPE html>…\n```</div>
+// 于是「裸替换串通过」完全不能推出「真实消息通过」。小黄鸭实测报了这种形状下
+// `renderFencedHtml` 原样返回（changed=false）而我上面全绿，两边必须当面对齐。
+console.log('\n=== 7. 真实消息形状（围栏不在第 0 位）===')
+const renderMedia = buildFrom(SRC, ['renderMediaTags'], { MUV_CARD_SANDBOX: sandboxOf(SRC) }, 'renderMediaTags')
+
+let wrapFail = 0
+for (const t of targets) {
+  const tag = `${t.card} / ${t.script}`
+  const cases = {
+    'div 包裹': '<div class="muv-statusbar-wrap">\n' + t.rep + '\n</div>',
+    '前后有正文': '前置正文。\n\n' + t.rep + '\n\n后置正文。',
+    'div 包裹 + 前后正文': '开场。\n<div class="muv-statusbar-wrap">\n' + t.rep + '\n</div>\n结尾。',
+  }
+  for (const [label, input] of Object.entries(cases)) {
+    const out = renderNew(input)
+    const frames = (out.match(/<iframe\b/g) || []).length
+    const sc = srcdocOf(out)
+    const ok = frames === 1 && !!sc && stripBootstrap(unescapeAttr(sc.raw)) === t.body
+    if (!ok) {
+      wrapFail++
+      console.log(`  FAIL ${tag} [${label}]: iframe=${frames} srcdoc=${!!sc} 输出=${out.length}字(输入${input.length})`)
+    }
+  }
+}
+check('真实消息形状下围栏也被正确转成 iframe（正文逐字）', wrapFail === 0,
+  `${wrapFail} 个形状没有转成 iframe —— 裸替换串通过推不出真实消息通过`)
+
+// 媒体标签：小用例只要求**线性**，真卡文档才是真正的考场
+//
+// ⚠ 这里我差点写下一条假结论：`renderMediaTags('<video src="a.mp4">')` 是 19→73 字符，
+// 看着像"膨胀"，其实是**正确行为** —— 补了 controls/preload/class 就该变长。
+// 两条 video 得到 146 = 2×73 也是线性。判据必须是「相对输入是否超线性」，
+// 不是「是否变长」，否则会把正常行为报成 bug。
+{
+  const linear = (input, out) => out.length <= input.length * 3 + 200
+  let bad = 0
+  const cases = [
+    '<video src="a.mp4">',
+    '<video src="a.mp4"><video src="b.mp4">',
+    '<audio src="a.mp3">',
+    '<video src="a.mp4">尾部正文不应该被吞掉',
+  ]
+  for (const input of cases) {
+    let out = ''
+    try { out = String(renderMedia(input) || '') } catch (e) { out = 'THROW:' + e.message }
+    const ok = !out.startsWith('THROW:') && linear(input, out) && out.indexOf('尾部正文') >= 0 || !input.includes('尾部正文')
+    if (!ok) bad++
+    console.log(`  ${ok ? 'OK  ' : 'FAIL'} renderMediaTags(${JSON.stringify(input)}) → ${out.length}字`)
+  }
+  check('小用例的媒体改写是线性的、且不吞尾部正文', bad === 0, bad + ' 例异常')
+
+  // 真卡文档：小黄鸭在这里撞到 `RangeError: Invalid string length`（V8 字符串上限）。
+  // 指数膨胀一旦发生就会抛这个错，所以判据是「不抛 + 输出与输入同量级」。
+  let realBad = 0
+  for (const t of targets) {
+    for (const [what, input] of [['围栏整页', t.rep], ['纯文档', t.body]]) {
+      const t0 = Date.now()
+      let out = ''
+      let err = ''
+      try { out = String(renderMedia(input) || '') } catch (e) { err = e.message }
+      const ms = Date.now() - t0
+      const ratio = input.length ? (out.length / input.length) : 0
+      const ok = !err && ratio < 2
+      if (!ok) realBad++
+      console.log(`  ${ok ? 'OK  ' : 'FAIL'} ${t.card}/${t.script} [${what}] ${input.length}字 → ${err ? 'THROW ' + err : out.length + '字 比值' + ratio.toFixed(2)} (${ms}ms)`)
+    }
+  }
+  check('真卡整页文档过 renderMediaTags 不抛错、不膨胀', realBad === 0, realBad + ' 例抛错或膨胀')
+}
+
+// 一条消息里出现**多个**围栏文档（真机的 apply-regex-card 输出里就不止一个）
+{
+  const foot = targets.filter((t) => t.card.indexOf('足控') >= 0)
+  if (foot.length >= 2) {
+    const two = foot[0].rep + '\n\n中间正文\n\n' + foot[1].rep
+    const out = renderNew(two)
+    const frames = (out.match(/<iframe\b/g) || []).length
+    check('一条消息里两个围栏文档 → 两个 iframe', frames === 2, '实际 ' + frames)
+    const sc = [...out.matchAll(/ srcdoc="/g)].length
+    check('两个 srcdoc 都在', sc === 2, '实际 ' + sc)
+  }
+}
+
 // ── 汇总 ────────────────────────────────────────────────────────────────────
 console.log(`\n=== 断言: ${pass} 通过, ${fail} 失败 ===`)
 console.log('产物目录: ' + OUT)

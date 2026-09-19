@@ -527,6 +527,23 @@ comment: "[initvar]变量初始化勿开"    enabled: false
 > 会把一个**从未验证过的半成品**发到 npm，而且 `npm publish` 照样打印成功。
 > 发版动作应当是：`git status` 为空 → 确认 HEAD == 已验证的 hash → `npm publish`。
 
+> **PC-2｜判断「发布成功没有」不能用 `npm view` / `npm pack <pkg>@<ver>` —— 它们会返回旧的 packument 缓存。**
+> 实测（2026-09-20）：`npm publish` 明明成功，但 `npm view dsh-muv-table versions` 的列表里
+> **没有**新版本（而它自己还打印了 `cache revalidated`），`npm pack dsh-muv-table@0.2.11` 直接报 ETARGET。
+> 只看这两条会得出**「发布失败」的错误结论**（我就差点据此重发）。
+> 暴露真相的是第二次 publish：registry 回
+> `You cannot publish over the previously published versions: 0.2.11` —— 即版本其实已经在上面了。
+>
+> **权威判据：直接取 tarball**，URL 由包名 + 版本唯一决定，没有 packument 那层缓存：
+> ```
+> curl.exe -s -o NUL -w "%{http_code}" https://registry.npmjs.org/<pkg>/-/<pkg>-<ver>.tgz
+> ```
+> `200` 就是发布成功；下载下来 `tar -tzf <tgz> --force-local` 还能核对包内文件。
+> （`--force-local` 不能省：Windows 的 tar 会把 `C:\...` 当成远程主机名报
+> `Cannot connect to C: resolve failed`。）
+> 另外：`npm publish` 之后**再跑一次**是安全的 —— 版本已存在时它会以 E403 明确拒绝，
+> 而这个拒绝本身就是「已发布」的可靠证据。
+
 > **PC-1｜高度自动撑高必须在真实页面复验后才能宣布可用。**
 > 现状：`cardHtmlIframe` / 帧高引导脚本 / `onMuvFrameHeightMessage` 从写出至今**从未在 3080 的真实页面里执行过**
 > —— 3080 进程是 03:31 启动的，而该功能是之后写入磁盘的（Node 启动时缓存 ES 模块）。

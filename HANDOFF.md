@@ -514,3 +514,76 @@ comment: "[initvar]变量初始化勿开"    enabled: false
 8. `presets.json` 只登记 5 个预设，磁盘上有 19 个目录 → 14 个预设**在酒馆面板里列不出来**
    （功能正常，可用性缺陷）。
 9. 换机后**必须做**：重启 DSH 让新代码生效；轮换曾出现在明文里的 GitHub PAT 与 npm token。
+
+---
+
+## 15. 发布检查单与验证日志
+
+### 15.1 发布前置条件
+
+> **PC-1｜高度自动撑高必须在真实页面复验后才能宣布可用。**
+> 现状：`cardHtmlIframe` / 帧高引导脚本 / `onMuvFrameHeightMessage` 从写出至今**从未在 3080 的真实页面里执行过**
+> —— 3080 进程是 03:31 启动的，而该功能是之后写入磁盘的（Node 启动时缓存 ES 模块）。
+> 目前所有验证都在 harness 里用**真实函数源码 + 真实卡数据**完成，**不等于**真实页面生效。
+> 复验必须在**重启 DSH 之后**在真实聊天页里做（重启会终止当前会话，只能由用户操作）：
+> 1. 打开一张带整页 HTML 状态栏的卡（`_足控天堂2`）；
+> 2. 该 iframe 的 `style.height` **不再是 `600px`**，而是内容高附近的稳定值；
+> 3. DevTools 里 style mutation 在稳定后**不再增加**（无振荡）；
+> 4. 控制台无报错；iframe 顶部**没有可见的反引号**；
+> 5. **必须带上修正后的度量**（内容包围盒；**不要** `max(…, body.scrollHeight)`），
+>    否则会在「正文美化」那类卡上「看起来通过、实际是视口回显」。
+
+其余发布前必须全绿（都不是可选项）：
+
+```powershell
+node test-status-cascade.mjs            # 84
+node test-client-render.mjs             # 113
+node verify-visual.mjs <old-client.js>  # 74（渲染矩阵 + 真实消息形状 + 酒馆路径 + 真卡文档过媒体改写）
+$env:MUV_EDGE="C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+node verify-statusbar-layout.mjs        # 真浏览器布局门禁
+cd ..\dsh-muv-table
+node test-png-card.mjs; node test-muv-parser.mjs; node test-preset-resolve.mjs   # 28 / 76 / 30
+```
+
+### 15.2 本轮验证日志（engine `3bd2f67` / table `aef7569`）
+
+| 项 | 结果 |
+| --- | --- |
+| 围栏按 markdown 语义配对 | ✅ 五卡 9 条整页文档各 1 个 iframe、正文逐字、无残渣；**合成用例上旧实现确实腰斩+残渣裸奔**（有反证） |
+| 媒体标签解析不再自伤 | ✅ 真卡 `<script>` 不再被改写；真卡 210KB/76KB 文档过 `renderMediaTags` 比值 **1.00**、不抛错 |
+| **真实消息形状**（围栏不在第 0 位） | ✅ `<div class="muv-statusbar-wrap">` 包裹 / 前后有正文 / 一条消息两个围栏文档 —— 全部正确产出 iframe |
+| **酒馆路径围栏 → iframe** | ✅ **9/9**（修复前 8/9 未转换，卡 CSS 会泄漏进聊天 DOM；视觉证据见 `tavern-inline.png`） |
+| iframe 自动撑高（度量修正后） | ✅ 三档起始高度（600/900/1500）报值一致：主页 1636 / 正文美化 251 / ERA 895，**正文美化能缩小 = 不再是不动点** |
+| 状态栏单列 + 角色名独立块 | ✅ 真浏览器实测 `subDisplay=flex subDir=column sameRowPairs=0 boxedChars=1`（两个级联阶段） |
+| `[initvar]` 世界书兜底 | ✅ 黑盒独立审计 21/21；新旧对照证明**恰好只有「异世界农场」变化**（0→3 组） |
+
+### 15.3 三处需要更正的口径（都已改口，别再引用旧说法）
+
+1. **「没有 `allow-scripts` 卡根本不出内容」—— 太强，撤回。**
+   实测同一份 ERA 卡文档：`allow-scripts` 为 926 内容高 / 152 元素 / 201596 字符；
+   `sandbox=""`（全部禁止）为 **926 / 148 / 201576**。约 97% 的 DOM 与 99.99% 的文本是**静态标记**。
+   （测量方自己也声明 130↔152 是噪声区间，所以严格说这**不能**证明「JS 无差别」。）
+   正确表述：**保留 `allow-scripts` 的理由是「交互功能」（地图/画廊/轮播/tab），不是「否则整页空白」。**
+   这个区别重要 —— 它把「若有人要收紧沙箱」的代价从**整页不显示**改成**交互失效**。
+2. **「高度用 `max(内容包围盒, body.scrollHeight)`」—— 错，那一半仍是视口回显。**
+   A/B/C 三指标差分实测（同 payload × 起始 600/900/1500）：
+   只取内容包围盒 = `927/927/927`、`2083/2083/2083`、`241/241/241`（**全部与起始值无关**）；
+   带 `body.scrollHeight` 的两个变体在「正文美化」上都是 `600/900/1500`（完全回显）。
+   正确做法：**`h = muvContentExtent()`，不要 `max` 任何 `scrollHeight`**；
+   要兜被 `overflow` 裁掉的静态子元素，就在遍历时逐个取 `el.scrollHeight` 的最大值。
+3. **「`renderFencedHtml` 对围栏不在第 0 位的输入原样返回」与「`renderMediaTags` 在真卡文档上抛 `RangeError`」——
+   在当前代码上均不可复现。** 这两条来自一份针对**中间版本**（2400 行那版）的复现报告，测者本人当时就标了「待复测」。
+   现在的复测结果见 15.2 第 3、2 行。**留档时以 15.2 为准。**
+   顺带一条判据教训：`renderMediaTags('<video src="a.mp4">')` 从 19 → 73 字符**不是膨胀** ——
+   补 `controls`/`preload`/`class` 就该变长；两条 video 得 146 = 2×73 也是线性。
+   **判据必须是「相对输入是否超线性」，不是「是否变长」**，否则会把正常行为报成 bug。
+
+### 15.4 仍未解决（见 §14 第 6 项）
+
+**装饰整条消息会抹掉 markdown**（`raw = body.innerText` 已经把 `**`/`##`/```` ``` ```` 变成渲染后文本，
+写回 `innerHTML` 后不可逆）。真实命中率很高：`异世界农场` 的 `**` 有 352 处、`涩涩提瓦特` 604、`食人世界` 792。
+这只在消息里**有 muv 标记**时触发（`html !== raw` 才写回），所以症状是「有的消息正常、有的突然全变纯文字」。
+修法方向：**不要整条 `body.innerHTML = html`**，改成只补丁需要变的那几段
+（`<choices>` 已有 DOM 层的 `muvSanitizeNode`；围栏文档可用已有的 `findTextRange` 定位并替换那一个文本节点）。
+**硬约束**：两个门禁与全部套件必须保持全绿；逐类迁移、逐类提交；某类标记若无法在 DOM 补丁下落对，就停下来报，
+不要为了 markdown 把已经跑通的状态栏搞坏。

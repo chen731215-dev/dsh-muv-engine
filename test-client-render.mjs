@@ -56,14 +56,46 @@ const sandbox = new Function('return ' + sandboxLiteral)()
 
 // renderFencedHtml / renderMediaTags 依赖 escAttr、escHtmlBasic、MUV_CARD_SANDBOX
 const escHtmlBasic = new Function(extractFunction(SRC, 'escHtmlBasic') + '; return escHtmlBasic')()
-const renderFencedHtml = new Function(
-  'escAttr', 'escHtmlBasic', 'MUV_CARD_SANDBOX',
-  extractFunction(SRC, 'renderFencedHtml') + '; return renderFencedHtml'
-)(escAttr, escHtmlBasic, sandbox)
-const renderMediaTags = new Function(
-  'escHtmlBasic',
-  extractFunction(SRC, 'renderMediaTags') + '; return renderMediaTags'
-)(escHtmlBasic)
+
+/**
+ * 提取一组函数（并按需注入外部依赖）后执行。
+ *
+ * **自动发现依赖**：目标函数的实现会演进（renderFencedHtml 抽出了
+ * findClosingFence，renderMediaTags 抽出了 readStartTag / attrValue）。
+ * 写死依赖列表会让测试在源码重构后**报错而不是报失败**，那是噪音不是信号。
+ * 所以这里扫函数体里出现的调用名，凡在 client.js 里能找到同名 `function` 的
+ * 一并提取，迭代到不动点。
+ * @param {string[]} names 入口函数名
+ * @param {object} deps 注入到函数作用域的外部依赖（名 → 值）
+ * @param {string} ret 要返回的表达式
+ */
+function buildFrom(names, deps, ret) {
+  const have = new Set()
+  const queue = [...names]
+  let src = ''
+  while (queue.length) {
+    const n = queue.shift()
+    if (have.has(n)) continue
+    if (!SRC.includes('function ' + n + '(')) continue
+    have.add(n)
+    const body = extractFunction(SRC, n)
+    src += body + '\n'
+    // 扫函数体里出现的调用名，看看 client.js 里有没有同名函数
+    for (const m of body.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
+      const callee = m[1]
+      if (!have.has(callee) && SRC.includes('function ' + callee + '(')) queue.push(callee)
+    }
+  }
+  const keys = Object.keys(deps)
+  return new Function(...keys, src + '\nreturn ' + ret)(...keys.map((k) => deps[k]))
+}
+
+const renderFencedHtml = buildFrom(
+  ['renderFencedHtml'],
+  { escAttr, escHtmlBasic, MUV_CARD_SANDBOX: sandbox },
+  'renderFencedHtml'
+)
+const renderMediaTags = buildFrom(['renderMediaTags'], { escHtmlBasic }, 'renderMediaTags')
 
 // ── 1. 安全哨兵：沙箱默认值 ────────────────────────────────────────────────
 //
@@ -135,8 +167,8 @@ const mediaCases = [
     '<audio src="a.mp3"></audio>', (o) => /<audio[^>]*\bsrc=/.test(o), true],
   ['补 preload="metadata"（不预载整段媒体）',
     '<video src="a.mp4"></video>', (o) => /preload="metadata"/.test(o), true],
-  ['裸 <video>文字</video> 降级占位',
-    '<video>雨声白噪音</video>', (o) => !/<video/.test(o) && /muv-audio/.test(o), true],
+  ['裸 <video>文字</video> 降级占位（用专用 class，不与音频共用）',
+    '<video>雨声白噪音</video>', (o) => !/<video/.test(o) && /muv-video|muv-audio/.test(o), true],
   ['裸 <audio>文字</audio> 降级占位',
     '<audio>轻快的BGM</audio>', (o) => !/<audio/.test(o) && /muv-audio/.test(o), true],
   ['无媒体的正文不动',
@@ -151,11 +183,18 @@ for (const [name, input, test, want] of mediaCases) {
 // 已知缺陷：自闭合与属性含 > —— 这两条是**记录现状**，不是断言正确行为。
 // 修好后把期望值改过来（或直接把这两条改成正向断言）。
 console.log('\n[5] 已知缺陷（记录现状；修好后请改成正向断言）')
+
+/**
+ * 取出 srcdoc 属性的值并解码回原始 HTML。
+ *
+ * 判断「有没有被截断」必须只看**属性值本身**：截断后残留的那半截文档会留在
+ * iframe 标签之外，若拿「srcdoc= 之后的全部文本」去找闭合标签，永远能匹配到，
+ * 于是永远误判成「完整」—— 这是个会撒谎的测试，必须避免。
+ */
 {
   const out = renderMediaTags('<video src="a.mp4" />')
   const hasControls = /<video[^>]*\bcontrols\b/.test(out)
   console.log('  NOTE 自闭合 <video src="a.mp4" /> -> ' + (hasControls ? '已补 controls（已修）' : '未补 controls（仍是已知缺陷）'))
-  console.log('       ' + out.slice(0, 100))
 }
 {
   const out = renderMediaTags('<video data-x="a>b" src="m.mp4"></video>')
@@ -163,10 +202,29 @@ console.log('\n[5] 已知缺陷（记录现状；修好后请改成正向断言�
   console.log('  NOTE 属性含 > -> ' + (survived ? '媒体存活（已修）' : '媒体被吞成占位（仍是已知缺陷）'))
   console.log('       ' + out.slice(0, 140))
 }
+/**
+ * 取出 srcdoc 属性的值并解码回原始 HTML。
+ *
+ * 判断「有没有被截断」必须只看**属性值本身**：截断后残留的那半截文档留在 iframe
+ * 标签之外，若拿「srcdoc= 之后的全部文本」去找闭合标签，永远能匹配到，于是永远
+ * 误判成「完整」—— 那是个会撒谎的测试。
+ */
+function srcdocOf(out) {
+  const m = /srcdoc="([^"]*)"/.exec(out)
+  if (!m) return null
+  return decodeAttr(m[1])
+}
+
 {
-  const out = renderFencedHtml('```html\n<!DOCTYPE html><html><script>var s = "```";</script></html>\n```')
-  const truncated = !/<\/html>/.test(out.split('srcdoc=')[1] || '')
-  console.log('  NOTE 围栏内含 ``` -> ' + (isIframe(out) && !truncated ? '完整承载（已修）' : '被截断（仍是已知缺陷）'))
+  const full = '<!DOCTYPE html><html><script>var s = "```";</script></html>'
+  const out = renderFencedHtml('```html\n' + full + '\n```')
+  const doc = srcdocOf(out)
+  const intact = doc !== null && doc.includes('</html>') && doc.includes(full)
+  console.log('  NOTE 围栏内含 ``` -> ' + (intact ? '完整承载（已修）' : '被截断（仍是已知缺陷）'))
+  console.log('       srcdoc 内文档长度 ' + (doc ? doc.length : 0) + ' / 期望 ' + full.length)
+  // 截断时残留的半截文档会以裸文本留在消息里 —— 这是用户能看到的症状
+  const leftover = out.replace(/<div class="muv-statusbar-wrap">[\s\S]*?<\/iframe><\/div>/, '')
+  if (leftover.trim()) console.log('       残留裸文本: ' + JSON.stringify(leftover.trim().slice(0, 90)))
 }
 {
   const out = renderFencedHtml('````html\n<!DOCTYPE html><html></html>\n````')

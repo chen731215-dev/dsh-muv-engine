@@ -656,5 +656,51 @@ check('★ 文本没被改动时 beautifyMuv 原样返回（不再整条替换 �
 console.log('  NOTE 整条替换是否不再发生、markdown 是否存活，由 verify-choices-dom.mjs（真浏览器）')
 console.log('       与主代理的 verify-visual.mjs 端到端判据共同盯住。')
 
+// ── 12. markdown 不丢：`『』` 表头 + `<StatusPlaceHolderImpl/>` 走 DOM 段替换（第二类） ──
+//
+// 两条修法：
+//  ① `muvFoldStatusHeader()` 在 DOM 层把跨行表头折成一行 —— 折完
+//     `normalizeStatusHeader(innerText) === innerText`，于是 beautifyMuv 那一档
+//     原样返回、不触发整条替换（真浏览器证明见 verify-header-fold.mjs）。
+//  ② `applyDecoratedHtml()` 以前只认 `<Status_block>`，占位符那一类找不到落点就
+//     整条替换 → markdown 全灭（主代理门禁 `B_header` 的基线 strong/h2/pre/li=0/0/0/0）。
+//     现在多一条「占位符文本段」的 Range 替换；并且取状态栏片段改用配平扫描，
+//     不再依赖「末尾恰好三个 </div>」的正则。
+console.log('\n[12] 表头 + 占位符走 DOM 段替换（markdown 不丢）')
+
+const wrapExtract = buildFrom(['extractStatusWrap'], {}, 'extractStatusWrap')
+const builtinWrap = '<p>正文</p><div class="muv-statusbar-wrap"><div class="muv-sb"><div class="muv-sb-hd">头</div><div class="muv-sb-body">体</div></div></div><p>后面</p>'
+check('取内置卡片的状态栏片段', wrapExtract(builtinWrap) === '<div class="muv-statusbar-wrap"><div class="muv-sb"><div class="muv-sb-hd">头</div><div class="muv-sb-body">体</div></div></div>',
+  JSON.stringify(wrapExtract(builtinWrap)))
+const iframeWrap = '<div class="muv-statusbar-wrap"><iframe class="muv-iframe" srcdoc="&lt;html&gt;"></iframe></div>'
+check('★ 取卡自带整页 HTML 的 iframe 片段（旧的三-div 正则会漏）',
+  wrapExtract(iframeWrap) === iframeWrap, JSON.stringify(wrapExtract(iframeWrap)))
+const emptyWrap = '<div class="muv-statusbar-wrap"><div class="muv-sb muv-sb-empty">（暂无状态数据）</div></div>'
+check('★ 取空状态片段（旧正则会漏）', wrapExtract(emptyWrap) === emptyWrap, JSON.stringify(wrapExtract(emptyWrap)))
+check('没有状态栏时返回 null', wrapExtract('<p>只有正文</p>') === null)
+check('嵌套 div 不影响配平（后面还有别的 div）',
+  wrapExtract(builtinWrap + '<div>x</div>') === wrapExtract(builtinWrap), JSON.stringify(wrapExtract(builtinWrap + '<div>x</div>')))
+check('★ 死正则 STATUS_WRAP_RE 已彻底移除',
+  !/STATUS_WRAP_RE/.test(SRC), '源码里还有引用')
+
+const applySrc = extractFunction(SRC, 'applyDecoratedHtml')
+check('★ 占位符也走 Range 段替换（第二类修复点）',
+  applySrc.includes('STATUS_PH_TEST') && applySrc.includes('insertHtmlAtRange('), applySrc.slice(0, 120))
+check('取片段走配平扫描而不是写死正则', applySrc.includes('extractStatusWrap('))
+check('找不到落点才整条替换（最后手段保留）', /body\.innerHTML = html/.test(applySrc))
+check('★ 表头折叠挂在 muvSanitizeNode 上', extractFunction(SRC, 'muvSanitizeNode').includes('muvFoldStatusHeader('))
+check('★ 表头折叠复用 normalizeStatusHeader（两条路径不各说各话）',
+  extractFunction(SRC, 'muvFoldStatusHeader').includes('normalizeStatusHeader('))
+check('表头折叠有收敛上限（不会死循环）', /guard < \d+/.test(extractFunction(SRC, 'muvFoldStatusHeader')))
+// ★ 每一步各自 try：挤在同一个 try 里时，前一步抛异常会把后面几类的渲染一起带走
+// （实测：探针少注入一个依赖 → 表头折叠抛 ReferenceError → 选项按钮 4 项断言同时红）。
+check('★ 卫生 pass 每类标记各自 try（一类失败不牵连其它类）', (() => {
+  const body = extractFunction(SRC, 'muvSanitizeNode')
+  const steps = ['muvCleanText(', 'muvFoldStatusHeader(', 'muvRenderOpts(', 'muvRenderChoices(']
+  return steps.every(s => new RegExp('try \\{[^}]*' + s.replace('(', '\\(')).test(body))
+})())
+console.log('  NOTE B_header 的端到端判据（markdown 存活 + statusBars>=1）由主代理的')
+console.log('       verify-decorate-dom.mjs 门禁盯住；本节只钉源码形状与片段提取。')
+
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)
 process.exit(fail ? 1 : 0)

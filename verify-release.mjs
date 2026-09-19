@@ -122,27 +122,31 @@ if (mode === 'post') {
     console.log('\n--- ' + r.pkg + '@' + want + ' ---')
     if (!want) { check(r.pkg + ': 给了期望版本号', false, '缺少参数'); continue }
 
-    // ① registry 上真的能取到这个版本（--prefer-online 绕过本地缓存）
-    const view = run('npm.cmd', ['view', r.pkg + '@' + want, 'version', '--prefer-online'], { cwd: work, tag: 'view' })
-    const got = (view.out.match(/\d+\.\d+\.\d+[\w.-]*/) || [''])[0]
-    check(r.pkg + '@' + want + ': registry 上存在该版本', got === want, '查到 "' + got + '" ' + view.err.slice(0, 120))
+    // ⚠ 判存在性**不要**用 `npm view` / `npm pack <pkg>@<ver>`：它们读的是 packument，
+    //    而 packument 在发布后**会返回旧缓存**。实测（2026-09-20）：publish 明明成功，
+    //    `npm view <pkg> versions` 的列表里却没有新版本（它还自己打印 `cache revalidated`），
+    //    `npm pack <pkg>@<ver>` 直接报 ETARGET —— 只看这两条会得出「发布失败」的**错误结论**。
+    //    第二次 publish 才暴露真相：registry 回「cannot publish over the previously published
+    //    versions: <ver>」，即版本其实已经在上面了。
+    //    权威判据是**直接取 tarball**：URL 由包名 + 版本唯一决定，没有 packument 那层缓存。
+    const url = 'https://registry.npmjs.org/' + r.pkg + '/-/' + r.pkg + '-' + want + '.tgz'
+    const head = run('curl.exe', ['-s', '-o', 'NUL', '-w', '%{http_code}', '--max-time', '40', url], { tag: 'curl' })
+    const httpCode = head.out.trim()
+    check(`${r.pkg}@${want}: tarball 可直接取到（HTTP 200）`, httpCode === '200',
+      'HTTP ' + httpCode + ' ' + head.err.slice(0, 120))
 
-    // ② 真的把 tarball 拉下来并核对内容（不是只看 registry 的元数据）
-    const pack = run('npm.cmd', ['pack', r.pkg + '@' + want, '--json'], { cwd: work, tag: 'fetch' })
-    let files = []
-    try {
-      const json = JSON.parse(pack.out.slice(pack.out.indexOf('[')))
-      files = (json[0] && json[0].files || []).map((f) => f.path)
-    } catch (_) {}
-    check(r.pkg + '@' + want + ': 能拉到 tarball', files.length > 0, pack.err.slice(0, 200))
+    const tgz = path.join(work, r.pkg + '-' + want + '.tgz')
+    run('curl.exe', ['-s', '-L', '--max-time', '90', '-o', tgz, url], { tag: 'get' })
+    const size = existsSync(tgz) ? readFileSync(tgz).length : 0
+    check(`${r.pkg}@${want}: tarball 下载成功`, size > 1000, size + ' 字节')
+
+    // ⚠ Windows 的 tar 会把 `C:\...` 当成远程主机名（"Cannot connect to C: resolve failed"），
+    //    因此凡是传绝对路径都必须加 --force-local。
+    const list = run('tar.exe', ['-tzf', tgz, '--force-local'], { tag: 'tar' })
+    const files = list.out.split('\n').map((s) => s.trim().replace(/^package\//, '')).filter(Boolean)
+    check(`${r.pkg}@${want}: tarball 可解出文件列表`, files.length > 0, list.err.slice(0, 160))
     for (const m of r.must) {
-      check(r.pkg + '@' + want + ': 发布出来的包内含 ' + m, files.includes(m))
-    }
-    // 顺手核对包内 client.js 与本地一致（发布内容漂移会让"我验证过的"变成谎话）
-    const tgz = path.join(work, (pack.out.match(/"filename"\s*:\s*"([^"]+)"/) || [])[1] || '')
-    if (tgz && existsSync(tgz)) {
-      const list = run('tar', ['-tzf', tgz], { cwd: work, tag: 'tar' })
-      check(r.pkg + '@' + want + ': tarball 可解出文件列表', list.out.trim().length > 0, list.err.slice(0, 120))
+      check(`${r.pkg}@${want}: 发布出来的包内含 ${m}`, files.includes(m))
     }
   }
   try { rmSync(work, { recursive: true, force: true }) } catch (_) {}

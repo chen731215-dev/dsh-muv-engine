@@ -57,13 +57,17 @@ export function clientSource() {
  * @returns {string} the function's full source text
  */
 export function extractFunction(src, name) {
-  const marks = ['    function ' + name + '(', '      function ' + name + '(',
-    '    async function ' + name + '(', '      async function ' + name + '(']
-  for (const mark of marks) {
-    const start = src.indexOf('\n' + mark)
-    if (start < 0) continue
-    const text = sliceBalanced(src, start + 1)
-    if (text) return text
+  // 声明必须带缩进才认（字符串里那份没有缩进）：client.js 里的函数分布在 4/6/8 空格
+  // 三种缩进层级（模块级 / 卫生 pass 那层 / 装饰器那层），所以逐层试。
+  const forms = ['function ' + name + '(', 'async function ' + name + '(']
+  for (const form of forms) {
+    for (let indent = 4; indent <= 12; indent += 2) {
+      const mark = '\n' + ' '.repeat(indent) + form
+      const start = src.indexOf(mark)
+      if (start < 0) continue
+      const text = sliceBalanced(src, start + 1)
+      if (text) return text
+    }
   }
   throw new Error('function not found in lib/client.js: ' + name)
 }

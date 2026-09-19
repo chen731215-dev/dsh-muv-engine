@@ -587,3 +587,42 @@ node test-png-card.mjs; node test-muv-parser.mjs; node test-preset-resolve.mjs  
 （`<choices>` 已有 DOM 层的 `muvSanitizeNode`；围栏文档可用已有的 `findTextRange` 定位并替换那一个文本节点）。
 **硬约束**：两个门禁与全部套件必须保持全绿；逐类迁移、逐类提交；某类标记若无法在 DOM 补丁下落对，就停下来报，
 不要为了 markdown 把已经跑通的状态栏搞坏。
+
+### 15.5 真浏览器端到端：fixture 必须带真实运行时（一条重要教训）
+
+`verify-visual.mjs` 生成的 fixture 页面**必须注入 `lib/client.js` 里逐字提取的高度监听运行时**
+（`heightRuntimeSource()` + `withHeightRuntime()`）。原因是一个真实发生过的误读：
+
+- 早先的 fixture 只是**静态 HTML 快照**，页面里没有客户端运行时 → `ensureFrameHeightListener` 从未注册 →
+  iframe 永远停在 600px。红队读这份产物时得出了「高度仍卡在 600px、度量被污染」的结论 ——
+  **结论是错的，错因在 fixture 缺运行时，不在度量**。
+- 补上真实运行时后，同一批 fixture 在真 Edge 里**自己就撑开了**：
+
+| fixture | iframe 高度（浏览器实测） | 说明 |
+| --- | --- | --- |
+| `tavern-inline`（主页文档） | **2056px** | 原卡死 600px；与内容包围盒 2055–2083 吻合 |
+| `real-tavern`（服务端产出的真消息 · 酒馆路径） | **903px** | |
+| `real-dsh`（同一真消息 · DSH 原生路径） | **939px** | |
+
+**教训**：验证产物本身也要被验证。一份"看起来是端到端"的 fixture，如果少了运行时，
+它测的其实是另一个东西 —— 而且它会**生产出看起来很有说服力的错误结论**。
+
+### 15.6 真实消息端到端结果（`rewritten.txt`，213,953 字，服务端 `apply-regex-card` 产出）
+
+| 路径 | 输出 | iframe | 裸围栏 | 裸 `<!DOCTYPE>` |
+| --- | --- | --- | --- | --- |
+| 酒馆 `_tavernRenderTags` | 239,421 字 | **1** | **0** | **0** |
+| DSH 原生（`renderFencedHtml`） | — | 1 | 0 | 0 |
+
+截图 `real-tavern.png` 里可见：卡片整页界面完整渲染在自适应 iframe 内（导航胶囊 / 立绘 / 五官感受 / 当前主播）、
+**行动选项 A/B/C 三个按钮正常**、`<VariableInsert>` 折叠成「变量更新」、
+**上下两条普通消息的排版未被污染**（卡的 `html,body{height:100%}` 没有泄漏出 iframe）。
+
+### 15.7 新发现的小缺陷（P2，未修）
+
+酒馆路径的输出里有**一行裸属性文本**漏出来（截图里可见）：
+```
+{"era-message-key"="era_mk_17898382494898_1641vy","era-message-type"="assistant"}
+```
+像是 `<era_data …>` 这类标签的属性被当文本留下（标签剥离规则没覆盖这种形态）。
+不影响功能，但用户看得见，属于「裸标签外泄」这一类，记在这里备查。

@@ -129,7 +129,11 @@ if (mode === 'post') {
     //    第二次 publish 才暴露真相：registry 回「cannot publish over the previously published
     //    versions: <ver>」，即版本其实已经在上面了。
     //    权威判据是**直接取 tarball**：URL 由包名 + 版本唯一决定，没有 packument 那层缓存。
-    const url = 'https://registry.npmjs.org/' + r.pkg + '/-/' + r.pkg + '-' + want + '.tgz'
+    // ⚠ 再加一个 cache-buster：刚发布时**裸 tarball URL 可能返回被缓存的 404**
+    //    （实测 2026-09-20：`…-0.2.12.tgz` 连续多次 404，而 `…-0.2.12.tgz?cb=1` 立刻 200，
+    //      `npm install <pkg>@<ver>` 也成功）。那是 CDN/代理的**负缓存**，不是发布失败。
+    //     查询串不影响取到的内容，但会绕开那条负缓存。
+    const url = 'https://registry.npmjs.org/' + r.pkg + '/-/' + r.pkg + '-' + want + '.tgz?cb=' + Date.now()
     const head = run('curl.exe', ['-s', '-o', 'NUL', '-w', '%{http_code}', '--max-time', '40', url], { tag: 'curl' })
     const httpCode = head.out.trim()
     check(`${r.pkg}@${want}: tarball 可直接取到（HTTP 200）`, httpCode === '200',

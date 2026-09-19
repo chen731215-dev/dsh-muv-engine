@@ -543,6 +543,17 @@ comment: "[initvar]变量初始化勿开"    enabled: false
 > `Cannot connect to C: resolve failed`。）
 > 另外：`npm publish` 之后**再跑一次**是安全的 —— 版本已存在时它会以 E403 明确拒绝，
 > 而这个拒绝本身就是「已发布」的可靠证据。
+>
+> **补充（同一天第二次踩到，形态不同）**：tarball URL 本身也会返回**被缓存的 404**。
+> 实测 `…/dsh-muv-table-0.2.12.tgz` 连续多次 404，而 `…/dsh-muv-table-0.2.12.tgz?cb=1`
+> **立刻 200**，`npm install dsh-muv-table@0.2.12` 也成功。那是 CDN/代理的**负缓存**。
+> 所以 tarball 判据要**带一个 cache-buster 查询串**：
+> ```
+> curl.exe -s -o NUL -w "%{http_code}" "https://registry.npmjs.org/<pkg>/-/<pkg>-<ver>.tgz?cb=$(date +%s)"
+> ```
+> 三种"看起来像失败"的形态至此齐了：publish 打印成功但没发出去（不存在）、
+> packument 返回旧缓存（版本列表里看不到）、tarball 负缓存（取不到）。
+> **只有「带 cache-buster 的 tarball 200」+「包内文件核对」才算发布成功。**
 
 > **PC-1｜高度自动撑高必须在真实页面复验后才能宣布可用。**
 > 现状：`cardHtmlIframe` / 帧高引导脚本 / `onMuvFrameHeightMessage` 从写出至今**从未在 3080 的真实页面里执行过**

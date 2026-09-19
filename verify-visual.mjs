@@ -40,16 +40,64 @@ function check(name, cond, detail) {
   else { fail++; console.log('  FAIL ' + name + (detail ? '  -> ' + detail : '')) }
 }
 
-/** 花括号配平地截出一个具名函数的完整源码。 */
+/**
+ * `/` 在这里是正则字面量还是除号？（词法上不可判定，只能看前文）
+ *
+ * 前一个有效字符是标识符字符 / `)` / `]` / 引号 → 除号；否则（`( , = : [ ! & | ? { } ;`
+ * 或行首）→ 正则；另外前面是一个**关键字**（`return` / `typeof` / `case`…）时也是正则。
+ */
+function regexAllowed(src, j, prev) {
+  if (!prev) return true
+  if (!/[A-Za-z0-9_$)\]'"`]/.test(prev)) return true
+  const m = /([A-Za-z_$][\w$]*)\s*$/.exec(src.slice(Math.max(0, j - 16), j))
+  return !!(m && /^(?:return|typeof|instanceof|in|of|new|delete|void|case|do|else|yield|await)$/.test(m[1]))
+}
+
+/**
+ * 花括号配平地截出一个具名函数的完整源码。
+ *
+ * **必须跳过注释、字符串、模板串与正则字面量。** 老实计数器会被源码里的
+ * `'function m(){try{'` 骗到（那是引导脚本文本，不是真代码），函数被从中间截断，
+ * 报出来是看不懂的 `SyntaxError: Invalid or unexpected token`，而真正的错因在提取器。
+ * 这个洞 `test-client-render.mjs` 和这个文件**各踩了一次** —— 所以下面的扫描器
+ * 才是这个样子，别把它简化回去。
+ */
 function extractFunction(src, name) {
   const start = src.indexOf('function ' + name + '(')
   if (start < 0) throw new Error('找不到函数 ' + name)
-  const i = src.indexOf('{', start)
+  const open = src.indexOf('{', start)
+  if (open < 0) throw new Error('找不到函数体 ' + name)
   let depth = 0
-  for (let j = i; j < src.length; j++) {
+  let prev = ''
+  for (let j = open; j < src.length; j++) {
     const c = src[j]
-    if (c === '{') depth++
-    else if (c === '}') { depth--; if (depth === 0) return src.slice(start, j + 1) }
+    const d = src[j + 1]
+    if (c === '/' && d === '/') { const e = src.indexOf('\n', j); if (e < 0) break; j = e; prev = '\n'; continue }
+    if (c === '/' && d === '*') { const e = src.indexOf('*/', j + 2); if (e < 0) break; j = e + 1; continue }
+    if (c === "'" || c === '"' || c === '`') {
+      for (j++; j < src.length; j++) {
+        if (src[j] === '\\') { j++; continue }
+        if (src[j] === c) break
+      }
+      prev = c
+      continue
+    }
+    if (c === '/' && regexAllowed(src, j, prev)) {
+      let inClass = false
+      for (j++; j < src.length; j++) {
+        const e = src[j]
+        if (e === '\\') { j++; continue }
+        if (e === '\n') break
+        if (e === '[') inClass = true
+        else if (e === ']') inClass = false
+        else if (e === '/' && !inClass) break
+      }
+      prev = '/'
+      continue
+    }
+    if (c === '{') { depth++; prev = c; continue }
+    if (c === '}') { depth--; prev = c; if (depth === 0) return src.slice(start, j + 1); continue }
+    if (!/\s/.test(c)) prev = c
   }
   throw new Error('花括号不配平 ' + name)
 }
@@ -89,8 +137,16 @@ function moduleVarStatements(src) {
       if (c === '(' || c === '[' || c === '{') depth++
       else if (c === ')' || c === ']' || c === '}') depth--
       else if (c === ';' && depth === 0) { i++; break }
-      // 无分号声明（ASI）：深度 0 处遇到空行就收尾
-      else if (c === '\n' && depth === 0 && /^\s*\n/.test(src.slice(i + 1))) break
+      // 无分号声明（ASI）：深度 0 处遇到换行，且**表达式已经完整**时收尾。
+      //
+      // 判据是「最后一个非空白字符不是运算符」，**不是**「遇到空行」——
+      // 多行字符串拼接会在中间夹空行，按空行收尾会把语句截成半截表达式，
+      // 报出来是 `SyntaxError: Invalid or unexpected token`，而真正的错因是提取器自己
+      // （这个坑我踩过一次，排查了很久）。
+      else if (c === '\n' && depth === 0) {
+        const sofar = src.slice(start, i).replace(/\s+$/, '')
+        if (!/[+\-*/%.,([{=:?&|!<>]$/.test(sofar)) break
+      }
     }
     const stmt = src.slice(start, i).trim()
     const rhs = stmt.replace(/^\s*var\s+[A-Za-z_$][\w$]*\s*=\s*/, '')
@@ -121,10 +177,13 @@ function buildFrom(src, names, deps, ret) {
     have.add(n)
     const body = extractFunction(src, n)
     out += body + '\n'
+    // 只把**带缩进的声明**当成依赖。函数体里的文本也包含源码片段（引导脚本字符串里
+    // 就写着 `function m(`），不加这条会把字符串里的名字当成真函数去提取 ——
+    // 这正是 `test-client-render.mjs` 踩过的第二个洞，同一套判据。
     for (const m of body.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
       const id = m[1]
       if (have.has(id)) continue
-      if (new RegExp('function\\s+' + id + '\\s*\\(').test(src)) queue.push(id)
+      if (new RegExp('\\n[ \\t]+function\\s+' + id + '\\s*\\(').test(src)) queue.push(id)
     }
   }
   // 把被引用、但没在抽出代码里声明的模块级常量按原文拼到最前面。
@@ -152,7 +211,18 @@ function buildFrom(src, names, deps, ret) {
     for (const k of need) console.log(`[debug] --- ${k} 尾部: ${JSON.stringify(pool[k].slice(-60))}`)
   }
   const keys = Object.keys(deps)
-  const fn = new Function(...keys, header + '\n' + out + '\nreturn ' + ret)
+  let fn
+  try {
+    fn = new Function(...keys, header + '\n' + out + '\nreturn ' + ret)
+  } catch (e) {
+    // 把「提取了哪些函数」一起报出来：提取器出错时，裸 SyntaxError 完全指不到问题在哪
+    // （前两次都是报在抽取到的中间某一行，看不出是谁的锅）。
+    throw new Error(
+      `提取出来的代码无法解析（提取器可能截断了某个函数）：${e.message}\n` +
+      `  已提取: ${[...have].join(', ')}\n` +
+      `  已注入常量: ${[...need].join(', ') || '（无）'}`
+    )
+  }
   return fn(...keys.map((k) => deps[k]))
 }
 
@@ -199,7 +269,11 @@ function fenceBodyOf(text) {
     if (/^[ \t]{0,3}`{3,}[ \t]*[a-zA-Z]*[ \t]*$/.test(lines[i])) fenceLines.push(i)
   }
   if (fenceLines.length !== 2) return null
-  return lines.slice(fenceLines[0] + 1, fenceLines[1]).join('\n')
+  // 正文 = 开围栏那一行的**行尾之后**，到收围栏那一行的**行首之前** —— 含中间那个换行符。
+  // 这必须与 renderFencedHtml 的 `source.slice(open.lastIndex, close.start)` 对齐：
+  // 少这一个字符会让「逐字相等」永远差 1（我为这个 off-by-one 白排查了一轮，
+  // 而它长得像「产品改写了正文」—— 判据错会伪装成产品缺陷）。
+  return lines.slice(fenceLines[0] + 1, fenceLines[1]).join('\n') + '\n'
 }
 
 /** 与 renderFencedHtml 内部**同一套**判据：只看正文开头，不看信息串。 */
@@ -410,6 +484,78 @@ for (const [cardName, t] of biggest) {
     out)
 }
 check('高度实测用例已生成', hi >= 2, '只生成了 ' + hi + ' 个')
+
+// ── 5. 酒馆路径：`_tavernRenderTags` 会不会把围栏整页文档转成 iframe？ ────────
+//
+// 为什么单独测：`renderFencedHtml` 的调用点**全在 `beautifyMuv`（DSH 原生路径）里**，
+// 而酒馆面板走的是另一条：`window._tavernRenderTags`（client.js:830-931）→
+// `dsh-tavern-v2` 的 `beautifyContentEl` → `contentEl.innerHTML = html`（bundle:5686）。
+//
+// 如果这条路径不把「围栏包住的整页 HTML」转成 iframe，那段 `<!DOCTYPE html><html>…`
+// 就会被 `innerHTML` 直接解析进聊天 DOM —— `<style>` 是**全局生效**的，卡的
+// `html,body{height:100%}` 与绝对定位会泄漏到整个面板。这正是「状态栏只剩一个头 /
+// 满屏代码文本 / 内容列被压扁」这类症状的机制。
+console.log('\n=== 5. 酒馆路径（_tavernRenderTags）===')
+const SRC_RENAMED = SRC.replace('window._tavernRenderTags = function', 'function _tavernRenderTags')
+let renderTavern = null
+try {
+  renderTavern = buildFrom(
+    SRC_RENAMED,
+    ['_tavernRenderTags'],
+    { MUV_CARD_SANDBOX: sandboxOf(SRC), window: globalThis, document: undefined },
+    '_tavernRenderTags'
+  )
+} catch (e) {
+  console.log('  （拿不到 _tavernRenderTags：' + e.message + '）')
+}
+
+if (renderTavern) {
+  let withoutIframe = 0
+  for (const t of targets) {
+    const out = String(renderTavern(t.rep) || '')
+    const hasIframe = out.includes('<iframe')
+    const fences = (out.match(/`{3,}/g) || []).length
+    const hasDoctype = /<!doctype\s+html/i.test(out)
+    if (!hasIframe) withoutIframe++
+    console.log(`  ${t.card} / ${t.script}: 输出=${out.length}字 iframe=${hasIframe} 裸反引号段=${fences} 裸<!DOCTYPE>=${hasDoctype}`)
+  }
+  check('酒馆路径也把围栏整页文档转成 iframe（不转 → 卡 CSS 会泄漏进聊天 DOM）',
+    withoutIframe === 0, `${withoutIframe}/${targets.length} 条没有 iframe，原样带着围栏和文档交出去`)
+
+  // 这条路径的**本职**是媒体/标签渲染，顺便确认它确实在做这件事
+  const mediaIn = '<video src="a.mp4"></video><插图>海边</插图>'
+  const mediaOut = String(renderTavern(mediaIn) || '')
+  check('酒馆路径：带 src 的 <video> 补了 controls', /<video[^>]*\bcontrols\b/.test(mediaOut), mediaOut.slice(0, 200))
+  check('酒馆路径：<插图> 转成了插画块', mediaOut.includes('muv-illustration'), mediaOut.slice(0, 200))
+}
+
+// ── 6. 视觉证据：把酒馆路径的输出真的内联进聊天 DOM ─────────────────────────
+//
+// 同一个 fixture 在修复前后都能用：修复前它是「卡 CSS 泄漏、整条消息被撑爆」的现场，
+// 修复后同一页应该变成「一个高度自适应的 iframe」。这样"修复有效"是可看图对比的，
+// 而不是只看断言变绿。
+console.log('\n=== 6. 内联后果的视觉证据 ===')
+if (renderTavern && targets.length) {
+  const t = targets.find((x) => x.card.indexOf('足控') >= 0) || targets[0]
+  const inlined = String(renderTavern(t.rep) || '')
+  // ⚠ 绝对不能把卡文档直接拼进 <script>：它内含未转义的 </script>，会把**宿主页面自己**
+  //   搞坏（小黄鸭在这一步白折腾了几轮）。JSON.stringify 之后再转义 </script 与 <!--。
+  const asJs = JSON.stringify(inlined).replace(/<\/script/gi, '<\\/script').replace(/<!--/g, '<\\!--')
+  const body = [
+    '<div class="chat">',
+    '  <div class="msg">上一条消息：这段排版应保持正常。</div>',
+    '  <div class="msg" id="tavernMsg"><span style="color:#8b93a1">（酒馆渲染结果在此 innerHTML 注入）</span></div>',
+    '  <div class="msg">下一条消息：<b>如果这段的排版被改变、页面被撑长，就说明卡的 CSS 泄漏了。</b></div>',
+    '</div>',
+    '<script>document.getElementById("tavernMsg").innerHTML = ' + asJs + ';<\/script>',
+  ].join('\n')
+  const file = path.join(OUT, 'tavern-inline.html')
+  writeFileSync(file, PAGE(
+    `酒馆路径内联「${t.card} / ${t.script}」的后果 —— 含 iframe=${inlined.includes('<iframe')}`,
+    body, 'tavern-inline'), 'utf8')
+  fixtures.push({ name: 'tavern-inline', file, png: path.join(OUT, 'tavern-inline.png') })
+  console.log(`  已生成 tavern-inline.html（输出 ${inlined.length} 字，含 iframe=${inlined.includes('<iframe')}）`)
+}
 
 // ── 汇总 ────────────────────────────────────────────────────────────────────
 console.log(`\n=== 断言: ${pass} 通过, ${fail} 失败 ===`)

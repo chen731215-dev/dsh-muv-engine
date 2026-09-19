@@ -2,6 +2,26 @@
 
 ## v0.3.6 (2026-09-20)
 
+### 🔴 更正：llow-same-origin 已回退（0.3.6 引入的安全回归）
+
+0.3.6 曾把 `MUV_CARD_SANDBOX` 放开为 `'allow-scripts allow-same-origin'`，
+**理由是错的，已回退为 'allow-scripts'**。复核推翻了两点：
+
+1. **论据不成立**：当时称「卡要以 ES module 从 CDN 拉 Vue/Pinia、要读写 localStorage，
+   不透明来源会失败」。实测那张 210219 字节的状态栏 HTML 里，`jsdelivr` 只出现在
+   **内联脚本的字符串文本**中，不是外部 script src，也没有 `import`；URL 只有图片与
+   视频。本页面也**没有任何 CSP** 兜底。
+2. **危险是真实的**：`allow-scripts` + `allow-same-origin` 同时给出会让 srcdoc
+   文档**继承父页来源**，`window.parent.document` 变成 DSH 的真实父文档。而卡自己的
+   代码**正好就在探测它**（`window.parent.document` / `window.opener.document` /
+   `window.parent.parent.document` 三段）——旧沙箱下全走 catch、等于空转，放开后立刻
+   生效：可读写 DSH 页面 DOM、带登录凭据打 `/api/*`、读 `parent.location`。
+
+「SillyTavern 也不沙箱」不能用来论证：ST 的卡跑在 ST 自己的 origin 里，受害面是 ST；
+DSH 里同一个 iframe 与前端**同源**，受害面是 DSH。
+
+仍需要同源能力的卡，请做成**显式 opt-in**（全局开关或按卡白名单），不要改默认值。
+
 ### ✨ 让角色卡自带的整页 HTML 真的渲染出来
 
 社区卡（如「足控天堂」）的 `主页` / `正文美化` / `ERA状态栏` 三条正则，产出的
@@ -23,17 +43,6 @@
 - 只有模型随手写的**裸提示词**（`<audio>轻快的BGM</audio>`，无 src）才降级成文字占位
 - 抽成具名函数 `renderMediaTags()`，便于回归测试直接取源码执行
 
-### ⚠️ iframe 沙箱放开到 `allow-scripts allow-same-origin`
-
-只给 `allow-scripts` 会让文档拿到**不透明来源**：`localStorage` 直接抛异常，
-从 CDN 以 ES module 拉 Vue/Pinia 也可能失败——而卡的 HTML 正是这么写的。
-
-**安全含义必须说清楚**：两者同时给出，等价于让卡里的 JavaScript 以「本站一等公民」
-身份运行，能碰到父文档、读写本来源的 cookie 与 storage。**卡是第三方代码，这是一次
-真实的信任决策。** 之所以默认开启：SillyTavern 对卡的 HTML/JS 完全不做沙箱，本插件
-开了之后仍比它更严（禁顶层跳转、禁表单提交、禁弹窗）。不信任某张卡时，把
-`MUV_CARD_SANDBOX` 改回 `'allow-scripts'` 即可——状态栏的**结构化**渲染不走 iframe，
-不受影响。
 
 ## v0.3.5 (2026-09-20)
 

@@ -56,9 +56,21 @@ B. 先在入口扎营
   B_header: `<p>『📅2026年8月26日|⏰10:00|📍遗迹入口』</p>${MARKDOWN}
 <p>安柏压低声音：「这里的风不对劲。」</p>
 <p>&lt;StatusPlaceHolderImpl/&gt;</p>`,
+  // 目标里明确要求「插画与视频」，但此前只在字符串层验过。
+  // 这条给出**浏览器实测**的基线：DSH 原生路径目前对媒体标签一个渲染器都没有
+  // （`renderMediaTags` 唯一调用点挂在酒馆路径的 `_tavernRenderTags` 上）。
+  C_media: `${MARKDOWN}
+<p>&lt;插图&gt;海边日落&lt;/插图&gt;</p>
+<p>&lt;video src="https://example.invalid/a.mp4"&gt;&lt;/video&gt;</p>
+<p>&lt;audio src="https://example.invalid/b.mp3"&gt;&lt;/audio&gt;</p>`,
 }
 
-const NEEDS = { A_choices: 'choiceBtns', B_header: 'statusBars' }
+/** 每条消息「该渲染出来的东西」——**两个方向都要钉**：markdown 不能丢，功能也不能丢。 */
+const NEEDS = {
+  A_choices: ['choiceBtns'],
+  B_header: ['statusBars'],
+  C_media: ['videos', 'illustrations'],
+}
 
 const page = `<!DOCTYPE html>
 <html lang="zh"><head><meta charset="utf-8"><title>decorate-dom</title>
@@ -91,6 +103,8 @@ ${Object.keys(MESSAGES).map((k) => `  <div class="cap">${k}</div>\n  <div class=
         + ' choiceBtns=' + count(k, '.muv-choice-btn')
         + ' statusBars=' + count(k, '.muv-statusbar-wrap')
         + ' iframes=' + count(k, 'iframe')
+        + ' videos=' + count(k, 'video') + ' audios=' + count(k, 'audio')
+        + ' imgs=' + count(k, 'img') + ' illustrations=' + count(k, '.muv-illustration')
         + ' literalStars=' + (/\\*\\*/.test(txt) ? 1 : 0);
       var pre = document.createElement('pre');
       pre.className = 'verdict';
@@ -173,13 +187,14 @@ for (const raw of verdicts) {
   seen.add(key)
   const num = (k) => Number((new RegExp('\\b' + k + '=(\\d+)').exec(v) || [])[1] || 0)
   const markdownKept = num('strong') >= 1 && num('h2') >= 1 && num('pre') >= 1 && num('li') >= 1
-  const need = NEEDS[key] || 'choiceBtns'
-  const featureOk = num(need) >= 1
+  const needs = NEEDS[key] || ['choiceBtns']
+  const featureOk = needs.every((n) => num(n) >= 1)
   const ok = markdownKept && featureOk
   if (!ok) bad++
   console.log(`\n  [${key}] ${ok ? 'PASS' : 'FAIL'}`)
   console.log('    ' + v)
-  console.log(`    markdown 存活=${markdownKept ? '是' : '**否**'}   ${need}>=1=${featureOk ? '是' : '**否**'}`)
+  console.log('    markdown 存活=' + (markdownKept ? '是' : '**否**') +
+    '   ' + needs.map((n) => n + '=' + num(n)).join(' '))
 }
 // 防空循环：每条消息都必须有结果
 for (const k of Object.keys(MESSAGES)) {

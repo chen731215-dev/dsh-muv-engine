@@ -576,10 +576,17 @@ node test-png-card.mjs; node test-muv-parser.mjs; node test-preset-resolve.mjs  
 | 消息 | 标记 | markdown | 该渲染的东西 | 结论 |
 | --- | --- | --- | --- | --- |
 | `A_choices` | 纯 `<choices>` | 存活 | 选项按钮 ×2 | **PASS**（第一类已修） |
-| `B_header` | `『📅…\|⏰…\|📍…』` 表头 + `<StatusPlaceHolderImpl/>` | **全灭** | 状态栏已出现 ×1 | **FAIL**（第二类待修） |
+| `B_header` | `『📅…\|⏰…\|📍…』` 表头 + `<StatusPlaceHolderImpl/>` | 存活 | 状态栏 ×1 | **PASS**（第二类已修） |
+| `C_media` | `<插图>` + `<video src>` + `<audio src>` | 存活 | 播放器 / 插画块 | **FAIL**（④ 的基线：`videos=0 illustrations=0`） |
 
-`B_header` 的 `strong=0 h2=0 pre=0 li=0` 就是第二类的验收基线：
-修好之后它必须变成 `strong=1 h2=1 pre=1 li=2` **且** `statusBars>=1`。
+两个"修复前"的基线都靠 `MUV_CLIENT_SRC` 指向旧源码取得，且都实测复现过：
+- 第一类：`2994c2c` 上 `strong/h2/pre/li = 0/0/0/0`（选项仍有 2 个）→ 修复后 `1/1/1/2`；
+- 第二类：`ce27b39` 上 `strong/h2/pre/li = 0/0/0/0`（状态栏仍有 1 个）→ 修复后 `1/1/1/2`。
+
+`C_media` 是 ④ 的验收基线：修好之后必须 `videos>=1` **且** `illustrations>=1`，同时 markdown 仍在。
+**注意它的 markdown 现在是"存活"的** —— 因为这条消息没有任何会让 `beautifyMuv` 触发整条替换的标记。
+所以 ④ **不能**用"往字符串管线里加媒体渲染"的办法实现，否则整条替换会回来、markdown 又全灭；
+它必须走第一/二类已经确立的 **DOM 段补丁** 路线。
 
 | 项 | 结果 |
 | --- | --- |
@@ -675,6 +682,19 @@ node test-png-card.mjs; node test-muv-parser.mjs; node test-preset-resolve.mjs  
 顺带修掉一处**既有**不一致：断行那套认全角 `）`，剥前缀那套只认半角 `)`，
 于是 `2）丁` 会被断成一行却留着 `2）` 前缀。
 
+**三、静默的相互牵连：一个 `try` 包住多步 = 前一步失败会悄悄带走后面几步。**
+卫生 pass 原来把 4 个渲染步骤挤在**同一个 `try`** 里。一次探针少注入了一个依赖 →
+表头折叠抛 `ReferenceError` → **后面几类（含选项按钮）的渲染一起没了，而页面不报任何错**
+（表现为"4 项断言同时变红但控制台干净"）。
+改成每步独立 `try` + 各自 `console.error`。
+**这与「过时注释」是同一类缺陷：都不报错，只是让你看到的结果不再是真实原因导致的结果。**
+
+**四、写死的结构假设会在真实产物上静默退化。**
+取状态栏片段原先是写死正则 `/<div class="muv-statusbar-wrap"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/`
+——**假定末尾恰好连着三个 `</div>`**。真实产物不是这样：卡自带整页 HTML 时里面是
+`<iframe…></iframe>`（零个内层 div），空状态是两个 → 匹配不上，于是**静默退化成整条替换**
+（markdown 又全灭）。改成按 div 深度配平扫描：**生成什么就解析什么**。
+**
 **三、环境陷阱补充（与 §5 同类）：改源码/测试文件不要过 PowerShell 的 `Get-Content`/`Set-Content`。**
 `Get-Content` 按 GBK 解码、`Set-Content` 再写回 UTF-8，中文会整成乱码 + 语法错误
 （实际发生：一个自写的验证脚本被改成乱码）。

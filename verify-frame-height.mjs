@@ -130,10 +130,16 @@ for (const [name, rows] of Object.entries(byPayload)) {
     console.log('    起始 ' + String(r.start).padStart(4) + 'px → 最终 ' + String(r.final).padStart(6) + 'px'
       + '   报回值序列 ' + JSON.stringify(r.reports.slice(-4)))
   }
-  const finals = [...new Set(rows.map(r => r.final))]
-  check('「' + name + '」三档起始高度收敛到同一值（' + finals.join('/') + '）', finals.length === 1,
+  // 「收敛」的判据必须和实现里的**死区**一致：差值 <8px 时父页故意不再改高度
+  // （防抖动引发连续重排）。视口相关的卡（ERA 状态栏里有按视口定位的元素）会落在
+  // 895/889 这种同一死区内的小差异上 —— 那是设计要的行为，不是不收敛。
+  // 所以判据是「三档最终值的极差 ≤ 8px」，而不是「完全相等」。
+  const finals = rows.map(r => r.final)
+  const spread = Math.max(...finals) - Math.min(...finals)
+  check('「' + name + '」三档起始高度收敛到同一值（极差 ' + spread + 'px ≤ 8px 死区；'
+    + [...new Set(finals)].join('/') + '）', spread <= 8,
     JSON.stringify(rows.map(r => r.start + '→' + r.final)))
-  const fin = rows[0].final
+  const fin = finals[0]
   if (/正文美化/.test(name)) {
     // 内容只有 ~250px：必须能缩到内容高（这就是"视口回显不动点"的对照组）
     check('「' + name + '」能缩小到内容高（不是不动点）', fin < 400, 'final=' + fin)

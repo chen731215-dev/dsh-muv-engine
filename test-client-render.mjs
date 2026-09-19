@@ -702,5 +702,57 @@ check('★ 卫生 pass 每类标记各自 try（一类失败不牵连其它类�
 console.log('  NOTE B_header 的端到端判据（markdown 存活 + statusBars>=1）由主代理的')
 console.log('       verify-decorate-dom.mjs 门禁盯住；本节只钉源码形状与片段提取。')
 
+// ── 13. 原生路径的媒体标签（④）：DOM 段替换 + 属性白名单 ──────────────────────
+//
+// `renderMediaTags` 只在酒馆路径上跑（唯一调用者 `_tavernRenderTags`），原生路径对
+// `<video src>` 完全不可达 —— 模型自己写的媒体标签既不会变成播放器，也没有 controls。
+// 补法是把它做成**DOM 层**的一步（`muvRenderMediaTags`）：只换那一段标签文本。
+// 为什么不复用字符串那条路：媒体产物里没有状态栏片段 ⇒ `applyDecoratedHtml` 会落到
+// 最后手段 `body.innerHTML = html`，把整条消息的 markdown 抹平
+// （实测见 repro-native-media-path.mjs 的「修法岔路」一节）。
+console.log('\n[13] 原生路径媒体标签（DOM）')
+
+const mediaAttrs = /var MUV_MEDIA_ATTRS = \{[\s\S]*?\}/.exec(SRC)
+check('存在媒体属性白名单', !!mediaAttrs)
+check('★ 白名单里没有 on* 事件属性（否则等于把脚本请进 DSH 页面）',
+  !!mediaAttrs && !/\bon[a-z]+\s*:/.test(mediaAttrs[0]), mediaAttrs && mediaAttrs[0].slice(0, 80))
+check('白名单含 src / controls / preload / poster',
+  !!mediaAttrs && ['src', 'controls', 'preload', 'poster'].every(k => new RegExp('\\b' + k + ':').test(mediaAttrs[0])))
+const cloneSrc = extractFunction(SRC, 'muvCloneMediaElement')
+check('★ 拷贝时显式丢掉 on* 属性', /name\.indexOf\('on'\) === 0/.test(cloneSrc), cloneSrc.slice(0, 120))
+check('只拷白名单里的属性', cloneSrc.includes('MUV_MEDIA_ATTRS[name]'))
+const buildSrc = extractFunction(SRC, 'muvBuildMediaElement')
+check('★ 用 DOMParser 解析离线段（不是往活动文档塞 innerHTML）', buildSrc.includes('DOMParser'))
+check('★ 不用 innerHTML', !/\.innerHTML\s*=/.test(buildSrc))
+check('补 controls / preload', /setAttribute\('controls'/.test(buildSrc) && /setAttribute\('preload', 'metadata'\)/.test(buildSrc))
+check('裸提示词降级成文字占位（与字符串路径同一取舍）',
+  buildSrc.includes('muv-video-ph') && buildSrc.includes('muv-audio'))
+check('★ 字符串路径与 DOM 路径**共用同一份判定**（mediaTagDisposition）',
+  extractFunction(SRC, 'renderMediaTags').includes('mediaTagDisposition(')
+  && buildSrc.includes('mediaTagDisposition('), '两条路径各写一份判定会漂移')
+check('判定三分支：media / skip / placeholder',
+  ['media', 'skip', 'placeholder'].every(k => extractFunction(SRC, 'mediaTagDisposition').includes("'" + k + "'")))
+const disposition = (() => {
+  const src = extractFunction(SRC, 'mediaTagDisposition')
+  return new Function(src + '; return mediaTagDisposition')()
+})()
+check('有 src 值 → media', disposition(true, true, true, false) === 'media')
+check('★ src=""（有属性、值为空）→ 仍算 media（真卡 cgFsVid 就是这种）',
+  disposition(true, false, true, false) === 'media')
+check('★ 有属性但根本没有 src 属性 → skip（脚本待填的元素，别降级成 div）',
+  disposition(false, false, true, false) === 'skip')
+check('一个属性都没有的裸提示词 → placeholder',
+  disposition(false, false, false, false) === 'placeholder')
+check('带 <source> 子节点但没 src → media', disposition(false, false, false, true) === 'media')
+check('★ 挂在卫生 pass 上、且是独立的 try（一类失败不牵连其它类）', (() => {
+  const body = extractFunction(SRC, 'muvSanitizeNode')
+  return /try \{ muvRenderMediaTags\(md\) \}/.test(body)
+})())
+const mediaRenderSrc = extractFunction(SRC, 'muvRenderMediaTags')
+check('跳过 <script>/<style> 里的同名标签（代码不是标记）', mediaRenderSrc.includes("'script, style'"))
+check('有收敛上限', /guard < \d+/.test(mediaRenderSrc))
+console.log('  NOTE 真浏览器判据（真元素 + controls + onerror 被丢 + markdown 存活）在')
+console.log('       verify-media-dom.mjs。')
+
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)
 process.exit(fail ? 1 : 0)

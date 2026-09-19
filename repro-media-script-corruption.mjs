@@ -15,6 +15,7 @@
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { readPngCard } from './../dsh-muv-table/lib/png-card.js'
+import { loadClientRenderers } from './test-client-source.mjs'
 
 const FILE = 'C:\\MySpecialFolder\\SillyTavern\\data\\default-user\\characters\\_足控天堂2.png'
 const SRC_NEW = fs.readFileSync(new URL('./lib/client.js', import.meta.url), 'utf8')
@@ -49,8 +50,11 @@ function build(src, names) {
   return new Function('MUV_CARD_SANDBOX', code + '\nreturn { renderMediaTags }')( 'allow-scripts')
 }
 
+// 旧实现：从 git HEAD 的源码里提取（那时还没有 readStartTag/scriptRangesOf 这些 helper，
+// 所以依赖列表是固定的、按老代码写的）。
+// 新实现：直接走共享的提取器（它是自动发现依赖的，源码再重构也不用改这里）。
 const oldImpl = build(SRC_OLD, ['escHtmlBasic', 'renderMediaTags']).renderMediaTags
-const newImpl = build(SRC_NEW, ['escHtmlBasic', 'attrValue', 'dropAttr', 'readStartTag', 'renderMediaTags']).renderMediaTags
+const newImpl = loadClientRenderers().renderMediaTags
 
 const card = readPngCard(FILE)
 const d = card.data

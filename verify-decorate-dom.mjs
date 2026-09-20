@@ -71,6 +71,16 @@ B. 先在入口扎营
 <p>&lt;video src="https://example.invalid/x.mp4" onerror="window.__pwned=1"&gt;&lt;/video&gt;</p>
 <p>&lt;audio controls onerror="window.__pwned=2"&gt;&lt;/audio&gt;</p>
 <p>&lt;插图&gt;&lt;img src=x onerror="window.__pwned=3"&gt;&lt;/插图&gt;</p>`,
+  // 第三类：原生路径缺渲染器 → **标签外泄成裸文本**（不是丢 markdown，是用户直接看到标签）。
+  // E = 变量块/摘要块（泄的是 JSON，最刺眼）；F = speech/char 这类样式标签。
+  E_variable: `${MARKDOWN}
+<p>&lt;UpdateVariable&gt;{"时间":{"日期":"05-20"},"地点":"遗迹入口"}&lt;/UpdateVariable&gt;</p>
+<p>&lt;Abstract&gt;安柏在遗迹入口发现了异常的魔力波动。&lt;/Abstract&gt;</p>`,
+  F_tags: `${MARKDOWN}
+<p>&lt;speech&gt;「这里的风不对劲。」她压低了声音。&lt;/speech&gt;</p>
+<p>&lt;dialogue&gt;「你跟紧我。」&lt;/dialogue&gt;</p>
+<p>&lt;char&gt;安柏&lt;/char&gt;握紧了弓。</p>
+<p>&lt;location&gt;遗迹入口&lt;/location&gt;</p>`,
 }
 
 /** 每条消息「该渲染出来的东西」——**两个方向都要钉**：markdown 不能丢，功能也不能丢。 */
@@ -79,6 +89,8 @@ const NEEDS = {
   B_header: ['statusBars'],
   C_media: ['videos', 'illustrations'],
   D_xss: ['videos', 'illustrations'],
+  E_variable: ['variableBlocks', 'abstracts'],
+  F_tags: ['speechBlocks', 'dialogueBlocks', 'charNames', 'locations'],
 }
 
 const page = `<!DOCTYPE html>
@@ -114,6 +126,16 @@ ${Object.keys(MESSAGES).map((k) => `  <div class="cap">${k}</div>\n  <div class=
         + ' iframes=' + count(k, 'iframe')
         + ' videos=' + count(k, 'video') + ' audios=' + count(k, 'audio')
         + ' imgs=' + count(k, 'img') + ' illustrations=' + count(k, '.muv-illustration')
+        + ' variableBlocks=' + count(k, '.muv-varedit') + ' abstracts=' + count(k, '.muv-abstract')
+        + ' speechBlocks=' + count(k, '.muv-speech') + ' charNames=' + count(k, '.muv-char-name')
+        + ' dialogueBlocks=' + count(k, '.muv-dialogue') + ' locations=' + count(k, '.muv-location')
+        // 第三类真正的用户可见症状：**标签外泄成裸文本**（不是丢 markdown）。
+        // 用字符串查找而不是正则字面量：这段代码在模板字符串里，正则的转义斜杠会被
+        // 模板字符串先吃掉一层，于是正则在中途的斜杠处提前结束、整段脚本语法错误
+        // —— 实测踩过，生成页里连 VERDICT 都没有。
+        // （同理：这段注释里也不能出现反引号，它会终止外层的模板字符串。）
+        + ' rawTags=' + (['<UpdateVariable>', '<Abstract>', '<speech>', '</speech>', '<char>', '</char>']
+            .some(function (s) { return txt.indexOf(s) >= 0 }) ? 1 : 0)
         + ' pwned=' + (typeof window.__pwned === 'undefined' ? 0 : window.__pwned)
         + ' literalStars=' + (/\\*\\*/.test(txt) ? 1 : 0);
       var pre = document.createElement('pre');
@@ -203,12 +225,16 @@ for (const raw of verdicts) {
   const markdownKept = num('strong') >= 1 && num('h2') >= 1 && num('pre') >= 1 && num('li') >= 1
   const needs = NEEDS[key] || ['choiceBtns']
   const featureOk = needs.every((n) => num(n) >= 1)
-  const ok = markdownKept && featureOk
+  // 第三类的用户可见症状是「标签外泄成裸文本」——它和 markdown 是两件事，必须单独钉
+  const needsNoRawTags = key === 'E_variable' || key === 'F_tags'
+  const rawTagsOk = !needsNoRawTags || num('rawTags') === 0
+  const ok = markdownKept && featureOk && rawTagsOk
   if (!ok) bad++
   console.log(`\n  [${key}] ${ok ? 'PASS' : 'FAIL'}`)
   console.log('    ' + v)
   console.log('    markdown 存活=' + (markdownKept ? '是' : '**否**') +
-    '   ' + needs.map((n) => n + '=' + num(n)).join(' '))
+    '   ' + needs.map((n) => n + '=' + num(n)).join(' ') +
+    (needsNoRawTags ? '   裸标签残留=' + (rawTagsOk ? '无' : '**有**') : ''))
 }
 // 防空循环：每条消息都必须有结果
 for (const k of Object.keys(MESSAGES)) {

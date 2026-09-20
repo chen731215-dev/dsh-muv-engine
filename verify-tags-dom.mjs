@@ -122,7 +122,10 @@ if (!m) {
 } else {
   const r = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'))
   console.log('  Edge 实测: ' + JSON.stringify(r))
-  check('speech / dialogue 成型', r.speech === 1 && r.dialogue === 1, JSON.stringify({ s: r.speech, d: r.dialogue }))
+  // 注意是 **2** 个 speech：探针里除了正常那条，最后还有一条
+  // `<speech><img src=x onerror=…></speech>` 用来验"内容不解析 HTML"。
+  check('speech / dialogue 成型（2 个 speech = 正常那条 + XSS 那条）',
+    r.speech === 2 && r.dialogue === 1, JSON.stringify({ s: r.speech, d: r.dialogue }))
   check('char → b.muv-char-name', r.charName === 1, String(r.charName))
   check('引用 → blockquote.muv-quote', r.quote === 1, String(r.quote))
   check('★ location → .muv-location（带 📍 前缀）',

@@ -737,3 +737,65 @@ node test-png-card.mjs; node test-muv-parser.mjs; node test-preset-resolve.mjs  
 ```
 像是 `<era_data …>` 这类标签的属性被当文本留下（标签剥离规则没覆盖这种形态）。
 不影响功能，但用户看得见，属于「裸标签外泄」这一类，记在这里备查。
+
+---
+
+## 16. 收尾状态（本轮结束时的权威快照）
+
+### 16.1 已发布（都用「带 cache-buster 取 tarball + 核对包内文件」验证过）
+
+| 包 | 版本 | 内容要点 |
+| --- | --- | --- |
+| `dsh-muv-engine` | **0.3.9** | ①②围栏/媒体自伤、⑤自动撑高、酒馆围栏转 iframe、P0-1/P0-2、BLOCKER-1、markdown 一类/二类、**④原生路径插画与视频**、**第三类标签渲染（37 项表驱动）+ 内部块防泄漏** |
+| `dsh-muv-table` | **0.2.12** | `[initvar]` 裸 YAML 世界书条目（0.2.11）+ 打包修复（0.2.12） |
+| `dsh-tavern` | 2.4.1 | 状态栏门控 / Zod 读取 / 整页 HTML 与媒体渲染 |
+
+### 16.2 怎么自己验一遍（全部不需要重启 DSH）
+
+```powershell
+$env:MUV_EDGE = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+cd C:\dsh-muv-engine
+node test-status-cascade.mjs   # 84
+node test-client-render.mjs    # 175
+node test-regex-engine.mjs     # 21
+node verify-decorate-dom.mjs   # 六类消息 + 注入安全（真浏览器 + 真实模块 + 真实 _decorateOne）
+node verify-visual.mjs <旧client.js>   # 76：五卡整页文档矩阵 + 真实消息形状 + 酒馆路径
+node verify-statusbar-layout.mjs       # 状态栏单列 + 角色名独立块（真浏览器实测）
+node verify-statusbar-fence.mjs        # 状态栏裸围栏
+node verify-release.mjs pre            # 发布门禁（工作区干净 + HEAD + 包内容）
+```
+
+`verify-decorate-dom.mjs` 支持的六类消息（每类都要求 **markdown 存活** 且 **该渲染的东西真的渲染了**）：
+
+| 消息 | 判据 |
+| --- | --- |
+| `A_choices` | 选项按钮 ≥1 |
+| `B_header` | 状态栏 ≥1 |
+| `C_media` | `<video>` ≥1 且 `<插图>` ≥1 |
+| `D_xss` | 同上 **且** `window.__pwned` 未赋值（属性白名单丢 `on*`） |
+| `E_variable` | 变量折叠卡 ≥1、摘要块 ≥1、**无裸标签残留** |
+| `F_tags` | speech/dialogue/char/location 均 ≥1、**无裸标签残留** |
+
+### 16.3 已知未覆盖（有意留着，不是遗漏）
+
+1. **卡牌专属游戏标签**（赏令接取 / 赏令完成 / 拍卖购入 / 盲盒开启 / 道友收录 / 飞剑回信 / 自由开局）：
+   酒馆路径对它们是「按卡字段渲染信息卡」（上百行 + 每卡色板），**原生路径仍会露成裸标签**。单列一类。
+2. `applyDecoratedHtml` 的**整条替换兜底仍在**（找不到落点时的最后手段）——
+   这是**设计保留**，不是遗留缺陷。它在「装饰先于卫生 pass 的极端时序」下仍可能触发（代码里有说明，未观测到）。
+3. §15.8 那行裸属性文本（`{"era-message-key"=…}`）。
+4. §11.4 `parseInitvar` 保留 YAML 单引号（既有行为，未改）。
+
+### 16.4 必须由用户做的两件事
+
+1. **重启 DSH** —— 3080 上跑的仍是 03:31 的模块，本文件里所有修复都要重启才在界面上生效。
+2. 重启后按 **PC-1**（§15.1）五条复验高度自动撑高，特别是第 5 条：**必须带上修正后的度量（内容包围盒）**，
+   否则会在「正文美化」那类卡上「看起来通过、实际是视口回显」。
+
+### 16.5 一条操作教训（我自己踩的）
+
+`git log --oneline -1` **不带分支名**时打印的是**当前 HEAD**，不是你以为的那个分支。
+我因此把「当前在分支上」误读成「已在 master 上」，于是 `git merge` 变成 no-op 而我没察觉
+（输出看着像"合并成功"）。**判断分支位置要用 `git rev-parse --abbrev-ref HEAD` 和
+`git rev-parse --short <branch>`，不要用 `git log -1` 代替。**
+（同类的还有：`git -C <repo> log -1 --grep=...` 会返回 HEAD —— 它匹配的是提交信息，
+不是"标签指向哪"。）

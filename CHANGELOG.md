@@ -1,5 +1,79 @@
 # Changelog
 
+## v0.3.9 (2026-09-20)
+
+### ✨ 原生路径补上「插画与视频」—— 目标里明确要求的那两项
+
+在此之前，媒体渲染（`renderMediaTags`）与 `<插图>` **只存在于酒馆路径**的
+`_tavernRenderTags` 里；DSH 原生消息路径上模型写 `<video src="…">` / `<插图>…</插图>`
+**一个渲染器都没有**，用户直接看到裸标签文本。
+现在原生路径走 **DOM 段替换**（`muvRenderMediaTags` / `muvRenderIllustrations`）：
+`<video>`/`<audio>` → 带 `controls` 的真实元素，`<插图>` → 占位块，
+`<img>` → `img.muv-img`（只带 `src`/`alt` + 惰性属性）。
+
+**为什么不复用字符串管线**：媒体渲染产物里**没有**状态栏片段 ⇒ `applyDecoratedHtml`
+会落到最后手段 `body.innerHTML = html`，而它的输入是 `innerText` ⇒ **markdown 立刻又全灭**。
+（这条是实测出来的，不是推断；因此 ④ 与后面几类一律走 DOM 段替换。）
+
+### 🔒 媒体/插图渲染的属性白名单（安全）
+
+媒体标签文本**来自模型或角色卡，属不可信输入**。直接 `innerHTML` 等于把
+`onerror=` 请进 DSH 自己的同源页面。现在的做法：用 `DOMParser` 解析**离线文档**，
+再按 `MUV_MEDIA_ATTRS` 白名单逐属性拷贝，**`on*` 一律丢弃**；`<插图>` 的名字走
+`createTextNode`，不解析 HTML。
+独立验证（真浏览器，标签带 `onerror="window.__pwned=1"`、src 指向不存在的域名 ⇒
+只要处理器活着就必然触发）：**`window.__pwned` 未被赋值**；同时确认媒体元素**确实被建出来了**
+（否则「没执行 on*」会因为「压根没渲染」而假绿）。
+
+### ✨ 原生路径的标签渲染（原来大量标签外泄成裸文本）
+
+之前原生路径只处理 `<choices>`/状态栏/变量赋值那几类，其余标签**原样显示给用户**
+（等于把提示词外壳泄漏出去）。现在改成**表驱动**的 `MUV_TAG_RULES`（一处定义，集合不会漂移）：
+
+- **展示类**：`<speech>` `<dialogue>` `<引用|quote>` `<char|character>` `<inner>` `<Drama>`
+  `<story>` `<narrative>` `<action>` `<thought|thinking>`(💭) `<feeling|emotion>` `<expression>`
+  `<pose|posture>` `<location|scene>`(📍) `<time>`(⏰) `<weather>`(🌤️) `<CG>`(🎨)
+  `<inventory|背包>`(🎒折叠卡) `<skill|技能>`(⚔️折叠卡) `<JSONPatch>`(折叠卡) `<sep>` `<hr>`
+- **变量块**：`<UpdateVariable>` / `<VariableEdit>` / `<VariableInsert>` → 折叠卡
+  （原来整块 JSON 糊在屏幕上）
+- **`<Abstract>`** → 摘要块
+- **内部块整段删除**：`<rule_check>` `<rule_*>` `<dungeon_engine>` `<user_setting>`
+  `<system_prompt>` `<status_current_variable>` `<Analysis>` `<style …>`
+  （只删**整块配对**的形态；没有收尾标签的宁可留着，不误删正文）
+
+### 🧩 markdown 保全（延续 0.3.8 的两类，本版再多两类）
+
+这些新增渲染**全部**走 DOM 段替换，只替换标签所在的那一段文本，消息里其余 DOM 原样保留
+⇒ 整条消息的 markdown（`**粗体**`/`##`/代码块/列表）不再被 `body.innerText` → `innerHTML`
+的往返抹掉。真浏览器门禁 `verify-decorate-dom.mjs` 现在覆盖**六类消息**，
+每类都要求 **markdown 存活** 且 **该渲染的东西真的渲染了**（两个方向都钉）：
+
+| 消息 | 判据 |
+| --- | --- |
+| `A_choices` | 选项按钮 ≥1 |
+| `B_header` | 状态栏 ≥1 |
+| `C_media` | `<video>` ≥1 且 `<插图>` ≥1 |
+| `D_xss` | 同上 **且** `window.__pwned` 未赋值 |
+| `E_variable` | 变量折叠卡 ≥1 且摘要块 ≥1 **且无裸标签残留** |
+| `F_tags` | speech/dialogue/char/location 均 ≥1 **且无裸标签残留** |
+
+### 修复：卫生 pass 一个 `try` 包住多步 → 前一步失败静默带走后面几步
+
+一次探针少注入一个依赖 → 表头折叠抛 `ReferenceError` → 选项按钮等后面几类**一起没渲染**，
+而页面不报任何错。现在每步独立 `try` + 各自 `console.error`。
+
+### 测试
+
+`test-client-render` 137 → **175**；`test-status-cascade` 84；`test-regex-engine` 21。
+真浏览器门禁：`verify-decorate-dom`（六类 + 注入安全）、`verify-visual` 76、`verify-statusbar-layout`；
+新增 `verify-tags-dom` 17 项、`verify-varblocks-dom`、`verify-media-dom` 10 项。
+
+### 已知未覆盖
+
+卡牌专属的**游戏标签**（赏令接取 / 赏令完成 / 拍卖购入 / 盲盒开启 / 道友收录 / 飞剑回信 / 自由开局）：
+酒馆路径对它们是「按卡字段渲染信息卡」（上百行 + 每卡色板），原生路径**仍会露成裸标签**，
+单列一类，未做。
+
 ## v0.3.8 (2026-09-20)
 
 > 说明：v0.3.7 是 `allow-same-origin` 的安全回退版，记录在下面 v0.3.6 一节里。

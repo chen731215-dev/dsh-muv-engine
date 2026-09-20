@@ -780,5 +780,42 @@ check('通用块替换：决定不处理时推过这一段继续找（不是 bre
 console.log('  NOTE 真浏览器判据（折叠卡成型 + JSON 美化 + 不解析 HTML + 无注入 + markdown 存活）')
 console.log('       在 verify-varblocks-dom.mjs。')
 
+// ── 15. 第三类之二/之三：展示类标签 + 内部块（表驱动） ────────────────────────
+//
+// 原生路径这些标签一个渲染器都没有（只有酒馆路径 `_tavernRenderTags` 有）：
+// 展示类原样显示成裸标签；而 `<rule_check>` / `<user_setting>` / `<system_prompt>` /
+// `<status_current_variable>` 这类**内部块**更是把提示词工程外壳泄漏给用户。
+// 两者都放进 `MUV_TAG_RULES` 一张表（一处定义，避免集合漂移）。
+console.log('\n[15] 展示类标签 + 内部块（表驱动）')
+
+const rulesDecl2 = /var MUV_TAG_RULES = \[[\s\S]*?\n      \]/.exec(SRC)
+check('存在 MUV_TAG_RULES 表', !!rulesDecl2)
+const rulesSrc2 = rulesDecl2 ? rulesDecl2[0] : ''
+const tagRulesSrc = extractFunction(SRC, 'muvRenderTagRules')
+check('★ 表里有「删掉」类规则（内部块）', /remove: true/.test(rulesSrc2))
+check('表里有折叠卡（details）规则', /details: '/.test(rulesSrc2))
+check('表里有 hr（分隔线）规则', /hr: true/.test(rulesSrc2))
+check('★ 钩进卫生 pass 且是独立 try', extractFunction(SRC, 'muvSanitizeNode').includes('muvRenderTagRules(md)'))
+check('★ 表驱动：遍历一张表而不是逐条 result.replace', tagRulesSrc.includes('MUV_TAG_RULES.length'))
+// 覆盖面：酒馆路径那批标签必须都在表里（少一个 = 原生路径仍会露裸标签）
+const COVERED = ['speech', 'dialogue', 'char', 'character', '引用', 'quote', 'location', 'scene',
+  'pose', 'posture', 'thought', 'thinking', 'feeling', 'emotion', 'expression', 'inner', 'Drama',
+  'story', 'narrative', 'action', 'time', 'weather', 'CG', 'inventory', '背包', 'skill', '技能',
+  'JSONPatch', 'sep', 'hr', 'rule_check', 'dungeon_engine', 'user_setting', 'system_prompt',
+  'status_current_variable', 'Analysis', 'style']
+const missingTags = COVERED.filter(t => !rulesSrc2.includes(t))
+check('★ 酒馆路径的展示/内部标签全部被表覆盖（' + COVERED.length + ' 项）',
+  missingTags.length === 0, '缺: ' + missingTags.join(', '))
+check('★ 简单块用 textContent（不解析 HTML）',
+  !/\.innerHTML/.test(extractFunction(SRC, 'muvSimpleBlock')))
+check('★ <img> 只带 src/alt + 固定属性（不搬 on*）', (() => {
+  const b = extractFunction(SRC, 'muvRenderImages')
+  return b.includes("setAttribute('src'") && b.includes("setAttribute('alt'") && !/on[a-z]+\s*=/.test(b)
+})())
+check('<img> 没有 src 的形态不动它', extractFunction(SRC, 'muvRenderImages').includes('return null'))
+console.log('  NOTE 有意未覆盖：卡牌专属的「游戏标签」（赏令接取 / 拍卖购入 / 盲盒开启 /')
+console.log('       道友收录 / 飞剑回信 / 自由开局 …）—— 酒馆路径要按卡字段做信息卡（上百行），')
+console.log('       另算一类。`<choices>` / `<插图>` / 变量块由各自步骤处理。')
+
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)
 process.exit(fail ? 1 : 0)

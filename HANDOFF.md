@@ -2240,7 +2240,7 @@ HEAD 版  同条件 2 次: 44/2 · 45/1                                       �
    恢复后核对 `md5` 一致再重跑，全绿。**做变异实验前先 `cp lib/client.js` 到仓库外备份 +
    记 `md5`，恢复后核对**（不比 `git stash`，§26.2）。
 
-### 32.7 症状 3 的定位（**本轮故意不改**，下一轮第一顺位）
+### 32.7 症状 3 的定位（第 32 轮定位 → **第 33 轮已修**，见本节末 ★）
 
 `Cannot read properties of undefined (reading 'object')` 的真因**不是**缺全局，而是
 **我们给的 `window.z` 比 ST 窄一档**：
@@ -2262,21 +2262,47 @@ StageDog/tavern_resource → dist/酒馆助手/自动更新角色卡/index.js（
 `mo as object` 与 `Os as z` **都在** ⇒ `window.z = MUVZ` 时 `z.object` / `z.z` / `z.record` /
 `z.preprocess` / `z.coerce` **全部**成立，与 ST 的形状一致（纯超集，不是新行为）。
 
-**为什么本轮不改**：① 它改的是 §31 已经验证过的行为，该配自己的因果臂（照 §31.5 的
-C/D/E 臂做法再加一条"只把落位换成命名空间"的臂）；② 用户本轮的清单里第 3 条只要
-"说明是否消失 + 给新嫌疑"，没让它改。**下一轮第一顺位**：改落位 + 加臂 + 在 04-排错手册
-§L 写"两种 `z` 写法"。
+**为什么第 32 轮不改**：① 它改的是 §31 已经验证过的行为，该配自己的因果臂（照 §31.5 的
+C/D/E 臂做法再加一条"只把落位换成命名空间"的臂）；② 用户那轮的清单里第 3 条只要
+"说明是否消失 + 给新嫌疑"，没让它改。
+
+#### ★ 第 33 轮落地（`2026-09-22t`，本节**已修**）
+
+一行级改动，`lib/client.js` 的 `muvCardLibTags()` zod 标签：
+
+```diff
+- (MUVZ&&MUVZ.z)||(MUVZ&&MUVZ.default)||MUVZ
++ (MUVZ&&typeof MUVZ.object==="function")?MUVZ:((MUVZ&&MUVZ.default)||MUVZ)
+```
+
+- **口径不变**：仍然**只在缺失时**补；仍是全篇唯一 `type="module"`；`MUV_CARD_LIBS` 开关、
+  钉版本（`zod@4.4.3/+esm`）、注入点（`</head>` 之前）**一行没动**。`MUV_BUILD` → `2026-09-22t`。
+- **因果臂**（就是上一段说的"再来一条臂"，做在 `verify-card-libs.mjs` 的 **A 臂**里）：
+  新增 3 条**落位形状**断言 ①`typeof window.z.object === "function"`
+  ②`typeof window.z.z === "object"` ③`window.z.z.object` 是函数。
+  ②③ 就是"落位是命名空间还是子对象"这一个变量的判据。
+- **数字**：`verify-card-libs` **48 / 0**（45 → 48）；`verify-tavernhelper-scripts` **54 / 0**；
+  `test-client-render` **320 / 0**；`verify-card-compat --old-export` after **46 / 0** · before 红 **37**
+  （本轮**没出**时序偶发，故未走 §32.6 的三步归因）。
+- **对照臂真变红**（照 §32.6 的"变异实验"，**不用** `git stash`）：临时把落位改回
+  `(MUVZ&&MUVZ.z)||…` ⇒ **46 / 2**，红的正好是新增的 ②③（实测 `z.z`=`undefined`、
+  ③=`false`），而 ①（`z.object` 是函数）**仍绿** ⇒ 不是"整篇没生效"的假红。
+  改前 `cp lib/client.js` 到仓库外 + 记 `md5`（`4ae4bc99…`），恢复后 `md5` 逐字一致再重跑。
+- **没做的事**：`EjsTemplate`/`showdown` 仍未补（口径同 §31.4）；没动 `verify-card-compat`
+  那两条时序偶发断言的**语义**。
 
 ### 32.8 只能真机验的部分
 
-1. `lib/client.js` 改动**硬刷新即可**（本轮没动服务端路由 ⇒ **不用重启 DSH**）。
-2. 硬刷新后看：`[muv-engine] client loaded 2026-09-22s`；
+1. `lib/client.js` 改动**硬刷新即可**（第 32 轮没动服务端路由 ⇒ **不用重启 DSH**；
+   第 33 轮同样只改客户端）。
+2. 硬刷新后看：`[muv-engine] client loaded 2026-09-22t`（第 33 轮起）；
    ① 控制台**不该**再有 `YAML is not defined`；
    ② `_足控天堂2` 的「外置手机」那条 `import 'https://phone-ctn.pages.dev/index.js'` 应该能跑下去
    （它 27 处 `YAML.parse/stringify` 现在有得用了）；
    ③ 那条 `脚本加载失败（本次不执行） http://127.0.0.1:3080/` 应变成
    `（非脚本元素 <img>） | <img> 资源加载失败（不是卡脚本） …` —— **看到这个就说明它不是卡脚本**；
-   ④ `Cannot read properties of undefined (reading 'object')` **仍会出现**（本轮没修，见 32.7）。
+   ④ `Cannot read properties of undefined (reading 'object')` 在 **`2026-09-22t`** 上应当
+   **消失**（第 32 轮的 `2026-09-22s` 上仍会出现 —— §32.7 已修）。
 3. 真机未验：`yaml@2.9.0/+esm`（105 KB）在本机网络下的加载耗时（只会推迟卡脚本的**开始**）；
    以及"包壳后的 try/catch 会不会把某条脚本本该冒泡的错误吃掉"（按设计不会：
    `__muvThErr` 立刻把它记进 `__muvScriptErrs` 并 `console.warn`）。

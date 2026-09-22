@@ -1,5 +1,54 @@
 # Changelog
 
+## 未发布（2026-09-23 · 三十三）★ zod 落位改成**整包命名空间** —— §32.7 的落地 · `2026-09-22t`
+
+一行级修复：**上一轮定位、本轮落地**。真机那条
+`Uncaught TypeError: Cannot read properties of undefined (reading 'object')`（`index.js:1:372`）
+的**真因不是缺全局，而是我们给的 `window.z` 比 ST 窄一档**（HANDOFF §32.7）。
+
+### 改动（就一处，`lib/client.js` 的 `muvCardLibTags()` zod 标签）
+
+```diff
+- 'try{if(typeof window.z==="undefined")window.z=(MUVZ&&MUVZ.z)||(MUVZ&&MUVZ.default)||MUVZ}catch(e){}'
++ 'try{if(typeof window.z==="undefined")window.z=(MUVZ&&typeof MUVZ.object==="function")?MUVZ:((MUVZ&&MUVZ.default)||MUVZ)}catch(e){}'
+```
+
+- **症状链**：卡脚本 `const n=z, r=n.z.object({角色卡名称:n.z.string(), …})` ——
+  `n = z` 是我们的全局；落位是 `MUVZ.z`（**子对象**，只有 `z.object`）⇒ `n.z` 是 `undefined`
+  ⇒ `undefined.object` 抛 TypeError。偏移 367 与真机报错 `index.js:1:372` 精确吻合。
+  同类第二处：`tavern_resource/dist/util/mvu_zod.js:553` 的 `r.z.object({stat_data:e})`
+  （`变量结构` 那类脚本都 import 它，更常见）。
+- **改法**：落位取**命名空间本身**（`typeof MUVZ.object === "function"` 时），兜底才退 `default`。
+  ST 父页那个 `z` 就是整包命名空间（`JS-Slash-Runner/dist/index.js` 的
+  `uk = bn({$brand,$input,…,ZodAny,…})` / `Qne(){globalThis.z=uk}`），
+  它同时有 `z.object` **和** `z.z`；jsdelivr 的 `zod@4.4.3/+esm` 导出表里
+  `mo as object` 与 `Os as z` **都在** ⇒ 命名空间是子对象的**纯超集**，与 ST 形状一致
+  （`z.object` / `z.z` / `z.record` / `z.preprocess` / `z.coerce` 全部成立，不是新行为）。
+- **口径不变**：仍然**只在缺失时**补（卡自己定义了 `window.z` 就尊重卡的）；仍是全篇唯一的
+  `type="module"` 库标签；`MUV_CARD_LIBS` 开关、CDN 钉版本、注入点（`</head>` 之前）一行未动。
+- `MUV_BUILD`：`2026-09-22s` → **`2026-09-22t`**。
+
+### 门禁（全绿，数字）
+
+| 门禁 | 结果 | 变化 |
+|---|---|---|
+| `verify-card-libs.mjs` | **48 / 0** | 45 → 48：A 臂新增 3 条**落位形状**断言（`typeof window.z.object === "function"`、`typeof window.z.z === "object"`、`window.z.z.object` 是函数）—— 后两条就是 §32.7 的因果臂 |
+| `verify-tavernhelper-scripts.mjs` | **54 / 0** | 未受影响 |
+| `test-client-render.mjs` | **320 / 0** | 未受影响 |
+| `verify-card-compat.mjs --old-export` | after **46 / 0** · before 红 **37** | 对照成立（本轮**没出**时序偶发） |
+
+**对照臂真变红（照 §32.6 的"变异实验"做法，不用 `git stash`）**：临时把落位改回
+`(MUVZ&&MUVZ.z)||…`（子对象）⇒ `verify-card-libs` **46 / 2**，红的**正好是新增的那两条**
+（形状② 实测 `z.z` = `undefined`、形状③ = `false`），而形状①（`z.object` 是函数）**仍绿**
+⇒ 不是"整篇没生效"的假红，因果收敛到"落位是命名空间还是子对象"这一个变量。
+改前 `cp lib/client.js` 到仓库外备份 + 记 `md5`，恢复后 `md5` 逐字一致再重跑。
+
+### 只能真机验的部分
+
+硬刷新（或重启）后看控制台：`[muv-engine] client loaded 2026-09-22t`，
+且那条 `Cannot read properties of undefined (reading 'object')` 应当**消失**；
+`酒馆助手/自动更新角色卡` 与 `util/mvu_zod.js` 走的脚本不再在顶层求值处抛。
+
 ## 未发布（2026-09-23 · 三十二）★★ 补 `YAML` + 卡脚本注入过滤/留痕带名 · `2026-09-22s`
 
 真机控制台报了三件事，本轮按证据逐条处置（第 1、2 条已修，第 3 条已**定位**但不改）：

@@ -93,6 +93,12 @@ const CARD = '<!DOCTYPE html>\n<html>\n<head>\n<title>TITLE_HERE</title>\n</head
   '    zodPre: !!(window.z && typeof window.z.preprocess === "function"),\n' +
   '    zodCoerce: !!(window.z && window.z.coerce && typeof window.z.coerce.string === "function"),\n' +
   '    zodPrefault: (function () { try { return typeof window.z.number().prefault === "function" } catch (e) { return false } })(),\n' +
+  // ── 2026-09-23（第 33 轮）新增：zod 落位的**形状**（§32.7 的因果臂）───────────
+  //   ST 父页那个 `z` 是**整包命名空间**，同时有 `z.object` 与 `z.z`；只落 `MUVZ.z`
+  //   子对象时 `z.z` 是 undefined ⇒ 卡里 `const n=z, r=n.z.object({…})` 当场抛。
+  //   下面这两条就是"落位是命名空间而不是子对象"的运行时判据。
+  '    zodSelf: (function () { try { return typeof window.z.z } catch (e) { return "throw" } })(),\n' +
+  '    zodSelfObj: (function () { try { return !!(window.z.z && typeof window.z.z.object === "function") } catch (e) { return false } })(),\n' +
   '    dashPrevLeak: Object.prototype.hasOwnProperty.call(window, "__muvDashPrev"),\n' +
   // ── 2026-09-23（第 32 轮）新增：YAML ──────────────────────────────────────
   //   判据同 lodash/zod 的口径 —— 取**卡真正用到的方法**，不是"全局存在"：
@@ -295,6 +301,17 @@ try {
     a && [a.zodObj, a.zodRec, a.zodPre, a.zodCoerce].join('/'))
   check('★★ zod 是 **v4**（`.prefault` 是 v4 API，v3 叫 `.default` —— 这条钉的是版本代际）',
     !!a && a.zodPrefault === true, a && String(a.zodPrefault))
+  // ── A 臂：zod 落位的**形状**（2026-09-23 第 33 轮新增，§32.7）────────────────
+  //   两条**都要**，缺一则红 —— 它们合起来正是"落位的是整包命名空间（与 ST 同形）"：
+  //   ① `typeof window.z.object === "function"`（zod 本体在）；② `typeof window.z.z ===
+  //   "object"`（`z.z` 这一层也在 ⇒ 卡里 `z.z.object(...)` 那个写法能跑）。
+  //   ★ 只落 `MUVZ.z` 子对象时 ②必红（`z.z` 是 undefined）—— 这就是本轮的因果臂。
+  check('★★ zod 落位形状①：`typeof window.z.object === "function"`',
+    !!a && a.zodObj === true, a && String(a.zodObj))
+  check('★★ zod 落位形状②：`typeof window.z.z === "object"`（§32.7 —— 落 `MUVZ.z` 子对象时这条必红）',
+    !!a && a.zodSelf === 'object', a && String(a.zodSelf))
+  check('★★ zod 落位形状③：卡里那句 `n.z.object({…})` 真的能跑（`window.z.z.object` 是函数）',
+    !!a && a.zodSelfObj === true, a && String(a.zodSelfObj))
 
   // ── A 臂：YAML（2026-09-23 第 32 轮新增）──────────────────────────────────
   //   用户的真机报错是 `Uncaught ReferenceError: YAML is not defined`（反复出现），

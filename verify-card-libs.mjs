@@ -6,13 +6,14 @@
 // "卡里东西出不来"那一条独立原因的全部内容（ST 的 `b1()` 无条件注入 `v1`，
 // 见 ST-IFRAME-SPEC §3 / §7）。
 //
-// 四臂（2026-09-23 第 31 轮从两臂扩到四臂）：
-//   A（libs）  = 走 `withCardLibs` ⇒ 十个库标签必须都在、Tailwind 类必须生效；
+// 五臂（2026-09-23 第 31 轮从两臂扩到四臂，第 32 轮加 E 臂）：
+//   A（libs）  = 走 `withCardLibs` ⇒ 十一个库标签必须都在、Tailwind 类必须生效；
 //   B（nolibs）= 同一份文档**完全不注入** ⇒ 一个都不许有；
 //   C（nodash）= 注入全部、**只摘掉 lodash 三段** ⇒ `_` 必须消失（因果钉在 lodash 上）；
 //   D（nozod） = 注入全部、**只摘掉 zod 那一标签** ⇒ `window.z.object` 必须不可用。
-//   ★ C/D 是 A 与 B 之间那道"差着八个库"的缺口的补丁：只有它们变红，才能说
-//     "`_` 是 lodash 带来的"，而不是"注入了什么库都会带来 `_`"。
+//   E（noyaml）= 注入全部、**只摘掉 yaml 那一标签** ⇒ `window.YAML` 必须不可用。
+//   ★ C/D/E 是 A 与 B 之间那道"差着十个库"的缺口的补丁：只有它们变红，才能说
+//     "`_` 是 lodash 带来的""`YAML` 是 yaml 带来的"，而不是"注入了什么库都会带来"。
 //
 // ⚠ 本门禁**依赖网络**（CDN 真下载）。离线时会红 —— 那是真实信号，不要改成跳过。
 //   ★ 但失败时它会**再做一次 node 侧直连**把「网络不可达」与「注入缺失」分开报
@@ -93,6 +94,18 @@ const CARD = '<!DOCTYPE html>\n<html>\n<head>\n<title>TITLE_HERE</title>\n</head
   '    zodCoerce: !!(window.z && window.z.coerce && typeof window.z.coerce.string === "function"),\n' +
   '    zodPrefault: (function () { try { return typeof window.z.number().prefault === "function" } catch (e) { return false } })(),\n' +
   '    dashPrevLeak: Object.prototype.hasOwnProperty.call(window, "__muvDashPrev"),\n' +
+  // ── 2026-09-23（第 32 轮）新增：YAML ──────────────────────────────────────
+  //   判据同 lodash/zod 的口径 —— 取**卡真正用到的方法**，不是"全局存在"：
+  //   卡侧那 27 处裸引用全是 `YAML.parse(...)` / `YAML.stringify(...)`
+  //   （`_足控天堂2` 的「外置手机」那条 `import 'https://phone-ctn.pages.dev/index.js'`
+  //   拉的远端模块里）。所以这里不只 typeof，还**真的 parse 一次并检查取值**、
+  //   再真的 stringify 一次 —— 一个"存在但没有 parse"的东西在这儿过不去。
+  '    yamlFn: g("YAML"),\n' +
+  '    yamlParse: !!(window.YAML && typeof window.YAML.parse === "function"),\n' +
+  '    yamlStr: !!(window.YAML && typeof window.YAML.stringify === "function"),\n' +
+  '    yamlParseOk: (function(){try{var o=window.YAML.parse("{a: 1, b: [2, 3]}");return !!(o&&o.a===1&&o.b&&o.b[1]===3)}catch(e){return false}})(),\n' +
+  '    yamlStrOk: (function(){try{return typeof window.YAML.stringify({a:1})==="string"}catch(e){return false}})(),\n' +
+  '    yamlDoc: !!(window.YAML && typeof window.YAML.parseDocument === "function"),\n' +
   '    fa: fa,\n' +
   '    faFont: cBefore ? String(cBefore.fontFamily || "") : "",\n' +
   '    twHidden: cHid ? String(cHid.display) : "",\n' +
@@ -121,21 +134,27 @@ const stripDash = (s) => s
   .replace(/<script data-muv-libs="lodash" src="[^"]*"><\/script>/g, '')
   .replace(/<script data-muv-libs="dash-keep">[\s\S]*?<\/script>/g, '')
 const stripZod = (s) => s.replace(/<script type="module" data-muv-libs="zod">[\s\S]*?<\/script>/g, '')
+const stripYaml = (s) => s.replace(/<script type="module" data-muv-libs="yaml">[\s\S]*?<\/script>/g, '')
 docs.libsNoDash = stripDash(withCardLibs(CARD.replace('TITLE_HERE', 'arm-nodash')))
 docs.libsNoZod = stripZod(withCardLibs(CARD.replace('TITLE_HERE', 'arm-nozod')))
+docs.libsNoYaml = stripYaml(withCardLibs(CARD.replace('TITLE_HERE', 'arm-noyaml')))
 
-check('★ A 臂文档里确实带上了十个库标签（注入生效于字符串层）',
-  (docs.libs.match(/data-muv-libs=/g) || []).length === 10,
+check('★ A 臂文档里确实带上了十一个库标签（注入生效于字符串层）',
+  (docs.libs.match(/data-muv-libs=/g) || []).length === 11,
   String((docs.libs.match(/data-muv-libs=/g) || []).length))
 check('★ B 臂（对照）文档里一个库都没有', !/data-muv-libs=/.test(docs.nolibs))
-check('★★ C 臂：只摘掉 lodash 三段，其余九个标签原样（因果能收敛到 lodash）',
-  (docs.libsNoDash.match(/data-muv-libs=/g) || []).length === 7 && !/lodash@/.test(docs.libsNoDash) &&
-  /data-muv-libs="zod"/.test(docs.libsNoDash),
+check('★★ C 臂：只摘掉 lodash 三段，其余八个标签原样（因果能收敛到 lodash）',
+  (docs.libsNoDash.match(/data-muv-libs=/g) || []).length === 8 && !/lodash@/.test(docs.libsNoDash) &&
+  /data-muv-libs="zod"/.test(docs.libsNoDash) && /data-muv-libs="yaml"/.test(docs.libsNoDash),
   String((docs.libsNoDash.match(/data-muv-libs=/g) || []).length))
-check('★★ D 臂：只摘掉 zod 那一标签，其余九个原样（因果能收敛到 zod）',
-  (docs.libsNoZod.match(/data-muv-libs=/g) || []).length === 9 && !/zod@/.test(docs.libsNoZod) &&
+check('★★ D 臂：只摘掉 zod 那一标签，其余十个原样（因果能收敛到 zod）',
+  (docs.libsNoZod.match(/data-muv-libs=/g) || []).length === 10 && !/zod@/.test(docs.libsNoZod) &&
   /data-muv-libs="lodash"/.test(docs.libsNoZod),
   String((docs.libsNoZod.match(/data-muv-libs=/g) || []).length))
+check('★★ E 臂：只摘掉 yaml 那一标签，其余十个原样（因果能收敛到 yaml）',
+  (docs.libsNoYaml.match(/data-muv-libs=/g) || []).length === 10 && !/yaml@/.test(docs.libsNoYaml) &&
+  /data-muv-libs="lodash"/.test(docs.libsNoYaml) && /data-muv-libs="zod"/.test(docs.libsNoYaml),
+  String((docs.libsNoYaml.match(/data-muv-libs=/g) || []).length))
 
 // ── 网络归因：把"CDN 拉不到"与"注入缺失"分开（否则两者都只报一句 FAIL）──────────
 // 判据是**同一台机器**用 node 直接 GET 那两个 URL：node 也失败 ⇒ 网络问题；
@@ -151,25 +170,29 @@ async function cdnProbe(url) {
 }
 const CDN_LODASH = 'https://cdn.jsdelivr.net/npm/lodash@4.18.1/lodash.min.js'
 const CDN_ZOD = 'https://cdn.jsdelivr.net/npm/zod@4.4.3/+esm'
+const CDN_YAML = 'https://cdn.jsdelivr.net/npm/yaml@2.9.0/+esm'
 let netReport = ''
 async function attribute(what, ok) {
   if (ok) return
   const a = await cdnProbe(CDN_LODASH)
   const b = await cdnProbe(CDN_ZOD)
+  const c = await cdnProbe(CDN_YAML)
   netReport += '  [归因] ' + what + ' 在浏览器里不可用。node 侧直连：\n' +
     '         lodash → ' + a + '\n' +
     '         zod    → ' + b + '\n' +
-    '         两个都 NET-FAIL ⇒ **网络不可达**（重跑一次；仍失败则是真离线，不是注入缺失）；\n' +
+    '         yaml   → ' + c + '\n' +
+    '         都 NET-FAIL ⇒ **网络不可达**（重跑一次；仍失败则是真离线，不是注入缺失）；\n' +
     '         node 能拿到而浏览器里没有 ⇒ 是**注入/沙箱**问题，看上面的 data-muv-libs 计数。\n'
 }
 
-// ── 夹具页：四个 srcdoc iframe，**沙箱与生产一致**（allow-scripts，不加 same-origin）──
+// ── 夹具页：五个 srcdoc iframe，**沙箱与生产一致**（allow-scripts，不加 same-origin）──
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'muv-card-libs-'))
 const page = '<!DOCTYPE html><html><body>\n' +
   '<iframe id="f1" sandbox="allow-scripts" srcdoc="' + escAttr(docs.libs) + '"></iframe>\n' +
   '<iframe id="f2" sandbox="allow-scripts" srcdoc="' + escAttr(docs.nolibs) + '"></iframe>\n' +
   '<iframe id="f3" sandbox="allow-scripts" srcdoc="' + escAttr(docs.libsNoDash) + '"></iframe>\n' +
   '<iframe id="f4" sandbox="allow-scripts" srcdoc="' + escAttr(docs.libsNoZod) + '"></iframe>\n' +
+  '<iframe id="f5" sandbox="allow-scripts" srcdoc="' + escAttr(docs.libsNoYaml) + '"></iframe>\n' +
   '</body></html>'
 const file = path.join(tmpDir, 'libs.html')
 fs.writeFileSync(file, page, 'utf8')
@@ -178,13 +201,13 @@ const PROBE = '(window.__probe ? window.__probe() : JSON.stringify({title:docume
 
 const rt = await openPage(EDGE, { url: 'file:///' + file.replace(/\\/g, '/'), outDir: tmpDir, windowSize: '1200,900' })
 try {
-  // 等四个 OOPIF 都挂上（沙箱 iframe 会被换进独立渲染进程）
+  // 等五个 OOPIF 都挂上（沙箱 iframe 会被换进独立渲染进程）
   let sessions = []
-  for (let i = 0; i < 100 && sessions.length < 4; i++) {
+  for (let i = 0; i < 100 && sessions.length < 5; i++) {
     sessions = rt.cdp.iframeSessions || []
-    if (sessions.length < 4) await sleep(150)
+    if (sessions.length < 5) await sleep(150)
   }
-  check('★ 四个卡 iframe 都挂上了独立会话（OOPIF）', sessions.length === 4, '实际 ' + sessions.length)
+  check('★ 五个卡 iframe 都挂上了独立会话（OOPIF）', sessions.length === 5, '实际 ' + sessions.length)
 
   const read = async (sid) => {
     try {
@@ -202,16 +225,17 @@ try {
   const B = byTitle['arm-nolibs']
   const C = byTitle['arm-nodash']
   const D = byTitle['arm-nozod']
-  check('★ 四臂都读到了探针（title 认领成功）', !!A && !!B && !!C && !!D, Object.keys(byTitle).join(','))
+  const E = byTitle['arm-noyaml']
+  check('★ 五臂都读到了探针（title 认领成功）', !!A && !!B && !!C && !!D && !!E, Object.keys(byTitle).join(','))
 
   // A 臂：等 CDN 脚本真的到（网络慢时最多等 25s）
   let a = A ? A.o : null
   if (A) {
     const t0 = Date.now()
-    while (Date.now() - t0 < 25000) {
+    while (Date.now() - t0 < 30000) {
       a = await read(A.sid)
       if (a.jq === 'function' && a.vue === 'object' && a.dashFn === 'function' &&
-        a.zodObj === true && String(a.ready) === 'complete') break
+        a.zodObj === true && a.yamlParse === true && String(a.ready) === 'complete') break
       await sleep(250)
     }
   }
@@ -228,13 +252,15 @@ try {
     }
     return v
   }
-  const c = await waitFor(C, (v) => v && v.dashFn !== 'function' && v.zodObj === true && String(v.ready) === 'complete', 25000)
-  const d = await waitFor(D, (v) => v && v.dashFn === 'function' && v.zodObj !== true && String(v.ready) === 'complete', 25000)
+  const c = await waitFor(C, (v) => v && v.dashFn !== 'function' && v.zodObj === true && String(v.ready) === 'complete', 30000)
+  const d = await waitFor(D, (v) => v && v.dashFn === 'function' && v.zodObj !== true && String(v.ready) === 'complete', 30000)
+  const e = await waitFor(E, (v) => v && v.yamlParse !== true && v.zodObj === true && String(v.ready) === 'complete', 30000)
 
   console.log('\n  实测 A（注入全部）: ' + JSON.stringify(a))
   console.log('  实测 B（不注入）  : ' + JSON.stringify(b))
   console.log('  实测 C（只少 lodash）: ' + JSON.stringify(c))
-  console.log('  实测 D（只少 zod）   : ' + JSON.stringify(d) + '\n')
+  console.log('  实测 D（只少 zod）   : ' + JSON.stringify(d))
+  console.log('  实测 E（只少 yaml）  : ' + JSON.stringify(e) + '\n')
 
   // ── A 臂：六个库都必须在位 ────────────────────────────────────────────────
   check('★★ jQuery 真的挂上了（typeof === function）', !!a && a.jq === 'function', a && a.jq)
@@ -270,6 +296,23 @@ try {
   check('★★ zod 是 **v4**（`.prefault` 是 v4 API，v3 叫 `.default` —— 这条钉的是版本代际）',
     !!a && a.zodPrefault === true, a && String(a.zodPrefault))
 
+  // ── A 臂：YAML（2026-09-23 第 32 轮新增）──────────────────────────────────
+  //   用户的真机报错是 `Uncaught ReferenceError: YAML is not defined`（反复出现），
+  //   来自 `_足控天堂2` 那条 `import 'https://phone-ctn.pages.dev/index.js'` 拉的远端
+  //   模块（里面 27 处 `YAML.parse` / `YAML.stringify`）。判据按"卡真正用到的能力"取：
+  //   · `typeof window.YAML === "object"`（命名空间对象，不是函数）；
+  //   · `YAML.parse` **真的能解析**一段 YAML 并给出正确取值（存在但不会解析的壳过不去）；
+  //   · `YAML.stringify` **真的能序列化**；
+  //   · `parseDocument` 在 —— 它是 `yaml@2` 相对 js-yaml 的分水岭（ST 那个全局就是
+  //     `yaml@2` 的命名空间，不是 js-yaml），这条同时钉住了"补的是**同一个库**"。
+  check('★★ YAML 挂上了（typeof window.YAML === "object"）', !!a && a.yamlFn === 'object', a && a.yamlFn)
+  check('★★ YAML.parse 存在且**真的解析得出**（{a:1,b:[2,3]} 取值正确）',
+    !!a && a.yamlParse === true && a.yamlParseOk === true, a && (a.yamlParse + '/' + a.yamlParseOk))
+  check('★★ YAML.stringify 存在且真的能序列化（卡侧那 27 处就是 parse + stringify）',
+    !!a && a.yamlStr === true && a.yamlStrOk === true, a && (a.yamlStr + '/' + a.yamlStrOk))
+  check('★ YAML.parseDocument 在 ⇒ 补的是 `yaml@2` 的命名空间（ST 那个全局的真身，不是 js-yaml）',
+    !!a && a.yamlDoc === true, a && String(a.yamlDoc))
+
   // ── B 臂（对照）：一个都不许有 —— 没有它上面全是永真 ───────────────────────
   check('★★ 对照臂：不注入时 jQuery **不是** function（判据能红）', !!b && b.jq !== 'function', b && b.jq)
   check('★★ 对照臂：不注入时 Vue **不是** object', !!b && b.vue !== 'object', b && b.vue)
@@ -282,21 +325,31 @@ try {
   check('★ 对照臂：不注入时卡内容同样在（隐藏/注入都没吃掉正文）', !!b && b.text === true, b && String(b.text))
   check('★★ 对照臂：不注入时 `_` 不是 function / `z` 不是 object',
     !!b && b.dashFn !== 'function' && b.zodObj !== true, b && (b.dashFn + '/' + b.zodObj))
+  check('★★ 对照臂：不注入时 `YAML` 也没有（否则 A 臂那条"YAML 在"是永真）',
+    !!b && b.yamlParse !== true && String(b.yamlFn) === 'undefined', b && (b.yamlFn + '/' + b.yamlParse))
 
-  // ── C/D 臂（对照）：把变量收敛到"只差一个库"，因果才钉得住 ─────────────────
-  check('★★ C 臂（其余九个库照旧、**只少 lodash**）：`_` 必须不是 function ⇒ ' +
+  // ── C/D/E 臂（对照）：把变量收敛到"只差一个库"，因果才钉得住 ────────────────
+  check('★★ C 臂（其余八个库照旧、**只少 lodash**）：`_` 必须不是 function ⇒ ' +
     '证明 `_` 的存在**就是** lodash 注入造成的，而不是"注入了什么库都会带来 `_`"',
     !!c && c.dashFn !== 'function', c && c.dashFn)
-  check('★ C 臂的其余库确实还在（jQuery 在 ⇒ 这不是"整篇都没生效"的假红）',
+  check('★ C 臂的其余库确实还在（jQuery 与 zod 在 ⇒ 这不是"整篇都没生效"的假红）',
     !!c && c.jq === 'function' && c.zodObj === true, c && (c.jq + '/' + c.zodObj))
-  check('★★ D 臂（其余九个库照旧、**只少 zod**）：`z.object` 必须不可用',
+  check('★★ D 臂（其余十个库照旧、**只少 zod**）：`z.object` 必须不可用',
     !!d && d.zodObj !== true, d && String(d.zodObj))
   check('★ D 臂的其余库确实还在（`_` 与 jQuery 都在）',
     !!d && d.dashFn === 'function' && d.jq === 'function', d && (d.dashFn + '/' + d.jq))
+  // ── E 臂（第 32 轮）：把因果钉在 yaml 上 ─────────────────────────────────
+  check('★★ E 臂（其余十个库照旧、**只少 yaml**）：`YAML.parse` 必须不可用 ⇒ ' +
+    '证明 A 臂里的 YAML **就是**这条 yaml 标签带来的（不是别的库捎带出来的）',
+    !!e && e.yamlParse !== true, e && (e.yamlFn + '/' + e.yamlParse))
+  check('★ E 臂的其余库确实还在（`_` / `z` / jQuery 都在 ⇒ 这不是"整篇都没生效"的假红）',
+    !!e && e.dashFn === 'function' && e.zodObj === true && e.jq === 'function',
+    e && (e.dashFn + '/' + e.zodObj + '/' + e.jq))
 
   // ── 网络归因（只在真的失败时才去打 URL）：把「CDN 拉不到」与「注入缺失」分开 ──
   await attribute('lodash（window._）', !!a && a.dashFn === 'function')
   await attribute('zod（window.z）', !!a && a.zodObj === true)
+  await attribute('yaml（window.YAML）', !!a && a.yamlParse === true)
 } finally {
   rt.close()
   try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch (_) {}

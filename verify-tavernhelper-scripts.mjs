@@ -8,15 +8,21 @@
 //   import 'https://testingcf.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate@master/artifact/bundle.js'
 // ST 里「酒馆助手」执行卡的脚本 ⇒ bundle 起来 ⇒ HUD 出现。我们此前一条都不执行。
 //
-// ── 这条门禁盯的四件事 ──────────────────────────────────────────────────
+// ── 这条门禁盯的六件事 ──────────────────────────────────────────────────
 //   ① 服务端读出的是**真确那一批**（真卡：8 条里只注入 6 条，disabled 的不出）；
 //   ② 注入串里每条脚本各占一个 `<script type="module">`，顺序 = 卡里数组顺序；
 //   ③ 真浏览器 + 真沙箱（`allow-scripts` srcdoc）里 **enabled 的真的跑起来了**；
-//   ④ **一条挂了不拖垮别人**（故意塞一条 import 不存在的 URL），且失败**留痕**。
+//   ④ **一条挂了不拖垮别人**（故意塞一条 import 不存在的 URL），且失败**留痕**；
+//   ⑤（第 32 轮）**过滤**：空白 content 与"相对/裸地址"content 被跳过**且留痕带名字**；
+//   ⑥（第 32 轮）**留痕带名字**：没有顶层 import/export 的脚本被 try/catch 包一层，
+//      于是"运行时报错"也能说到是哪一条（过去一律「（未知脚本）」）。
 //
 // 对照臂（没有它们，上面每一条都可能永真）：
 //   B 臂 = 同一份文档**不注入** ⇒ `__probeA` 必须是 undefined；
 //   C 臂 = 同一个开关下把 `MUV_CARD_SCRIPTS` 关掉 ⇒ 同样必须是 undefined；
+//   **F 臂（第 32 轮）= 把源码里那两道过滤逐字摘掉再提取同一个真函数** ⇒ 同一条
+//   `./index.js` 必须被注入进去（这才是"去掉过滤 ⇒ 断言必红"的真对照；
+//   摘不动源码时门禁自己变红，不会静默退化成假绿）。
 //   （③+④ 的分离断言：坏的那条进了 `__muvScriptErrs`，好的那条照样写了变量。）
 //
 // 运行：node verify-tavernhelper-scripts.mjs
@@ -86,6 +92,24 @@ console.log('=== [1] 服务端读真卡：enabled 脚本清单 ===')
         ft.scripts.every((s) => /^\s*import\b/.test(s.content) && s.content.split('\n').length === 1),
         ft.scripts.map((s) => s.content.split('\n').length).join(','))
       check('★ 含 ERA 变量框架那条', names(ft).some((n) => n.indexOf('ERA变量框架') >= 0), names(ft).join(' / '))
+    }
+
+    // ── 第 32 轮：过滤护栏不许误杀真卡 ─────────────────────────────────────
+    //   新加的"相对/裸地址"过滤是为**畸形卡 / 被工具改坏的卡**准备的护栏。真卡里
+    //   一条都不该命中 —— 命中了就是误杀（真卡那三条单行 import 全是绝对 https）。
+    const bareSrc = buildFrom(SRC, ['muvCardScriptBareSrc'], {}, 'muvCardScriptBareSrc')
+    const realOnes = []
+    for (const cn of ['魔法少女MVU测试', '_足控天堂2']) {
+      if (fs.existsSync(path.join(CARD_DIR, cn + '.png'))) realOnes.push(...listCardScripts({ cardName: cn }).scripts)
+    }
+    if (!realOnes.length) skipped('真卡不被新过滤误杀', '两张真卡都不在本机')
+    else {
+      const killed = realOnes.filter((s) => bareSrc(s.content)).map((s) => s.name)
+      check('★★ 真卡里 ' + realOnes.length + ' 条 enabled 脚本**一条都没被**"相对/裸地址"过滤命中' +
+        '（护栏只拦畸形卡，不误杀真卡）', killed.length === 0, killed.join(' / '))
+      check('★★ 真卡里没有一条 content 去空白后为空（否则新过滤会静默少跑脚本）',
+        realOnes.every((s) => String(s.content || '').trim().length > 0),
+        realOnes.filter((s) => !String(s.content || '').trim()).map((s) => s.name).join(' / '))
     }
 
     // enabled=false 的语义单元两档
@@ -171,6 +195,91 @@ const injected = withCardScripts(CARD, LIST)
     'disabled 在=' + (chained.indexOf('__probeDisabled') > -1))
 }
 
+// ── 2.1（第 32 轮）过滤：空白 / 相对地址，且留痕**带名字**─────────────────────
+//
+// 症状来源（用户真机控制台，两条都取证过）：
+//   ① `Uncaught ReferenceError: YAML is not defined`（见 verify-card-libs.mjs 的 yaml 节）；
+//   ② `[muv-engine] 卡脚本报错：（未知脚本）脚本加载失败（本次不执行） http://127.0.0.1:3080/`
+//      —— content 不是代码而是一个相对/空地址时，浏览器拿**宿主页**当地址基准去解析，
+//      请求直接打到 DSH 自己身上；而"（未知脚本）"是因为那个报错元素**没有署名**。
+console.log('\n=== [2.1] 过滤（空白 / 相对地址）与留痕带名字 ===')
+const FILTER_LIST = [
+  { name: '甲·空白', content: '   \n\t ' },
+  { name: '乙·相对地址', content: './index.js' },
+  { name: '丙·裸斜杠', content: '/' },
+  { name: '丁·协议相对', content: '//cdn.example/x.js' },
+  { name: '戊·绝对导入', content: "import 'https://example.invalid/x.js';" },
+  { name: '己·无导入', content: 'window.__probeF = 1;' },
+  { name: String.fromCharCode(60) + '/script', content: 'window.__probeG = 1;' }
+]
+let outFiltered = ''
+{
+  // 留痕走 console.warn（另一条是 __muvScriptErrs）。抓下来断言**名字与原因都在** ——
+  // 只断言"文档里少了一条"是不够的：静默跳过正是这一轮要消灭的东西。
+  const warns = []
+  const realWarn = console.warn
+  console.warn = function () { warns.push([].slice.call(arguments).join(' ')) }
+  try { outFiltered = withCardScripts(CARD, FILTER_LIST) } finally { console.warn = realWarn }
+  const tagsN = (outFiltered.match(/<script type="module"/g) || []).length
+  const find = (re) => warns.filter((w) => re.test(w))
+
+  check('★★ 七条里只注入 3 条（4 条坏 content 被拦下：空白 / ./index.js / / / //cdn…）',
+    tagsN === 3, String(tagsN))
+  check('★★ 相对地址那条**没有**进文档（否则浏览器会拿宿主地址去取它）',
+    outFiltered.indexOf('./index.js') === -1 && outFiltered.indexOf('cdn.example') === -1)
+  check('★★ 留痕带名字：空白那条报的是「甲·空白」而不是「（未命名）」',
+    find(/内容为空或只有空白/).some((w) => w.indexOf('甲·空白') >= 0) && !find(/（未命名）/).length,
+    warns.join(' || ').slice(0, 200))
+  check('★★ 留痕带原因 + 带名字 + 带内容片段（相对地址那条要能一眼看出它是什么）',
+    find(/相对\/裸地址/).length === 3 && find(/乙·相对地址/).length === 1 &&
+    find(/\.\/index\.js/).length === 1,
+    find(/相对\/裸地址/).join(' || ').slice(0, 240))
+  check('★ 内容**非空**的条目照旧注入（过滤没有扩大化：\n' +
+    '      戊·绝对导入 / 己·无导入 / 名字里带收尾标记的三个都在）',
+    outFiltered.indexOf("https://example.invalid/x.js") > -1 &&
+    outFiltered.indexOf('__probeF') > -1 && outFiltered.indexOf('__probeG') > -1)
+  check('★★ 名字里的 `<` 一律转义，注入串里**每个 `</script>` 都是我们自己的收尾**' +
+    '（名字里写收尾标记不能截断 srcdoc）',
+    (outFiltered.match(/<\/script>/g) || []).length === 4 &&
+    (outFiltered.match(/<script type="module"/g) || []).length === 3,
+    String((outFiltered.match(/<\/script>/g) || []).length))
+  check('★ 注入串不含反引号（运行时产物，与 muvCardLibs 的口径一致）',
+    outFiltered.indexOf('`') === -1)
+  check('★★ 没有顶层 import/export 的脚本被 try/catch 包一层，catch 里**带着脚本名**自报' +
+    '（这样"运行时报错"也说到哪一条，不再一律「（未知脚本）」）',
+    outFiltered.indexOf('window.__muvThErr(e,"己·无导入")') > -1)
+  check('★ 有顶层 import 的脚本**不包壳**（import 放进 try 块里是语法错误，包错会当场弄死脚本）',
+    /data-muv-th="戊·绝对导入">import '/.test(outFiltered))
+  check('★ 自报口由错误收集器提供（不是凭空调用）',
+    outFiltered.indexOf('window.__muvThErr=function') > -1 &&
+    outFiltered.indexOf('window.__muvThErr=function') < outFiltered.indexOf('__probeF'))
+}
+// ── F 臂（对照）：把**两道过滤逐字从源码里摘掉**，再提取同一个真函数 ──────────
+//   为什么必须这么做：A 臂"相对地址没被注入"与"不注入任何脚本"之间只差一个 if ——
+//   没有 F 臂，那条断言可能只是"注入器整个没干活"的假绿。摘下来的源码仍走
+//   `buildFrom`（逐字提取），所以对照臂跑的**依然是真注入器**，只少那两道 if。
+{
+  const BLANK_RE = /\n\s*if \(!c\.trim\(\)\) \{[\s\S]*?\n\s*\}\n/
+  const SRCFILTER_RE = /\n\s*if \(muvCardScriptBareSrc\(c\)\) \{[\s\S]*?\n\s*\}\n/
+  const SRC_NO_FILTER = SRC.replace(BLANK_RE, '\n').replace(SRCFILTER_RE, '\n')
+  const stripped = SRC_NO_FILTER !== SRC && !BLANK_RE.test(SRC_NO_FILTER) && !SRCFILTER_RE.test(SRC_NO_FILTER)
+  check('★★★ F 臂的前提：两道过滤真的从源码里摘掉了（摘不动就是假对照，宁可这里红）',
+    stripped, '摘掉=' + (SRC_NO_FILTER !== SRC))
+  let outNoFilter = ''
+  if (stripped) {
+    const noFilter = buildFrom(SRC_NO_FILTER, ['withCardScripts'], { MUV_CARD_SCRIPTS: true }, 'withCardScripts')
+    outNoFilter = noFilter(CARD, FILTER_LIST)
+  }
+  check('★★★ F 臂（去掉过滤）：同一条 `./index.js` **会被注入** ⇒ ' +
+    'A 臂那条"相对地址没进文档"不是永真',
+    outNoFilter.indexOf('./index.js') > -1 && outNoFilter.indexOf('cdn.example') > -1,
+    '标签数=' + String((outNoFilter.match(/<script type="module"/g) || []).length))
+  check('★★ F 臂（去掉过滤）：空白 / 裸斜杠那两条也各占一个标签（7 个，不是 3 个）' +
+    '⇒ 空白那条断言同样不是永真',
+    (outNoFilter.match(/<script type="module"/g) || []).length === 7,
+    String((outNoFilter.match(/<script type="module"/g) || []).length))
+}
+
 // ── 3. 真浏览器 + 真沙箱：enabled 的真的跑起来了吗 ─────────────────────────
 console.log('\n=== [3] 真浏览器：srcdoc + sandbox=allow-scripts ===')
 const EDGE = process.env.MUV_EDGE ||
@@ -185,10 +294,20 @@ check('★ 沙箱常量取自源码（内联 ==> 与生产一致，没有放宽 
 
 const escAttr = buildFrom(SRC, ['escAttr'], {}, 'escAttr')
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'muv-th-scripts-'))
+// D/E 臂（第 32 轮）：
+//   D = 一条**没有顶层 import**、运行时直接抛的脚本 ⇒ 留痕必须**说到它的名字**
+//       （这条能力完全来自注入器那层 try/catch，没包壳就只能报「（未知脚本）」）；
+//   E = 一个 `<img src="">`（真机那条 `… http://127.0.0.1:3080/` 的形态）⇒ 留痕必须
+//       点明「非脚本元素」，不许再把图片挂了叫成"卡脚本报错"。
+const RT_ERR = { name: '壬·运行时就抛', content: "throw new Error('boom-壬');\n" }
+const withImg = CARD.replace('ARM', 'arm-e')
+  .replace('<div id="keep">KEEPME</div>', '<div id="keep">KEEPME</div>\n<img id="broken" src="">')
 const arms = {
   a: injected.replace('ARM', 'arm-a'),                                   // 注入
   b: CARD.replace('ARM', 'arm-b'),                                       // 对照：不注入
-  c: withCardScriptsOff(CARD.replace('ARM', 'arm-c'), LIST)              // 对照：开关关掉
+  c: withCardScriptsOff(CARD.replace('ARM', 'arm-c'), LIST),             // 对照：开关关掉
+  d: withCardScripts(CARD.replace('ARM', 'arm-d'), [RT_ERR]),            // 运行时报错 ⇒ 带名字
+  e: withCardScripts(withImg, [RT_ERR])                                  // 非脚本元素 ⇒ 说清是 img
 }
 const page = '<!DOCTYPE html><html><body>\n' +
   Object.keys(arms).map((k) =>
@@ -208,11 +327,11 @@ const PROBE = 'JSON.stringify({' +
 const rt = await openPage(EDGE, { url: 'file:///' + file.replace(/\\/g, '/'), outDir: tmpDir, windowSize: '1200,900' })
 try {
   let sessions = []
-  for (let i = 0; i < 100 && sessions.length < 3; i++) {
+  for (let i = 0; i < 100 && sessions.length < 5; i++) {
     sessions = rt.cdp.iframeSessions || []
-    if (sessions.length < 3) await sleep(150)
+    if (sessions.length < 5) await sleep(150)
   }
-  check('★ 三个卡 iframe 都挂上了独立会话（OOPIF）', sessions.length === 3, '实际 ' + sessions.length)
+  check('★ 五个卡 iframe 都挂上了独立会话（OOPIF）', sessions.length === 5, '实际 ' + sessions.length)
 
   const byTitle = {}
   for (const s of sessions) {
@@ -227,24 +346,34 @@ try {
   const A = byTitle['arm-a']
   const B = byTitle['arm-b']
   const C = byTitle['arm-c']
-  check('★ 三臂都读到了探针（按 title 认领，不假设会话顺序）',
-    !!A && !!B && !!C, Object.keys(byTitle).join(','))
+  const D = byTitle['arm-d']
+  const E = byTitle['arm-e']
+  check('★ 五臂都读到了探针（按 title 认领，不假设会话顺序）',
+    !!A && !!B && !!C && !!D && !!E, Object.keys(byTitle).join(','))
 
-  // A 臂：等到那条 import 挂掉（它一定会挂 —— URL 指向 127.0.0.1:1）
-  let a = A ? A.o : null
-  if (A) {
+  // A/D/E 臂：等到各自那条留痕出现（A 的 import 一定会挂 —— URL 指向 127.0.0.1:1；
+  // D 的脚本一定会抛；E 的 <img src=""> 一定会加载失败）
+  const waitErrs = async (arm, ms) => {
+    if (!arm) return null
     const t0 = Date.now()
-    while (Date.now() - t0 < 12000) {
-      a = await evalJson(rt.cdp, PROBE, A.sid)
-      if (a.errs && a.errs.length) break
+    let v = arm.o
+    while (Date.now() - t0 < ms) {
+      v = await evalJson(rt.cdp, PROBE, arm.sid)
+      if (v && v.errs && v.errs.length) break
       await sleep(200)
     }
+    return v
   }
+  const a = await waitErrs(A, 12000)
   const b = B ? await evalJson(rt.cdp, PROBE, B.sid) : null
   const c = C ? await evalJson(rt.cdp, PROBE, C.sid) : null
+  const d = await waitErrs(D, 8000)
+  const e = await waitErrs(E, 8000)
   console.log('\n  实测 A（注入）: ' + JSON.stringify(a))
   console.log('  实测 B（不注入）: ' + JSON.stringify(b))
-  console.log('  实测 C（开关关）: ' + JSON.stringify(c) + '\n')
+  console.log('  实测 C（开关关）: ' + JSON.stringify(c))
+  console.log('  实测 D（运行时报错）: ' + JSON.stringify(d))
+  console.log('  实测 E（img src=""）: ' + JSON.stringify(e) + '\n')
 
   check('★★★ A：enabled 的脚本真的执行了（写了 __probeA）', !!a && a.a === 1, a && String(a.a))
   check('★★★ A：import 不存在的那条**自己**没跑起来（__probeB 不存在）',
@@ -261,6 +390,19 @@ try {
   check('★★ 对照臂 C：开关关掉时 __probeA 不存在（MUV_CARD_SCRIPTS 真的管事）',
     !!c && c.a === null, c && String(c.a))
   check('★ 对照臂 C：开关关掉时正文照旧', !!c && c.keep === true)
+
+  // ── D/E 臂（第 32 轮）：留痕必须"说得清"────────────────────────────────
+  check('★★★ D：没有顶层 import 的脚本运行时报错 ⇒ 留痕**带着脚本名**（不再「（未知脚本）」）',
+    !!d && d.errs.some((x) => String(x).indexOf('壬·运行时就抛') >= 0 && String(x).indexOf('boom-壬') >= 0),
+    d && JSON.stringify(d.errs))
+  check('★★ D：同一条留痕**没有**退化成「（未知脚本）」（名字真的带上了）',
+    !!d && !d.errs.some((x) => String(x).indexOf('（未知脚本）') >= 0), d && JSON.stringify(d.errs))
+  check('★★★ E：`<img src="">` 这类**非脚本元素**的报错不许被叫成"卡脚本报错"' +
+    '（真机那条 `… 脚本加载失败（本次不执行） http://127.0.0.1:3080/` 就是它）',
+    !!e && e.errs.some((x) => String(x).indexOf('非脚本元素 <img>') >= 0 && String(x).indexOf('不是卡脚本') >= 0),
+    e && JSON.stringify(e.errs))
+  check('★ E：留痕里没有把它说成"脚本加载失败"（误导排查的那半句去掉了）',
+    !!e && !e.errs.some((x) => String(x).indexOf('脚本加载失败') >= 0), e && JSON.stringify(e.errs))
 } finally {
   rt.close()
   try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch (_) {}

@@ -2098,6 +2098,190 @@ visual / frame-height …）**都要在非沙箱下跑**；看到那句 `CDP Web
 4. 真机未验：zod `+esm`（328 KB）在本机网络下的加载耗时（只会推迟卡脚本的**开始**，
    不会让谁失败）；bundle 那条跨源 `_.set` 是否被它自己的 `Promise.allSettled` 兜住。
 
+## 32. 第 32 轮：补 `YAML` + 卡脚本注入过滤/留痕带名 · `2026-09-22s`
+
+### 32.1 用户实测的三条控制台报错 → 本轮处置
+
+| # | 症状（原样） | 判定 | 处置 |
+|---|---|---|---|
+| 1 | `Uncaught ReferenceError: YAML is not defined`（反复出现） | **真缺口**（§31 漏判） | **本轮补**（32.3） |
+| 2 | `[muv-engine] 卡脚本报错：（未知脚本）脚本加载失败（本次不执行） http://127.0.0.1:3080/` | **两个缺陷叠加** | **本轮修**（32.4 / 32.5） |
+| 3 | `Uncaught TypeError: Cannot read properties of undefined (reading 'object')`（index.js:1:372） | 与 YAML **无关** | **只定位不改**（32.7） |
+
+第 3 条不是"疑似连带"：`ReferenceError`（标识符没定义）与 `TypeError`（属性读在 `undefined`
+上）是**两个错误类**，前者不会变形成后者。定位结果见 32.7，位置级吻合。
+
+### 32.2 ★ 教训：§31.3 的"卡侧 0 处"是**统计口径**错了，不是卡没在用
+
+§31.3 的表格里 `EjsTemplate / YAML / showdown | **0 / 0 / 0**`，据此"故意不补"。错在哪：
+
+> 那次只 grep 了**卡里内联脚本的正文**。而 §30.2 自己早就记过一种形态 ——
+> **脚本文本只有一行 `import 'https://…'`，真代码在远端。**
+
+换成"**跟到远端模块去数**"的口径，第一张卡就命中：
+
+```
+_足控天堂2 → 脚本[1]「外置手机」= import 'https://phone-ctn.pages.dev/index.js'
+            该模块 3,150,415 字节 → 27 处裸引用 YAML（YAML.parse / YAML.stringify）
+```
+
+**规矩**：以后统计"某全局被引用几次"，**必须把 `import '<绝对URL>'` 型脚本的远端内容也拉下来数**
+（本机 11 个带脚本的卡文件里，这一形态共 3 处：phone-ctn / tavern_resource 的自动更新 / 苍玄
+auto-regex）。只数内联正文会系统性低估，而且低估的恰好是"框架类依赖"——最该补的那些。
+
+### 32.3 补 `YAML`（`yaml@2.9.0`，不是 js-yaml）：ST 侧证据
+
+`predefine.js:12` 那条 `_.pick(window.parent, ['EjsTemplate','TavernHelper','YAML','showdown',
+'toastr','z'])` 只说明**名字**；父页那个全局的**真身**在酒馆助手里：
+
+```js
+// JS-Slash-Runner/dist/index.js（minified，原文）
+function Qne(){globalThis.YAML=dV,globalThis.z=uk}
+var dV=bn({Alias:()=>zL, CST:()=>zB, Composer:()=>wB, Document:()=>Lz, Lexer:()=>XB,
+           LineCounter:()=>ZB, Pair:()=>OR, Parser:()=>aV, Scalar:()=>HL, Schema:()=>Fz,
+           YAMLError:()=>zz, YAMLMap:()=>PR, YAMLParseError:()=>Bz, YAMLSeq:()=>IR,
+           YAMLWarning:()=>Vz, …, parse:()=>js, parseAllDocuments:()=>Ps,
+           parseDocument:()=>vt, stringify:()=>Ds, visit:()=>H, visitAsync:()=>be})
+```
+
+⇒ `YAML` = **`yaml@2` 的整包命名空间**。版本取 `JS-Slash-Runner/pnpm-lock.yaml` 的
+`yaml@2.9.0`（其 `package.json:59` 声明 `"yaml": "^2.9.0"`）。ST 本体另有一份
+`node_modules/yaml` = **2.8.3**，但那个**不是**父页被搬走的那个，所以钉 2.9.0。
+
+| 决定 | 依据 |
+|---|---|
+| 用 `yaml` 而**不是** js-yaml | js-yaml 的全局叫 `jsyaml`，且没有 `parseDocument` / `YAMLMap` / `CST` —— 冒充会在卡真用 `yaml@2` 特性时**静默给错结果**，比缺全局更坏 |
+| **不给** `dump` / `load` 别名 | 那是 js-yaml 的 API 名；ST 没有、卡侧 27 处只用 `parse`/`stringify`。加了会让 DSH 比 ST **更宽松**（在 ST 里会炸的卡在这里悄悄跑起来），按"两条腿"口径不加 |
+| 走 `<script type="module">` | **先核实的**：`yaml@2.9.0` 的 npm 包里**没有 UMD/IIFE** —— `dist/index.js`（1,769 字节）/`dist/index.min.js`（1,892 字节）都只是 CJS 的 `require('./…')` 转发壳；能当全局的只有 jsdelivr 现打的 `+esm`（104,914 字节，源文件 = 官方浏览器入口 `/browser/index.js`，包内无 `require(`） |
+| 落位写法 | `import * as MUVY` ⇒ `window.YAML = (typeof MUVY.parse === "function") ? MUVY : (MUVY.default || MUVY)`，**只在缺失时** |
+
+顺序仍然安全（与 §30.3 的同一条结论）：module 天然 defer，本标签在 `<head>`、卡脚本在
+`</body>` 之前 ⇒ 文档顺序决定它先执行。开关与注入点**与 lodash/zod 完全共用**
+（`MUV_CARD_LIBS`、`</head>` 之前、钉版本）。
+
+### 32.4 症状 2 的一半：content 是"地址片段而不是代码"
+
+真机那条 URL `http://127.0.0.1:3080/` 就是**宿主自己** —— 内联进 srcdoc 后浏览器拿宿主页当
+地址基准做相对解析。新增 `muvCardScriptBareSrc(c)`，**只认最保守的形态（宁可漏也不误杀）**：
+
+| 判据 | 结果 | 为什么 |
+|---|---|---|
+| 去空白后为空 | **拦** | 空内容注进去只是个空标签，还会进清单签名/缓存键 |
+| 含**任何**空白 | 放行 | `import 'https://…'`、几万字的 IIFE、一整段逻辑全有空白 —— 这条挡住最大的误杀面 |
+| 以 `http(s)://` 开头 | 放行 | ST 生态的正常写法（真卡 9 条 enabled 里 8 条是这个形态），不在这里判生死 |
+| 其余"单个 token"里：`/` `./` `../` `~/` `//` 开头，或整体是"文件名+已知扩展名" | **拦** | 这两类只可能是路径 |
+| 含 `*` `(` `)` 等 | 放行 | 正则字面量 / 表达式，不是路径 |
+
+★ 真卡实况：**9 条 enabled 一条都没被拦**（门禁 [1] 节有断言）。它是给**畸形卡 / 被工具改坏的卡**
+准备的护栏，不是日常路径。空白 content 另走一条分支（过去 `if (!c)` 挡不住 `'   '`）。
+
+### 32.5 症状 2 的另一半：留痕必须"说得清"
+
+收集器（`muvCardScriptErrProbe`）本轮改了两处：
+
+1. **唯一输出口 `rep(from,msg)`**：console 与 `window.__muvScriptErrs` 同口径、共用同一个
+   20 条上限计数器。三条入口 + 卡脚本自报都走它，不会两处说法不一致。
+2. **元素报错分脚本 / 非脚本**：`e.target` 上没有 `data-muv-th` 时不再一律「（未知脚本）」——
+   先看 `tagName`，不是 `script` 就报 `（非脚本元素 <img>）` + `<img> 资源加载失败（不是卡脚本）`。
+   ★ **门禁 E 臂真的复现了真机那条**：`<img src="">` 的 `src` 被解析成文档地址
+   （真机 = `http://127.0.0.1:3080/`），实测留痕
+   `（非脚本元素 <img>） | <img> 资源加载失败（不是卡脚本） file:///…/th.html`。
+   ⇒ 真机那条"脚本加载失败（本次不执行） http://127.0.0.1:3080/"**极可能根本不是卡脚本**，
+   而是一个无署名的元素（`src=""` 那一类）。**不要**再照着它去查卡的脚本清单。
+3. **运行时错误带名字**：给**没有顶层 import/export** 的脚本包一层
+   `try{…}catch(e){window.__muvThErr(e,"<脚本名>")}`。判据故意**极度保守**：内容里任何地方
+   出现 `import` / `export` 就**不包** —— 顶层 `import` 放进 `try` 块里是**语法错误**，
+   包错会把整条脚本当场弄死（**宁可少一个名字，不可少一条脚本**）。名字进 JS 字符串前把
+   `<` 转成 `\u003c`，所以"名字里写收尾标记"也截断不了 srcdoc（门禁有断言）。
+   门禁 D 臂实测：`壬·运行时就抛 | boom-壬`（过去这条只会是「（未知脚本） | boom-壬」）。
+
+### 32.6 门禁（全绿，数字）与"去掉就红"的两种做法
+
+| 门禁 | 结果 | 本轮变化 |
+|---|---|---|
+| `verify-card-libs.mjs` | **45 / 0** | 四臂 → **五臂**（新增 **E 臂 = 只摘掉 yaml 那一标签**）；A 臂新增 4 条 YAML 断言 |
+| `verify-tavernhelper-scripts.mjs` | **54 / 0** | 新增 **[2.1] 节**（过滤/留痕/F 臂）+ **[3] 的 D/E 两臂** |
+| `test-client-render.mjs` | **320 / 0** | [20] 段 8 库 → 9 库 + yaml 形状；[23] 段过滤与包壳 |
+| `verify-card-compat.mjs --old-export` | after **46 / 0**（**偶发**，见下）· before 红 **37** | 对照成立 |
+
+**★ `verify-card-compat` 的时序偶发：本轮复现并归因了（以后照这个流程走，别判成回归）**
+
+```
+本轮版本 7 次 after: 46/0 · 46/0 · 44/2 · 44/2 · 44/2 · 45/1 · 46/0    （0~2 条波动）
+HEAD 版  同条件 2 次: 44/2 · 45/1                                       （也是那两条）
+定点剔除 YAML 注入后: 44/2                                              （还是那两条）
+```
+
+- 红的一直是同两条：**⑧b**（隐藏收件箱 `#send_textarea` 还没装上）、**⑩g**（宿主推来的
+  `mag_variable_update_ended` 还没被吸收）—— 都是"探针比被观察的动作先跑"。
+- **归因步骤**（三步，缺一不可）：① 看是不是**同样那两条**（不是随机分布 ⇒ 先怀疑稳定原因）；
+  ② **HEAD 对照** —— `git show HEAD:lib/client.js > 别处.js`，用
+  `node verify-card-compat.mjs --old-export --src=<别处.js>` 在**同一时段**跑，
+  HEAD 也红 ⇒ 与本轮改动无关（★ 这招**不必** `git stash`，见 §26.2）；
+  ③ **定点剔除** —— 把自己新加的那一段文本去掉再跑（本轮去掉 YAML 仍红）。
+- **不要**为了变绿去改这两条断言：⑩g 的语义就是"**同步**读立刻拿到新值"，
+  给它加等待等于把判据废掉。**偶发就如实记，重跑到绿的那次为准并写明波动范围。**
+
+
+**对照臂真的变红 —— 用了两种做法，都记下来供后人挑**：
+
+1. **门禁内的因果臂**（推荐，可重复、随源码走）
+   - **E 臂**：全量注入但从产物里**摘掉 yaml 那一标签** ⇒ `yamlFn` 实测 `undefined`、
+     `yamlParse`/`yamlStr` 全 false，而 `_` / `z` / jQuery 都在（⇒ 不是"整篇没生效"的假红）。
+   - **F 臂**（新招）：**把源码里那两道过滤逐字摘掉**再 `buildFrom` 提取**同一个真函数** ——
+     同一条 `./index.js` 被注入、标签数 3 → 7。★ 关键设计：先断言"源码**真的**被摘动了"
+     （`SRC_NO_FILTER !== SRC` 且两条正则都不再命中），**摘不动就自己变红**，
+     绝不会退化成"对照臂什么都没摘、于是断言永真"的假绿。
+   - 这招（**对源码做定点文本剔除 + 断言剔除生效**）比 `--old-export` 那种"拿旧提交"更稳：
+     不依赖 git 对象库（§26.2 那次事故就是对象库坏了）。
+2. **变异实验（改真代码，一次性）**：临时去掉 YAML 注入 ⇒ `verify-card-libs` 红 **7** 条
+   （4 条 YAML 断言，`typeof window.YAML` 实测 `undefined`）；临时去掉相对地址过滤 ⇒
+   `verify-tavernhelper-scripts` 红 **4** 条（"相对地址那条没有进文档"、标签数 3→6 等）。
+   恢复后核对 `md5` 一致再重跑，全绿。**做变异实验前先 `cp lib/client.js` 到仓库外备份 +
+   记 `md5`，恢复后核对**（不比 `git stash`，§26.2）。
+
+### 32.7 症状 3 的定位（**本轮故意不改**，下一轮第一顺位）
+
+`Cannot read properties of undefined (reading 'object')` 的真因**不是**缺全局，而是
+**我们给的 `window.z` 比 ST 窄一档**：
+
+```
+StageDog/tavern_resource → dist/酒馆助手/自动更新角色卡/index.js（2,744 字节，单行压缩）
+  const n=z, r=n.z.object({角色卡名称:n.z.string(), …})
+                      ↑ 偏移 367 ⇒ 报错里的 index.js:1:372 就在这儿
+```
+
+- `n = z` = 我们的全局；`n.z` = **undefined**（我们落位的是 `MUVZ.z`，**子对象**，没有 `.z`）
+  ⇒ `undefined.object` ⇒ TypeError。
+- ST 那边给的是**整包命名空间**：`uk = bn({$brand, $input, …, ZodAny, …})`（`globalThis.z=uk`），
+  它**既有** `z.object` **也有** `z.z` ⇒ 两种写法都通吃。所以 §31 的落位是个**子集**。
+- 同类第二处：`tavern_resource/dist/util/mvu_zod.js:553` 的 `r.z.object({stat_data:e})`
+  —— 这条更常见（`变量结构` 那类脚本都 import 它）。
+
+**改法一个字**：落位改成命名空间 `MUVZ`。已核实 jsdelivr 的 `zod@4.4.3/+esm` 导出表里
+`mo as object` 与 `Os as z` **都在** ⇒ `window.z = MUVZ` 时 `z.object` / `z.z` / `z.record` /
+`z.preprocess` / `z.coerce` **全部**成立，与 ST 的形状一致（纯超集，不是新行为）。
+
+**为什么本轮不改**：① 它改的是 §31 已经验证过的行为，该配自己的因果臂（照 §31.5 的
+C/D/E 臂做法再加一条"只把落位换成命名空间"的臂）；② 用户本轮的清单里第 3 条只要
+"说明是否消失 + 给新嫌疑"，没让它改。**下一轮第一顺位**：改落位 + 加臂 + 在 04-排错手册
+§L 写"两种 `z` 写法"。
+
+### 32.8 只能真机验的部分
+
+1. `lib/client.js` 改动**硬刷新即可**（本轮没动服务端路由 ⇒ **不用重启 DSH**）。
+2. 硬刷新后看：`[muv-engine] client loaded 2026-09-22s`；
+   ① 控制台**不该**再有 `YAML is not defined`；
+   ② `_足控天堂2` 的「外置手机」那条 `import 'https://phone-ctn.pages.dev/index.js'` 应该能跑下去
+   （它 27 处 `YAML.parse/stringify` 现在有得用了）；
+   ③ 那条 `脚本加载失败（本次不执行） http://127.0.0.1:3080/` 应变成
+   `（非脚本元素 <img>） | <img> 资源加载失败（不是卡脚本） …` —— **看到这个就说明它不是卡脚本**；
+   ④ `Cannot read properties of undefined (reading 'object')` **仍会出现**（本轮没修，见 32.7）。
+3. 真机未验：`yaml@2.9.0/+esm`（105 KB）在本机网络下的加载耗时（只会推迟卡脚本的**开始**）；
+   以及"包壳后的 try/catch 会不会把某条脚本本该冒泡的错误吃掉"（按设计不会：
+   `__muvThErr` 立刻把它记进 `__muvScriptErrs` 并 `console.warn`）。
+
+
 
 
 

@@ -1055,18 +1055,27 @@ console.log('\n[20] 卡 iframe 注入 ST 同款前端库')
     //   `_`（lodash，predefine.js:1）与 `z`（zod，predefine.js:12）。版本都钉 ST 那一代。
     ['lodash', /lodash@[\d.]+\/lodash\.min\.js/],
     ['zod', /zod@[\d.]+\/\+esm/],
+    // ── 2026-09-23（第 32 轮）：YAML ─────────────────────────────────────────
+    //   同一个 `_.pick` 清单里的第三个名字。父页那个全局是**酒馆助手自己**装的
+    //   （`dist/index.js` 的 `Qne(){globalThis.YAML=dV}`，`dV` = `yaml@2` 命名空间），
+    //   版本取 JS-Slash-Runner 的 pnpm-lock：`yaml@2.9.0`。
+    ['YAML (yaml)', /yaml@[\d.]+\/\+esm/],
   ]
   for (const [name, re] of LIBS) {
     check('注入了 ' + name, re.test(tags), tags.slice(0, 60))
   }
-  check('★ 八个 URL 全部走 https 的 jsdelivr（钉版本，不用 latest）',
-    (tags.match(/https:\/\/cdn\.jsdelivr\.net\/npm\//g) || []).length === 8 && !/@latest/.test(tags),
+  check('★ 九个 URL 全部走 https 的 jsdelivr（钉版本，不用 latest）',
+    (tags.match(/https:\/\/cdn\.jsdelivr\.net\/npm\//g) || []).length === 9 && !/@latest/.test(tags),
     String((tags.match(/https:\/\/cdn\.jsdelivr\.net\/npm\//g) || []).length))
   // ★ 版本必须是 ST 那一代（我们是从 ST 源码里读出来钉的，不是随手挑的 latest）：
   //   lodash 4.18.1 = `SillyTavern/node_modules/lodash/package.json` 的 version；
-  //   zod 4.4.3     = `JS-Slash-Runner/package.json` 的 `"zod": "^4.4.3"`。
+  //   zod 4.4.3     = `JS-Slash-Runner/package.json` 的 `"zod": "^4.4.3"`；
+  //   yaml 2.9.0    = `JS-Slash-Runner/pnpm-lock.yaml` 的 `yaml@2.9.0`
+  //                   （它 `package.json:59` 声明 `"yaml": "^2.9.0"`）。
   check('★ lodash 钉的是 ST 本体的 4.18.1', /lodash@4\.18\.1\//.test(tags), tags.match(/lodash@[\d.]+/) + '')
   check('★ zod 钉的是酒馆助手的 4.4.3', /zod@4\.4\.3\//.test(tags), tags.match(/zod@[\d.]+/) + '')
+  check('★ yaml 钉的是酒馆助手的 2.9.0（父页那个全局的真身那一代）',
+    /yaml@2\.9\.0\//.test(tags), tags.match(/yaml@[\d.]+/) + '')
   // 顺序：ST 是「先 CSS 后 JS，jQuery 在 Vue 前」—— Vue-Router 依赖全局 Vue、
   // jQuery-UI 依赖全局 jQuery，顺序错了就是静默少一个库。
   const iFa = tags.indexOf('fontawesome')
@@ -1096,7 +1105,17 @@ console.log('\n[20] 卡 iframe 注入 ST 同款前端库')
     iZod >= 0 && tags.slice(iZod - 30, iZod + 40).includes('type="module"'), tags.slice(iZod - 30, iZod + 30))
   check('★ zod 仍然"只在缺失时"落位（卡自己定义了 window.z 就不动它）',
     tags.includes('typeof window.z==="undefined"'), '')
-  // 对照臂：把 lodash 三段摘掉 ⇒ 文档里就只剩 5 个 data-muv-libs（判据不是空转）
+  // ── 2026-09-23（第 32 轮）新增项的形状断言：YAML ─────────────────────────
+  const iYaml = tags.indexOf('data-muv-libs="yaml"')
+  check('★★ YAML 也只能走 module：实测 `yaml@2.9.0` 的 npm 包里没有 UMD/IIFE' +
+    '（`dist/index.js` 1,769 字节、`dist/index.min.js` 1,892 字节，都只是 CJS 的 require 转发壳）',
+    iYaml >= 0 && tags.slice(iYaml - 30, iYaml + 40).includes('type="module"'), tags.slice(iYaml - 30, iYaml + 30))
+  check('★ YAML 仍然"只在缺失时"落位（卡自己定义了 window.YAML 就不动它）',
+    tags.includes('typeof window.YAML==="undefined"'), '')
+  check('★★ YAML 的兜底顺序：先认**能 parse 的命名空间**，再退到 default，最后才是它本身' +
+    '（`+esm` 是现打的包，具名导出形态不保证稳定）',
+    /typeof MUVY\.parse==="function"/.test(tags) && /MUVY&&MUVY\.default/.test(tags), '')
+  // 对照臂：把 lodash 三段摘掉 ⇒ 文档里就只剩 8 个 data-muv-libs（判据不是空转）
   const noDash = tags.replace(/<script data-muv-libs="dash-(save|keep)">[\s\S]*?<\/script>/g, '')
     .replace(/<script data-muv-libs="lodash" src="[^"]*"><\/script>/g, '')
   check('★★ 对照臂：摘掉 lodash 三段后确实没了（说明上面那几条不是永真）',
@@ -1275,6 +1294,22 @@ console.log('\n[23] 卡脚本运行时：注入形态与开关')
     probeSrc.includes('__muvScriptErrs'))
   check('★ 留痕上限 20 条（循环报错的卡不许把控制台刷爆）', /n>=20/.test(probeSrc))
   check('★ 内容带脚本收尾标记的条目跳过（内联会截断 srcdoc）', /<\\\/script\/i\.test\(c\)/.test(tagSrc))
+  // ── 第 32 轮：过滤（空白 / 相对地址）与"留痕带名字"──────────────────────
+  check('★★ 空白 content 被跳过**且留痕带名字**（静默跳过等于"我明明有这条怎么没跑"）',
+    /!c\.trim\(\)/.test(tagSrc) && /内容为空或只有空白/.test(tagSrc))
+  check('★★ "内容是相对/裸地址"的那条被跳过（否则浏览器拿宿主页当地址基准去取它，' +
+    '真机就是这样打出 `http://127.0.0.1:3080/` 的）',
+    /muvCardScriptBareSrc\(c\)/.test(tagSrc) && /相对\/裸地址/.test(tagSrc))
+  check('★★ 三条留痕一律带脚本名（`who = name || （未命名）`，不再只说"（未知脚本）"）',
+    /var who = nm \|\| /.test(tagSrc))
+  check('★★ 没有顶层 import/export 的脚本被 try/catch 包一层，catch 里**带着名字**自报 ' +
+    '（这样"运行时报错"也说到哪一条）',
+    /__muvThErr\(e,/.test(tagSrc) && /\(import\|export\)/.test(tagSrc))
+  check('★ 收集器提供自报口 `__muvThErr` 与唯一输出口 `rep`（console 与 __muvScriptErrs 同口径）',
+    /window\.__muvThErr=function/.test(probeSrc) && /function rep\(from,msg\)/.test(probeSrc))
+  check('★ 元素报错区分脚本与非脚本元素（真机那条 `… http://127.0.0.1:3080/` 是**无署名的' +
+    '元素**报错，过去被一律叫成"脚本"，误导排查）',
+    /非脚本元素/.test(probeSrc) && /不是卡脚本/.test(probeSrc))
 
   const withCardScriptsOn = buildFrom(['withCardScripts'], { MUV_CARD_SCRIPTS: true }, 'withCardScripts')
   const withCardScriptsOff = buildFrom(['withCardScripts'], { MUV_CARD_SCRIPTS: false }, 'withCardScripts')
@@ -1291,6 +1326,16 @@ console.log('\n[23] 卡脚本运行时：注入形态与开关')
     String((outAll.match(/<script type="module"/g) || []).length))
   check('★★ 顺序 = 卡里数组的顺序（甲在乙之前）',
     outAll.indexOf('__probeA') < outAll.indexOf('example.invalid'))
+  // 过滤的**行为**（不是只断言源码里有那几个字）：同一份清单里坏的被拦、好的照旧进
+  const outFilter = withCardScriptsOn(docAll, [
+    { name: '空白', content: '   ' },
+    { name: '相对', content: './a.js' },
+    { name: '绝对', content: "import 'https://x.example/a.js';" }
+  ])
+  check('★★ 过滤只拦坏 content：空白 / 相对地址被跳过，绝对 import 照旧注入（3 条里只剩 1 条）',
+    (outFilter.match(/<script type="module"/g) || []).length === 1 &&
+    outFilter.indexOf('./a.js') === -1 && outFilter.indexOf('x.example') > -1,
+    String((outFilter.match(/<script type="module"/g) || []).length))
   check('★★ 幂等：同一个文档注入两次 ⇒ 第二次逐字不变', withCardScriptsOn(outAll, listAll) === outAll)
   check('★ 内容带脚本收尾标记的条目跳过，其余照常注入',
     withCardScriptsOn(docAll, [

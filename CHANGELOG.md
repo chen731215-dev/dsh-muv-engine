@@ -1,5 +1,133 @@
 # Changelog
 
+## 未发布（2026-09-23 · 三十二）★★ 补 `YAML` + 卡脚本注入过滤/留痕带名 · `2026-09-22s`
+
+真机控制台报了三件事，本轮按证据逐条处置（第 1、2 条已修，第 3 条已**定位**但不改）：
+
+| # | 真机症状 | 结论 |
+|---|---|---|
+| 1 | `Uncaught ReferenceError: YAML is not defined`（反复） | **真缺口**，本轮补上（§31 那次"卡侧 0 处"是**统计口径漏了**远端模块，见下） |
+| 2 | `[muv-engine] 卡脚本报错：（未知脚本）脚本加载失败（本次不执行） http://127.0.0.1:3080/` | **两个缺陷叠在一起**：①有一条 content 不是代码而是相对/空地址，被内联后按宿主地址解析；②报错元素**没有署名**。两条都修 |
+| 3 | `Uncaught TypeError: Cannot read properties of undefined (reading 'object')`（index.js:1:372） | **与 YAML 无关**（已证）；真因是 `window.z` 的**形状**比 ST 窄一档，位置级吻合，留给下一轮（见 HANDOFF §32.7） |
+
+### 1. 补 `YAML`（`yaml@2.9.0`，**不是** js-yaml）
+
+- **ST 侧的 `YAML` 是谁给的**：`predefine.js:12` 的
+  `_.pick(window.parent, ['EjsTemplate','TavernHelper','YAML','showdown','toastr','z'])` 只是
+  **搬运**；父页那个全局的真身是**酒馆助手自己**装的 —— `JS-Slash-Runner/dist/index.js` 里
+  `function Qne(){globalThis.YAML=dV,globalThis.z=uk}`，而
+  `dV = bn({Alias, CST, Composer, Document, Lexer, LineCounter, Pair, Parser, Scalar, Schema,
+  YAMLError, YAMLMap, YAMLParseError, YAMLSeq, YAMLWarning, isAlias…, parse, parseAllDocuments,
+  parseDocument, stringify, visit…})` —— **`yaml@2` 的整包命名空间**。
+- **版本**：`JS-Slash-Runner/pnpm-lock.yaml` 的 `yaml@2.9.0`（它 `package.json:59` 声明
+  `"yaml": "^2.9.0"`）。ST 本体另有一份 `node_modules/yaml` = 2.8.3，但**父页那个全局来自
+  酒馆助手的 bundle**，所以钉 **2.9.0**。
+- **为什么不是 js-yaml**：js-yaml 的全局名叫 `jsyaml` 且**没有** `parseDocument`/`YAMLMap`/`CST`
+  —— 用 js-yaml 冒充会在"卡真的用了 `yaml@2` 特性"时静默给错结果，比缺全局更坏。
+- **为什么不给 `dump` / `load`**：那是 js-yaml 的 API 名；ST 那个命名空间没有它们，卡侧实测
+  27 处也只用 `parse` / `stringify`（见下）。加别名会让 DSH 比 ST **更宽松**（在 ST 里会炸的卡
+  在这里悄悄跑起来），按本仓库"ST 侧 + 卡侧两条腿"的口径不加。
+- **只能走 `<script type="module">`**（与 zod 同款处置，**先核实再选**）：实测 `yaml@2.9.0` 的
+  npm 包里**没有 UMD/IIFE** —— `dist/index.js`（1,769 字节）与 `dist/index.min.js`（1,892 字节）
+  都只是 CJS 的 `require('./…')` 转发壳；能当全局用的只有 jsdelivr 现打的那份
+  `yaml@2.9.0/+esm`（104,914 字节，源文件就是官方的浏览器入口 `/browser/index.js`，
+  包内无任何 `require(`）。
+- **落位**：`import * as MUVY` ⇒ `window.YAML = (typeof MUVY.parse === "function") ? MUVY
+  : (MUVY.default || MUVY)`，**只在缺失时**（卡自己有一份就尊重卡的）。顺序仍安全：
+  module 天然 defer，本标签在 `<head>`、卡脚本在 `</body>` 之前。
+
+### 2. 卡侧证据推翻 §31 的"YAML 0 处"（统计口径的教训）
+
+§31.3 记的是"`EjsTemplate` / `YAML` / `showdown` 各 0 处"，那是**只 grep 了卡里内联脚本的正文**。
+本轮换成"**连远端模块一起看**"的口径，第一张卡就命中：
+
+```
+_足控天堂2 → 脚本[1]「外置手机」= import 'https://phone-ctn.pages.dev/index.js'
+            该远端模块 3,150,415 字节里有 **27 处裸引用 YAML**，全是
+            YAML.parse(...) / YAML.stringify(...)
+```
+
+`§30.2` 早就记过"脚本文本只有一行 import、真代码在远端"这种形态 —— 但 grep 统计漏了它。
+**教训写进 HANDOFF §32.2：统计"某全局被引用几次"时，`import '…'` 型脚本必须跟到远端去数。**
+
+### 3. 卡脚本注入：两条过滤（都留痕带名字）
+
+真机第 2 条症状的形态是"content 不是代码，而是一个相对/空地址"，内联后被浏览器按
+**宿主页**当地址基准解析（`http://127.0.0.1:3080/` 就是宿主自己）。
+
+- `muvCardScriptBareSrc(c)`（新）：**只认最保守的形态，宁可漏也不误杀** ——
+  去空白后为空 ⇒ 拦；**含任何空白** ⇒ 放行（`import 'https://…'`、几万字的 IIFE 全有空白）；
+  以 `http(s)://` 开头 ⇒ 放行（ST 生态的正常写法）；剩下的"单个 token"里只拦两类明显是路径的
+  （以 `/` `./` `../` `~/` `//` 开头，或整体是"文件名+已知扩展名"）。带 `*` `(` `)` 的
+  （正则字面量/表达式）一律不拦。
+- 空白 content 也跳过（过去 `if (!c)` 挡不住 `'   '`：会多出一个空标签，还会进清单签名/缓存键）。
+- **两条都 `console.warn` 留痕，且带脚本名 + 原因 +（地址那条）内容片段** —— 静默跳过正是
+  这一轮要消灭的那类困惑。
+- 真卡实况：9 条 enabled 脚本**一条都没被拦**（门禁 [1] 节有断言），它是给畸形卡准备的护栏。
+
+### 4. 留痕带名字：元素报错分类 + 无 import 脚本包壳自报
+
+- 收集器新增唯一输出口 `rep(from,msg)`（console 与 `window.__muvScriptErrs` 同口径、共用同一
+  个 20 条上限计数器），三条入口与卡脚本自报都走它。
+- **元素报错**：`e.target` 上没有 `data-muv-th` 时，不再一律写成「（未知脚本）」——
+  先看 `tagName`：不是 `script` 就报 `（非脚本元素 <img>）` + `<img> 资源加载失败（不是卡脚本）`。
+  ★ 门禁 E 臂真的复现了真机那条：`<img src="">` 的 `src` 被解析成**文档地址**
+  （真机就是 `http://127.0.0.1:3080/`），过去被叫成"卡脚本报错"，完全误导排查。
+- **运行时错误**：给**没有顶层 import/export** 的脚本包一层
+  `try{…}catch(e){window.__muvThErr(e,"<脚本名>")}` ⇒ 这类脚本运行时报错也**说得出名字**。
+  判据**极度保守**：内容里任何地方出现 `import` / `export` 就不包（顶层 `import` 放进 `try`
+  块里是**语法错误**，包错会把整条脚本弄死 —— 宁可少一个名字，不可少一条脚本）。
+  名字进 JS 字符串前把 `<` 转成 `\u003c`，名字里写收尾标记也截断不了 srcdoc。
+
+### 5. 门禁（全绿，数字）
+
+| 门禁 | 结果 |
+|---|---|
+| `verify-card-libs.mjs` | **45 / 0**（四臂 → **五臂**：新增 E 臂"只摘掉 yaml 标签"） |
+| `verify-tavernhelper-scripts.mjs` | **54 / 0**（新增 [2.1] 节：过滤/留痕/**F 臂对照** + D/E 两臂真浏览器） |
+| `test-client-render.mjs` | **320 / 0**（[20] 段 9 库 + yaml 形状；[23] 段过滤与包壳） |
+| `verify-card-compat.mjs --old-export` | after **46 / 0**（**这一条有时序偶发**，见下）· before 红 **37** ⇒ 对照成立 |
+
+**`verify-card-compat` 的时序偶发（如实记录，别当成回归）**：本轮这一条跑了 7 次，after 数字是
+`46/0 · 46/0 · 44/2 · 44/2 · 44/2 · 45/1 · 46/0`（0~2 条波动）。红的两条一直是同两条：
+⑧b（隐藏收件箱 `#send_textarea` 还没装上）与 ⑩g（宿主推来的 `mag_variable_update_ended` 还没被吸收）
+—— 都是"探针比被观察的动作先跑"。
+**HEAD 对照归因**：把**未含本轮改动的 `git show HEAD:lib/client.js`** 拿来跑**同一个门禁、同一个时段**，
+after 同样是 `44/2 · 45/1`（也是 ⑧b / ⑩g）⇒ **与本轮改动无关**，是环境时序。
+另做了一次定点剔除：去掉本轮新加的 YAML 注入后仍是 `44/2`（同样两条）⇒ 也不是 YAML 带来的。
+**没有**为了变绿去改这两条断言（⑩g 的语义就是"**同步**读立刻拿到新值"，给它加等待等于把判据废掉）。
+
+**对照臂真的变红了（两个都做了，"去掉就红"逐条成立）**：
+
+1. **门禁内的因果臂**：E 臂（全量注入但**只摘掉 yaml 那一标签**）⇒ `window.YAML`/`YAML.parse`
+   全 false 而 `_`/`z`/jQuery 都在；F 臂（**把源码里那两道过滤逐字摘掉**再提取同一个真函数）
+   ⇒ 同一条 `./index.js` 被注入、标签数 3 → 7。F 臂还先断言"源码真的被摘动了"，
+   摘不动就自己变红，不会退化成假对照。
+2. **变异实验（改代码本身）**：临时去掉 YAML 注入 ⇒ `verify-card-libs` 红 **7** 条
+   （其中 4 条是 YAML 断言，`typeof window.YAML` 实测 `undefined`）；临时去掉相对地址过滤 ⇒
+   `verify-tavernhelper-scripts` 红 **4** 条（"相对地址那条没有进文档"等）。两次都恢复并核对
+   `md5` 一致后重跑，全绿。
+
+### 6. 第 3 条报错的定位（本轮**不改**，如实记录）
+
+`Cannot read properties of undefined (reading 'object')` **与 YAML 无关**（不同错误类；
+`ReferenceError` 不会变形成 `TypeError`）。位置级吻合的真因：
+
+```
+StageDog/tavern_resource → dist/酒馆助手/自动更新角色卡/index.js（2,744 字节，单行压缩）
+  const n=z, r=n.z.object({角色卡名称:n.z.string(), …})
+                      ↑ 偏移 367 ⇒ 正好是报错里的 index.js:1:372
+```
+
+`n = z`（我们的全局）⇒ `n.z` 是 **undefined**（我们落位的是 `MUVZ.z` 这个**子对象**，
+它没有 `.z`）⇒ `undefined.object` 抛 TypeError。ST 那边给的是**整包命名空间**
+（`uk = bn({$brand,…,ZodAny,…})`，既有 `z.object` 也有 `z.z`），所以两种写法都通吃。
+同类第二处：`tavern_resource/dist/util/mvu_zod.js:553` 的 `r.z.object({stat_data:e})`。
+
+**改法一个字**：落位改成命名空间 `MUVZ`（实测 jsdelivr `zod@4.4.3/+esm` 的导出表里
+`mo as object` 与 `Os as z` **都在**，两形态都通吃，与 ST 形状一致）。本轮**故意没动** §31
+已验证的 `z` 行为 —— 改它要配自己的因果臂，见 `HANDOFF §32.7`（下一轮第一顺位）。
+
 ## 未发布（2026-09-23 · 三十一）★★ 卡 iframe 补齐 ST `predefine.js` 的全局：lodash / zod · `2026-09-22r`
 
 ### 为什么（上一轮留下的第一顺位）

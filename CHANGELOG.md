@@ -1,5 +1,620 @@
 # Changelog
 
+## 未发布（2026-09-22 · 十三）★★ 变量内核四项打通：命令式 `_.set`/`_.add`、`stat_data` 归一、`TavernHelper`/`Mvu` 垫片、新值回推在线帧
+
+### 为什么（症状）
+新导入的 MVU 卡（`stat_data × 105`、`Mvu. × 53`、`_.set( × 39`、`getVariables( × 17`）在 DSH 里
+**界面渲染出来、但一个数字都不动、按钮点了没反应、控制台无异常无请求**。
+四个独立原因各占一份：命令式写没进解析器、`stat_data` 路径对不上、
+卡要的宿主 API（`TavernHelper`/`Mvu`）我们一个都没提供、回灌后在线卡帧仍停在加载时那次查询的旧值。
+
+### ① 命令式写入（`lib/var-tracker.js`，新增 `parseCommandOps`）
+- 认 `_.set('a.b.c', 值)` / `_.add('a.b', 数字)`，值支持数字 / 字符串 / 布尔 / `null` /
+  JSON 对象数组字面量（含转义与 `\uXXXX`）；
+- **不认**卡自带的 lodash 形态 `_.set(对象, 路径数组, 值)`（首参不是字符串字面量）——
+  计入 `bad`，不猜、不抛，同一条消息里的好调用照常生效；
+- 前缀必须是**非标识符字符**（`foo_.set(` 不认），否则会把 `xxx_.set(` 误当成命令式写；
+- 值是变量引用（`_.set('a', someVar)`）**判失败**：服务端不求值，猜就是编数据；
+- `_.add` 的增量非数字字面量同样判失败（不拼字符串）。
+- **顺序与既有 ERA 增量块共用同一个 ops 序列**：先收两条来源的全部 op，再按**文本先后**排序
+  统一重放。有消息键 ⇒ 走既有键序重放（乱序送达结果一致、重复送达幂等）；无键 ⇒ 按到达顺序追加。
+- `/api/muv-engine/extract` 响应增出 `commandOps` / `badCommandOps`（可观测）。
+
+### ② `stat_data` 语义归一（新增 `normalizeStatData`）
+- `chat[i].variables.stat_data`（ST 的存储形态）⇒ 归成**顶层键 = `stat_data`** 的变量树，
+  使卡里的 `stat_data.xxx` 路径对得上；
+- 本来就是顶层 `stat_data` 的 MVU 形态、以及**平铺树**，**原样返回** ——
+  ★ 平铺树**不**包一层 `{stat_data:…}`（无差别包会让既有 ERA 卡的路径全断，这是本次的对照臂）；
+- 归一在 `setState` / `mergeState` 两个入口统一做，`parseVariableOps` 的块载荷也过一遍；
+  ①②的既有行为未动。
+
+### ③ 卡 iframe 宿主 API 垫片（`lib/client.js` 的卡兼容垫片，第 8 节）
+- `window.TavernHelper`：`getVariables` / `replaceVariables` / `insertOrAssignVariables` /
+  `triggerSlash` / `eventOn` / `eventEmit` / `eventOnce` / `eventOff` / `eventClearAll` /
+  `getChatMessages` / `formatAsTavernRegexedString` / `getLastMessageId` / `eventClearAll`
+  （+ `version` / `getContext`）；`window.Mvu`：`getMvuData` / `replaceMvuData` /
+  `getMvuVariable` / `events`；**裸全局同名**也定义（实测卡两种写法都有）。
+- 读口径对齐卡的 `pickStat`：读出来一律是 `{stat_data:…}` 形状（卡只认这个非空才算数）；
+  `getVariables("a.b", {defaultValue})` 字符串路径形态也支持。
+- `triggerSlash` **只走白名单**：`/send <文本>`、`/setvar`、`/getvar`、`/echo`；
+  其余（含实测卡真的用到的 `/inject`）**不执行、只 `console.warn`** ——
+  "假装做过"比"如实没做"更坏：卡会以为注入成功，后面每一步都错。
+- 父页探测按**真卡的实际形状**实现（取证见 `docs/02-变量链路.md`）：
+  卡的 `resolveTH/resolveST` 是「多条探针各自 `try` 包住、`window.X` 排第一」。
+  沙箱是不透明来源 ⇒ `window.parent.X` **抛 `SecurityError`**（不是返回 `undefined`），
+  所以同名对象定义在**卡自身 window** 上即可命中；**不放宽沙箱**去迁就 `window.parent.X`。
+- `eventOn` 返回**取消订阅函数**（实测卡用 `var unsub = on(...)`）。
+- 启动即向宿主问一次 MVU 数据（走新增通道 `__muvMvuReq`）。
+
+### ④ 回灌后把新值推给在线帧
+- `muvEraPushNow` 每帧推**两条**：`era:getCurrentVars`（既有 ERA 通道）+
+  `mag_variable_update_ended`（MVU 事件，载荷 `{stat_data:…}`）；
+- 卡内新增 `__muvAbsorb`：把入站事件的变量树**同步吸进** `mvuData` 缓存 ——
+  `Mvu.getMvuData()` / `TavernHelper.getVariables()` 是**同步读**，不吸缓存它们只能回初始值；
+- 入站事件仍走 `fire`（**卡内**派发）而不是 `emit`：`emit` 会把宿主回灌的事件再转发回宿主，
+  一个来回就成正反馈。★ 这条是既有门禁逐字盯着的形状，故 `fire` 与 `__muvAbsorb` 写成
+  **两条并列 `if`**（不改门禁口径去迁就代码风格）。
+- 卡侧写回走**独立通道** `__muvVarWrite`（各自节流），口径：**整树（带 `stat_data`）用 replace、
+  增量/平铺用 merge**；认不出会话或超体积则丢弃（宁可没写，也不写错会话）。
+
+### 门禁（全绿，数字）
+| 命令 | 结果 |
+| --- | --- |
+| `node test-era-vars.mjs` | 全部通过（新增 [4][5][6] 三节 + 对照臂） |
+| `node test-client-render.mjs` | 264 通过 / 0 失败 |
+| `node test-regex-engine.mjs` | 26 通过 / 0 失败 |
+| `node verify-era-bridge.mjs` | after **21 通过 / 0 失败**；对照臂 nobridge 13/8 红、before 6/15 红 |
+| `node verify-card-compat.mjs --old-export` | after **46 通过 / 0 失败**；对照臂 before 9/37 红 |
+| `node verify-no-redouble.mjs` | 6 通过 / 0 失败 |
+| `node verify-decorate-dom.mjs` | 全部通过（需 `MUV_EDGE`） |
+
+新增行为都配了**能真的变红的对照臂**：`foo_.set(` / lodash 形态 / 变量引用 / 字符串增量四类坏调用、
+平铺树不被包成 `{stat_data}` 、名单外 `/inject` 只 warn 不动输入框、before 臂上整组 ⑩ 全红。
+
+### 未动（硬约束自检）
+`lib/regex-engine.js`、`_decorateOne` 的三条守卫、`<VariableEdit>` 现有解析 —— 均未改动；
+替换串仍一律走函数式替换；未触碰另一仓库 `C:\dsh-tavern-v2`。
+客户端构建标记 `MUV_BUILD` → `2026-09-22l`。
+
+### 已知边界（只能真机/实测确认的部分）
+- `formatAsTavernRegexedString` 目前**原样返回**（实测新卡里计数为 0，先按最小实现兜住存在性）；
+- `getChatMessages()` 返回宿主喂进来的消息文本数组（不含完整 ST `chat` 字段）；
+- `/inject` 等名单外命令**不执行**：卡若只靠它注入变量，那部分功能不会生效（会打印 warning，可观测）；
+- 卡若用 `_.set(对象, 路径数组, 值)` 这种 lodash 形态，**不会被**提取（计 `bad`，服务端日志可见）。
+
+## 未发布（2026-09-22 · 十二）★★ 给卡 iframe 补上 ST 会注入的前端库（Tailwind/jQuery/jQuery-UI/Vue/Vue-Router/FontAwesome）
+
+### 为什么（事实，不是推测）
+`ST-IFRAME-SPEC.md` §3 / §7：ST 的 iframe 文档模板 `b1()` **无条件**把常量 `v1`
+塞进**每一个**卡 iframe。`v1` 的原文（从 `JS-Slash-Runner/dist/index.js` 里逐字取出）：
+
+```
+<link rel="stylesheet" href="…/@fortawesome/fontawesome-free/css/all.min.css">
+<script src="…/lib/tailwindcss.min.js">               （= @tailwindcss/browser@4.1.12）
+<script src="…/jquery/dist/jquery.min.js">
+<script src="…/jquery-ui/dist/jquery-ui.min.js">
+<link  rel="stylesheet" href="…/jquery-ui/themes/base/theme.min.css">
+<script src="…/jquery-ui-touch-punch">
+<script src="…/vue/dist/vue.runtime.global.prod.min.js">
+<script src="…/vue-router/dist/vue-router.global.prod.min.js">
+```
+
+⇒ ST 里的卡 HTML **天然拥有** Tailwind 工具类（`class="w-full"`）、`$()`、`$.ui`、
+Vue / Vue-Router、`fa-solid fa-xxx` 图标，写卡的人**从不自己引**。
+我们此前**一个都没有**，这是「卡里东西出不来」的一条**独立**原因：
+
+- Tailwind 类没有任何 CSS 规则 ⇒ 布局按"没有样式"塌掉；
+- `$` / `Vue` 未定义 ⇒ 卡的脚本第一行就抛 ⇒ **界面照常渲染、功能全废**
+  （与 `$'` / `$&` 打坏卡脚本那两次是同一类观感，极难查）。
+
+### 改了什么（`lib/client.js`）
+- 新增常量 **`MUV_CARD_LIBS = true`**（默认**开**）+ `muvCardLibsOn()` /
+  `muvCardLibTags()` / `withCardLibs()`；
+- 注入点：**`</head>` 之前**（仍在 `<body>` 之前 ⇒ 卡的脚本拿得到这些全局，
+  与 ST 时序一致；同时排在 compat 垫片与 reset **之后** ⇒ CDN 出问题时不会
+  连带推迟我们自己那两段）；
+- 顺序照抄 ST：**先 CSS 后 JS，jQuery 在 Vue 前**（Vue-Router 依赖全局 `Vue`、
+  jQuery-UI 依赖全局 `jQuery`，顺序错了就是静默少一个库）；
+- 版本**钉死**（不用 CDN 的 latest）：FA 6.7.2 / Tailwind(@tailwindcss/browser) 4.1.12 /
+  jQuery 3.7.1 / jQuery-UI 1.13.3 / Vue 3.5.13 / Vue-Router 4.5.0，全部走
+  `https://cdn.jsdelivr.net/npm/…`；
+- 只作用于**我们自己生成的卡 iframe**（调用点唯一：`muvInjectDoc`），DSH 自己的
+  iframe 根本不经过它；幂等守卫查 `data-muv-libs=`（带 `=`，卡的原文提到这几个字
+  也不会被误判）；
+- **沙箱没动**：仍是 `sandbox="allow-scripts"`，没有 `allow-same-origin`
+  （加库不是放开同源的理由）。
+- 客户端构建标记 `MUV_BUILD` → `2026-09-22k`。
+
+### 与 ST 的两处**有意**差异
+1. Vue 用**完整构建** `vue.global.prod.js` 而不是 ST 的 `vue.runtime.global.prod`
+   （runtime 版不含模板编译器）。完整版是超集：ST 能跑的这里都能跑，额外还能跑
+   `template:` —— 只会多救几张卡。
+2. 省略 jquery-ui 的 `theme.min.css` 与 `jquery-ui-touch-punch`（ST 有）：
+   两者只影响 `.ui-*` 控件与触屏拖拽，而每多一个远程资源就多一份失败面。
+
+### 怎么关
+把 `lib/client.js` 里的 `var MUV_CARD_LIBS = true` 改成 `false`（唯一的开关）。
+**关掉的后果**：依赖 Tailwind 类的卡布局缺失、`$`/`Vue` 未定义 ⇒ 部分卡"显示不全 /
+点了没反应"。只在确认某张卡被这些库干扰时才关，**不要删代码**。
+CDN 取不到时失败形态是安全的：该全局为 `undefined`，卡里现成的
+`typeof $ !== 'undefined'` 检测照旧短路 ⇒ 不会比"从不注入"更差。
+
+### 新门禁 `verify-card-libs.mjs`（真浏览器 + 真沙箱 + 真 CDN，23 项）
+A 臂（注入）实测：`jQuery 3.7.1` / `$.ui` / `Vue.createApp` / `VueRouter.createRouter` /
+`Font Awesome 6 Free` 全部到位，`.hidden→none`、`.flex→flex`、`body{margin:0}`
+（Tailwind preflight）全部生效，卡内容未被破坏。
+B 臂（**不注入的对照**）：上面每一项都**不是** —— 没有它，A 臂的断言全是永真。
+
+## 未发布（2026-09-22 · 十一）★ 隐藏与 iframe 重复的整页源码块（ST 的 `hidden!` 的等价物）
+
+### 症状与出处
+`ST-IFRAME-SPEC.md` §2 / §8 第 2 条：ST 把消息里残留的 `<pre><code>` 加 `hidden!`
+隐藏（不删除，仍在 DOM 里）。我们靠「整页 HTML 换成 iframe」绕过了**大部分**情况，
+但**卡正则没产出整页文档**时（围栏没被认出来、或那条正则没命中），那一大段源码
+仍然露成裸文本 —— 用户看到的就是「一大段没渲染的 HTML」。
+
+### 修法（`lib/client.js`，小而保守）
+- `muvIsPageSourceText(t)`：判据**刻意窄**，只认整页文档 ——
+  `<!doctype html>` 且同有 `<html`/`<head`/`<body` 之一；或 `<head` 与 `<body` 同现；
+  或含 `__muvReset`（那是**我们注入过**的记号 ⇒ 这份文本就是卡文档）；外加长度 ≥ 200
+  （挡掉正文里举例提一句 `<!DOCTYPE html>` 的短文）。
+  **不是**"所有代码块" —— 用户正常的 ``` 代码块一个字符都不许动。
+- `muvHidePageSourceBlocks(body)`：只动 `<pre>`；落在**我们自己产物**里的 `<pre>`
+  （变量折叠卡 / 摘要框）跳过；隐藏用**内联 `display:none!important`**
+  （`hidden` 属性会被 DSH/卡给 `pre` 设的 `display` 盖掉），并打
+  `data-muv-src-hidden` 记号。
+- 挂在 `_decorateOne` **最后一步**（装饰成功与否都跑，它是纯 DOM 操作）。
+
+### 门禁
+- `test-client-render.mjs` 第 **[21]** 段（13 项）：三类"认"、三类"不认"、
+  真函数跑假 DOM（整页块被藏 / 普通块不动 / 我们自己的 `<pre>` 不动 / 幂等），
+  外加**变异对照臂**（把判据摘掉 ⇒ 一块都不隐藏，证明判据能红）。
+- `verify-decorate-dom.mjs` 新增第八类 `H_source`（真浏览器 + 真 `_decorateOne`）：
+  `srcHidden=1`、`preVisible=2`（普通代码块 + markdown 的 pre 都还在）、`srcLeak=0`。
+  **对照臂实测**：`MUV_CLIENT_SRC=<改动前的 client.js>` 时这一类
+  `srcHidden=0 / srcLeak=1 / preVisible=3` ⇒ **FAIL**（判据不是空转）。
+
+## 未发布（2026-09-22 · 十）★★ 我们把自己的产物当成原文又跑了一遍 —— 「时间/摘要」露在正文里的真凶
+
+### 症状
+用户：「这个时间感觉出现的地方不对劲」「那个日常也没有」。截图里正文中段凭空出现
+一段蓝色块的文字：**📖 时间：2026年.08月.26日 10:00 ~ 10:15 地点：… 摘要内容 …**
+外加 **💭 变量推演** 和 **✏️**。而这些字眼**卡自己一句都没写过**。
+
+### 取证（这次在用户机器上、进 iframe 读 DOM）
+- 现场那份「正文美化」整页文档的 `body.innerHTML` **尾部**是**裸文本**（不是标签）：
+  `📖 时间：… 摘要内容 … 💭 变量推演 ✏️`，而且 `时间：`/`地点：` 被并成了一行
+  （典型的"过了 `innerText` 的 HTML 空白折叠"指纹）。
+- 对比服务端产物：拿**同一份 assistant 原文**打 `/api/muv-engine/apply-regex-card`，
+  `applied=6`，产物里 `摘要内容 / 时间： / 📖 / 💭 / 变量推演` **全是 0** ⇒ 现场那份不是这条管线出的。
+- 词源：`📖` 与 `💭 变量推演` 都是**我们自己**的标签（`muv-abstract` 的图标、
+  `muv-varthink` 的 summary），`✏️` 是**酒馆插件注入的编辑按钮**。
+
+### 根因
+`_decorateOne` 的原文来自 **DOM 的 `body.innerText`**，而我们的装饰产物就长在那个 DOM 里。
+一旦对同一个（或**包着它的**）元素再跑一遍：
+- 卡正则 `<(?:content|…)>…</…>` 照旧命中（字面量还在）⇒ 文档照建；
+- 但 `<Abstract>` 的**标签**已被换成 `<div class="muv-abstract">` ⇒ card `[7]`
+  「对玩家隐藏摘要」（`/^\s*<Abstract>[\s\S]*?<\/Abstract>\s*$/gm`，大小写敏感 + 行锚）
+  **必然落空** ⇒ 摘要正文永久露在正文里，还被当成"正文"塞进文档；
+- 我们自己的标签文字（📖 / 💭 变量推演）和酒馆的 ✏️ 一并变成正文。
+
+**两个附带发现**（同一处代码）：
+1. `[data-muv-decorated]` 落在了 **3 个 DSH 侧边面板**上（`_surface_*` / `_pane_*` / `_paneBody_*`）——
+   装饰器在往面板上跑，**面板内容被吃掉了**（实测其中一个是空文本）。
+2. 目标元素可能是消息**根节点**而不是 `_markdown_*` 正文容器 —— 直接替换它的 `innerHTML`
+   会毁掉 DSH 自己的正文元素。
+
+### 修法（`lib/client.js`）
+三条守卫 + 目标规范化 + 干净取文：
+1. **`muvHasOwnArtifacts`**：`[class*="muv-"]`（一条前缀兜住全部，不再枚举类名）+
+   `iframe.muv-iframe` / `[data-muv-kv]` / `[data-muv-inbox]`。命中即**拒绝装饰**。
+2. **`muvMessageBodyOf`**：只认 `_markdown_*` 正文容器本身、或**恰好包着一个**它的元素；
+   面板/侧栏 0 个 ⇒ 拒绝。并**归一到正文容器**再写（不写消息根）。
+3. **`muvRawTextOf`**：取文前把非正文 DOM（`button` / `script` / `style` / `textarea` /
+   我们的全部产物）**临时 `display:none`**，读 `innerText`，`finally` 还原。
+   隐藏而非克隆 —— 脱离文档的克隆上 `innerText` 会退化成 `textContent`（块间无分隔符）。
+
+### 新门禁 `verify-no-redouble.mjs`（真浏览器 + 真 `_decorateOne` + 可红对照臂）
+三档夹具：A 干净正文 / B 已含我们产物 / C 面板。
+`after`：A 被装饰、**B 一个字符都没动**、C 不碰。
+`before`（`git show a7031dc:lib/client.js`）：B **确实被再装饰**，且读到的"原文"正是
+线上那段垃圾 —— `📖 时间：2026年.08月.26日 10:00 ~ 10:15 摘要内容 主角在办公室核算现金
+\n💭 变量推演\n✏️` —— **逐字复现**。C 也被吃了。
+
+### 顺带：「日常」没有声音（**不是渲染问题**）
+卡模板 `processAudio()` 按消息里的 `<audio>日常</audio>` 拼 `音频/日常.mp3`。直接 HEAD 那个 CDN：
+
+| 名字 | 结果 |
+|---|---|
+| `日常.mp3` / `搞笑.mp3` / `欢快.mp3` / `暧昧.mp3`（预设 `#音乐列表` 里写的） | **404** |
+| `日常1/2/3.mp3`、`搞笑1`、`欢快1`、`暧昧1` | **200** |
+
+⇒ 预设的「音乐列表」与 CDN 的**实际命名（带序号）不一致**，模型照列表写裸名 ⇒ 播放器空白
+（卡自己的 `error` 处理只是把提示调暗）。**ST 侧同一张卡、同一个 URL，同样静默。**
+既然命名规律确定，垫片加了**出错兜底**：只在真的加载失败时试 `<名字>1/2/3.mp3`；
+名字已带序号**不猜**；别名记号挂在**元素**上（全局表会改坏别的元素上合法的 `日常1.mp3`）；
+改写时**清掉 `<source>` 子节点再设 `src`**（只改 `source.src` 不会重新触发选源 —— 实测重试一次后就不再报错）。
+新门禁 `verify-audio-fallback.mjs` 五档：裸名兜住 / 已带序号一字不改 / `src` 属性形态 /
+候选全 404 时上限 3 次 / **兜到能播的那个就停（`readyState=4`）**。
+
+### 门禁
+`test-client-render` **229/0**（新增 [18][19]）、`verify-no-redouble` 6/0、
+`verify-audio-fallback` 6/0、`status-cascade` 84/0、`regex-engine` 26/0、`era-vars`、
+`decorate-dom` 七类、`card-compat`（after 29/0 / before 红 21）、`era-bridge`、`frame-height`、
+`visual` 全部复跑绿。构建标记 → **`2026-09-22j`**。
+
+## 未发布（2026-09-22 · 九）★★ 运行时状态少剥一层信封 —— 选项/数值根本没接上（现场取证）
+
+### 🔑 这一次是**在用户机器上直接取证**的
+
+用户问"能不能让你直接观看到控制台"——能。DSH 的鉴权支持**持久签名 Cookie**
+（`~/.dsh/.credentials.yaml` 里 `records.client-connection/browser-session` 的 secret），
+用它签一个 cookie 就能让无头 Edge 打开本地 DSH，**在用户真实会话里**读卡内 DOM
+（`Runtime.evaluate` 进 OOPIF），还能数 iframe 重建次数（"一直闪"的量化）。
+以后这类"只有用户能看到的现场"都能这样拿证据。
+
+### 🐞 症状（极有迷惑性）
+
+`data-era` 一共 17 个，**填上了 14 个**，只有 `剧情选项.选项1/2/3` 是空的；
+时间显示 initvar 的 `10:00` 而不是运行时的 `10:15`。
+看起来像"个别字段没填"，其实**整份运行时状态都没接上**——因为那些填上的字段
+`initvarData` 本来就有默认值，而 `剧情选项` 的默认值恰好是空串。
+
+### 🎯 根因：`/api/muv-engine/state` 的 `{data, updatedAt}` 信封没剥
+
+端点回的是 `stateStore` 里那条记录本身：
+
+```
+{ ok:true, state:{ data:{世界信息:…, 剧情选项:…}, updatedAt:… } }
+```
+
+客户端 `muvEraFetchVars` 原来直接 `return d.state` ⇒ 运行时值被塞进**深一层** `stat.data.*`，
+而卡按 `stat.剧情选项.选项1` 读到的仍是 initvar 的空串。
+现场证据：卡内 `currentStat` 的键里**多出 `data` 与 `updatedAt`** 两个键。
+
+### 🛠 修法
+
+剥一层：`(s.data && typeof s.data === 'object') ? s.data : s`（两种形状都兼容）。
+
+### 门禁（★ 这条门禁自己也有洞，一起补了）
+
+`verify-era-bridge` 的 fetch 桩**对所有 URL 返回同一份** payload，于是"取运行时状态"那条分支
+永远拿到 `d.state === undefined` ⇒ 静默退回 base ⇒ **"信封有没有剥"根本测不到**；
+而原来的断言只查 initvar 本来就有的字段，所以一直绿。
+现在把运行时状态挂进同一份信封，并新增两条**能红的**断言：
+
+- ★★ 运行时值覆盖初始值（时间详情 = `23:59`，不是 initvar 的 `10:00`）
+- ★★ initvar 为空的字段（`剧情选项.选项1`）必须被运行时值填上（= 用户报的"选项里没有内容"）
+
+实测：`after 21 通过 / 0 失败`；两条对照臂（nobridge / before）在这两条上**都是红的**。
+`test-client-render` **208 通过 / 0 失败**。构建标记 → **2026-09-22i**。
+
+### 现场复验（用户会话 `session-9a1dede5`，真实数据）
+
+```
+csKeys: [世界信息…主播档案]           ← data/updatedAt 信封键已消失
+csChoice: {选项1:"把足控榜和歌回数据并排放给超天酱看，直说这公司得换条路走", …三条真文本}
+csTime: 时间详情 "10:15"              ← 运行时值
+empty: []                             ← 没有空字段
+```
+
+## 未发布（2026-09-22 · 八）★★ 客户端同源 `$&` bug —— 卡脚本被自己的文档打坏（选项空白的真凶）
+
+### 🐞 症状
+
+推送已经成功（控制台 `[muv-engine] era push → 10 棵树 → 2 帧`），服务端状态也是真值，
+但**卡上的选项仍然空白**、数值仍是初值；卡的界面**渲染得好好的**，只是功能全废。
+
+### 🎯 真因：`String.replace` 的**字符串替换**语义（与服务端第 4 轮同源，另一端）
+
+客户端把 210KB 的卡文档拼进替换串：
+
+```js
+result = result.replace(STATUS_PH_ALL, '<div class="muv-statusbar-wrap">' + frame + '</div>')
+```
+
+而卡自己的 ERA 脚本里有这一行：
+
+```js
+function isTemplate(key){return key&&key.charAt(0)===&#39;$&#39;}
+```
+
+`$` 后面紧跟 `&`（`&#39;` 的实体首字符）⇒ 被 `String.replace` 当成 **`$&`（整个匹配）**
+⇒ 那行变成 `===&#39;<<StatusPlaceHolderImpl/>#39;}` ⇒ **卡的脚本语法错误** ⇒ 卡的 JS 全废。
+HTML/CSS 不经 JS 解析，所以**界面照常**、只有功能死掉 —— 与第 4 轮的服务端 bug 一模一样的迷惑性。
+
+实测（真卡 241KB frame）：字符串替换在**位置 199284**（正是那行 `isTemplate`）改写；
+函数式替换后 frame **逐字不变**。
+
+### 🛠 修法
+
+抽 `muvFrameBlock(frame)`，**三处**占位符/状态块拼接全部改成**函数式替换**
+（`replace(re, function () { return muvFrameBlock(frame) })`）—— 函数式替换不做任何 `$` 解释。
+铁律与第 4 轮统一：**凡是把"别人的一大段文本"拼进替换串，一律用函数式替换。**
+
+### 门禁
+
+`test-client-render` **208 通过 / 0 失败**（新增 [17] 段 6 条）：函数式替换逐字安全 +
+**对照臂证明字符串替换确实会改写**（判据不是空转）+ 三处调用点的源码形态不许退回字符串写法。
+构建标记 → **2026-09-22h**。
+
+## 未发布（2026-09-22 · 七）★ 多档重推：卡不再停在初始值（选项终于有字）
+
+### 🐞 症状
+
+服务端状态**已经有真值**（`剧情选项` 三条真文本、`时间详情` 10:15、`好感度` 38），
+但卡上还是空选项 / 10:00 / 好感度初值。用户："选项还是没有字"。
+
+### 🎯 真因：时序，不是数据
+
+卡 iframe 是**消息渲染时**才创建的，而变量回灌发生在渲染**之前** —— 最后一次回灌完成时
+`querySelectorAll('iframe.muv-iframe')` 数到 **0 个帧**，那一次推送落空；
+而卡只在自己加载约 1200ms 时查一次变量 ⇒ **永久停在初始值**。
+（上一版的 `muvEraPushToFrames` 是"回灌完成推一次"，正好落进这个洞。）
+
+### 🛠 修法
+
+`muvEraPushNow()` + `muvEraSchedulePush()`：状态变化后按 **0 / 1.5s / 4s** 三档重推，
+分别覆盖「已存在的帧 / 刚创建还在跑初始化的帧 / 滚动懒渲染才出现的帧」；取数走 `muvEraWarm` 复用缓存。
+并打一条**可观测日志**：`[muv-engine] era push → N 棵树 → M 帧`
+（原来症状完全不可观测 —— "卡上没反应"分不出是没推、推了没帧、还是卡没收）。
+
+门禁：`test-client-render` **202 通过 / 0 失败**（新增 3 条）。构建标记 → **2026-09-22g**。
+
+### 🚫 同轮实测排除的两条（都不是我们的 bug，记下来免得重复查）
+
+1. **"时间出现的地方不对劲"** = **模型的思考（reasoning）内容**在聊天里显示出来了。
+   从 DSH 会话存储取出的原文就是它在自我说明输出格式（"需要：- `<content>`包裹正文
+   - `<Abstract>摘要 …"）。不是卡渲染的，也不是正则漏删 —— 我们的引擎对真消息
+   `<Abstract>` 残留恒为 0（各深度实测）。
+2. **"日常下是空白"** = 模型写的是 `<audio>日常</audio>`，而 CDN 上的素材名是 `日常1.mp3`。
+   实测 `音频/日常1.mp3` → **200**，`音频/日常.mp3` → **404**。模型写错名字，不是渲染问题。
+
+## 未发布（2026-09-22 · 六）★ 接上 ERA 增量块 —— 选项/数值/CG 视频一起活了
+
+### 🎯 用户报的三个症状，同一个根因
+
+> "你这个选项里没有内容，而且视频也没有"
+
+| 症状 | 真因 |
+|---|---|
+| 选项（选项1/2/3）空白 | 卡里写的是 `<span class="choice-text" data-era="剧情选项.选项1">`，而**卡的声明式初始变量里 `剧情选项` 是空串**；真值只在模型每楼发的 `<VariableEdit>` JSON 里 |
+| 数值（好感度/压力值/五感）不动 | 同上 —— 我们只解析过 MUV 原生的 `<initvar>` YAML，**从没解析过社区卡的增量块** |
+| CG 画廊的 NSFW 视频不出来 | 卡源码写着 `/* NSFW 视频需好感度 100 才可解锁 */` —— 好感度停在初值 ⇒ 视频锁着 |
+
+**定位方法**（值得抄）：用户的 ST 界面里一切正常，所以数据**一定在**ST 的某个存储里。
+顺着 `era_data` / `variableinsert` / `VariableEdit` 三个标签在 ST 数据目录里逐个搜，
+最后在真聊天文件的**消息正文**里找到 `<VariableEdit>{…JSON…}</VariableEdit>`。
+注意大小写：`grep UpdateVariable` 返回 0，因为它叫 **`VariableEdit`**。
+
+### 🛠 实现（两侧各一处，加一个新门禁）
+
+**服务端 `lib/var-tracker.js`**
+- `parseVariableOps(text)`：解析 `<VariableInsert|VariableEdit|VariableDelete>` 的 JSON 载荷
+  （深合并 / 深删），并取 `<era_data>` 里的消息键。
+- `applyVariableMessage(sid, {key, epoch, ops})`：**记账 + 按消息键重放**。
+  ★ 为什么不"到场即合并"：装饰是**异步乱序**的（滚动/重渲染会让旧消息后到），
+  而每楼 JSON 带的是**绝对值** ⇒ 旧编辑盖在新编辑之后，被覆盖的字段会**回退**（好感度倒着走）。
+  账本按 `era_mk_<epochms>_<rand>` 的时间戳升序重放 ⇒ 与送达顺序无关、重复送达无副作用。
+- 会话级 LRU（64 会话 / 500 楼）+ 单消息 200KB 上限：内存态不能无界长。
+
+**客户端 `lib/client.js`**
+- `muvFeedVariables`：收第二种数据源 + 实体解码 + 喂 `body.innerHTML`（不是 `innerText`）。
+- 新增 `muvEraPushToFrames()`：回灌完成后**主动把新状态推给在线卡帧**。
+  卡的查询周期只有"加载后 1200ms 那一次"，而回灌发生在装饰期 ⇒ 不推的话卡停在初值。
+
+### 📌 两个真实世界的坑（都是实测踩出来的）
+
+1. **模型会在 `<VariableThink>` 里"提及"标签名**（"生成一个 `<VariableEdit>` 块来更新…"）。
+   直接扫标签会从这句提及一路吃到真块的收尾标签 ⇒ `Unexpected token '\`'`。
+   实测 3/4 条真消息全踩。修法：先整块剔掉 `VariableThink`，再用"内容必须是 JSON"拒绝错配，
+   并把扫描位置**退回开标签之后**重来（算成 bad 跳过会把后面的真块一起漏掉）。
+2. **`touchSession` 里先 `delete` 再 `get`** ＝ 每次调用都新建账本（`_qa` 的"倒序一致"断言当场抓出）。
+
+### 门禁
+
+- 新增 `test-era-vars.mjs`（**17 条**）：合成用例覆盖"提及错配/三种块/乱序一致/幂等"，
+  另在真聊天文件在场时跑真数据（取不到就 SKIP，不假装通过）。
+- `test-client-render` **200 通过 / 0 失败**（新增 4 条：喂 innerHTML、两种数据源、实体解码、主动推送）。
+- `verify-card-compat`（after 29/0，before 红 21）、`verify-era-bridge`、`verify-frame-height` 全绿。
+
+### 端到端实证
+
+真聊天文件 → 重放状态（`剧情选项 = {"选项1":"开始品尝这道"花瓣沙拉"。"…}`、`好感度 = -80`）
+→ 按真实协议投递 → 卡内读到 `["开始品尝这道"花瓣沙拉"。","用叉子将一块"花瓣"喂到东雪莲嘴边。",
+"命令侍者清理现场，准备离开。"]`；截图 `shot-era-with-vars.png`（因特网舆情、世界信息 21:15 /
+红玉膳房包间、超天酱五感、三个真选项全在）。
+
+### ⚠ 已知限制（如实记录）
+
+- 没有 `<era_data>` 消息键的老格式块：只能按**到达顺序**追加（有键的走重放，顺序无关）。
+- 装饰只覆盖 **DOM 里存在的消息** —— 若 DSH 对消息列表做虚拟滚动，滚出去的历史楼层不会被重放。
+
+## 未发布（2026-09-22 · 五）★ 帧高两处裁剪缺陷：上限 2400 与父页 8px 死区
+
+### 🎯 真卡的实测证据（一次性探针，`_era-*`，跑完即删）
+
+把**真实变量数据**（`/api/muv-table/tavern-card` 的 `initvarData`）按**真实协议**
+（`muvEraDeliver` 逐字来自 lib/client.js）喂进真卡的 ERA 文档，在真浏览器里读数：
+
+| 观测量 | 修复前 | 修复后 |
+|---|---|---|
+| 卡内异常 | 0 条（`$'` 修复生效，卡脚本活着） | 0 条 |
+| 卡内数据 | 有：`2026年8月26日` / `龙国` / 因特网面板全有值 | 同 |
+| iframe 帧高 | **889**（卡内 `body.scrollHeight` = 894） | **895 = 卡内 895** |
+
+⇒ 「什么变量都不显示 / 不能交互」是 §四 那个 `$'` bug 的**下游症状**，卡一活数据就出来了
+（截图见 `shot-era-ERA_状态栏.png`：九个 tab、因特网/世界信息/五宫感受都有值、底部输入区完整）。
+
+### 🐞 缺陷 1：`MUV_FRAME_H_MAX = 2400` 会**静默截断**
+
+ST 本体的高度是 `body.scrollHeight` 原样写进 `frameElement.style.height`，**没有任何上限**
+（ST-IFRAME-SPEC §6）。我们跟了个 2400，而真卡实测已到 2056 / 2083（距上限 13%）——
+`verify-frame-ratchet.mjs` 自己的注释就写着「超限的表现是**静默截断**」，而 reset 里是
+`html,body{overflow:hidden!important}` ⇒ 被夹掉的部分**连滚动条都没有**。
+→ 提到 **12000**（≈900px 视口下的 13 屏），语义改成「只拦畸形值，不给内容封顶」。
+
+### 🐞 缺陷 2：父页 8px 死区**无差别**吞掉「增长」
+
+`onMuvFrameHeightMessage` 里 `Math.abs(cur - h) < 8 → return`。孩子侧已经按「滞回只作用在
+收缩方向」实现了溢出学习（报的是 `body.scrollHeight` 精确值），却在父页被死区吃掉：
+实测 ERA 状态栏 **内容 894 / 帧 889**，那 5px 就是**卡底部永久少一条**。
+`extent()` 量的是元素包围盒（**不含 margin**），所以"最后那几个像素"只有滚动区自己看得见
+—— 正是死区最容易吃掉的一段。
+→ 改成 `h <= cur && (cur - h) < 8`：**增长无条件生效**，收缩仍留 8px 防抖。
+
+### 门禁
+
+- `test-client-render` **196 通过 / 0 失败**（新增 ★★ 增长 5px 必须生效；收缩用例改成真收缩方向）
+- `verify-frame-height` 全过：正文美化三档收敛 900（钉在父页视口地板）、ERA 三档一致收敛 **895**
+- `verify-frame-ratchet` 全过（含「内容底边在帧内可见」与变异臂对照）
+- `repro-frame-height` / `verify-decorate-dom` / `verify-visual` / `verify-card-compat` /
+  `verify-era-bridge` 全过
+- 上限判据一律改成**从 `muvFrameHeightLimits()` 读**，不写死数字 —— 写死会让"上限该多大"
+  只能靠改测试来表达（2400 就是这么熬到真卡贴边的）
+
+### 📌 一条留给后人的观察（不是缺陷）
+
+`主页` 卡是**浅色底卡片**：正文色 `rgb(40,73,92)`，而根节点与 `html/body` 背景**全透明**
+（文档里也没有媒体 URL，插图由卡 JS 拼）。它假定宿主背景是浅色 —— ST 同样不注入背景
+（ST-IFRAME-SPEC §4 的 reset 只有 margin/padding/overflow/max-width），所以深色主题下
+两边都会"看不见字"。**这是卡作者的设计假设，不是我们的偏差**，别去"修"成注入白底。
+
+## 未发布（2026-09-22 · 四）★ 卡脚本被替换串 `$'` 打坏 —— 真凶修复
+
+### 🐞 症状：卡 HTML/CSS 正常显示，但**卡的 JS 全废**
+
+tab 切不动、数据不渲染、按钮点了没反应；控制台只有一行
+`about:srcdoc:4102 Uncaught SyntaxError: Invalid or unexpected token`（出现两次）。
+
+### 🎯 根因（实测定位到字符）
+
+卡的正则 `[2]「ERA 状态栏」` 的**替换串就是一整页 210KB HTML**，而文档里的卡 JS 写着
+`key.charAt(0)==='$'`。我们此前用 `String.replace(re, replaceString)` 做替换 ——
+替换串里的 `$'` 被 JS 当成"**匹配之后的文本**"引用，于是那行变成
+`key.charAt(0)==='<StatusPlaceHolderImpl/>'`：**引号错位 → 整段卡脚本语法错误**。
+实测证据（真消息走完"服务端正则 → 客户端围栏 → srcdoc"整条链）：
+
+```
+坏: function isTemplate(key){return key&&key.charAt(0)==='   ← 引号没闭合
+    <StatusPlaceHolderImpl/>}'
+净: function isTemplate(key){return key&&key.charAt(0)==='$'}
+```
+
+HTML/CSS 不经过 JS 解析，所以**看起来"卡渲染对了"**，只是功能全废 —— 这类症状极难定位。
+
+### ✅ 修法：照抄 ST 的**函数式替换**（`SillyTavern/public/scripts/extensions/regex/engine.js:419-442`）
+
+ST 用 `rawString.replace(findRegex, function (match) { … })`，只**显式**展开 `$1…$99` 与
+`$<name>`（外加 `{{match}}` → `$0`），其余 `$` 一律字面量。我们的 `applyRegexScript` 改成同一口径。
+
+### 🧪 回归哨兵（test-regex-engine 26 通过）
+
+`$'` / `$&` / `` $` `` 逐字入文、`$1` 与 `$<name>` 仍按捕获组展开、`{{match}}` 展开 —— 五条钉死。
+
+## 未发布（2026-09-22 · 三）
+
+### 🔍 客户端构建标记（解决「重启了但看起来没变」）
+
+`MUV_BUILD='2026-09-22c'` 写进 `document.documentElement[data-muv-engine]` 并打到控制台
+（`[muv-engine] client loaded …`）。DSH 重启换的是**服务端模块**；浏览器里已打开的标签页
+仍在跑**加载时注入**的那份客户端 bundle —— 这是"重启后界面毫无变化"最常见的原因。
+有这行标记就能一眼分辨「页面没重载」与「加载了但效果不对」。
+
+### 🧪 交互桥真浏览器端到端门禁（verify-card-compat 第 ⑧ 段）
+
+真垫片 + OOPIF 内触发 + 宿主输入框断言：垫片定义 `sendUserMessage`、隐藏收件箱装上、
+两条触发（`send` / `fill`）都真的落进宿主聊天输入框。after 29 通过 / 0 失败，
+before 臂 21 条红（对照成立）。
+
+### 🔎 三项症状的实测结论（供复查）
+
+| 症状 | 结论 | 证据 |
+| --- | --- | --- |
+| 卡内不能交互 | **已修**（待页面重载生效） | 真浏览器 e2e：`[{"text":"MUVPROBE-A","mode":"send"},{"text":"MUVPROBE-B","mode":"fill"}]` |
+| 无视频 | **链路正常** | 真实正则引擎对真消息 `applied=8`，产物 `<video src="https://zyxjack123.top/足控天堂/视频/NSFW/东雪莲/舔小穴1.mp4">`；该域名 HEAD 200 `video/mp4` |
+| 数据区空白（因特网/世界信息/五宫感受） | **未解决** | 该卡消息里只有 `<era_data era-message-key=…>`，**没有** `UpdateVariable`/`_.set` ⇒ 数值由酒馆助手「ERA变量框架」脚本维护，需 §17.4 的原生变量框架 |
+
+## 未发布（2026-09-22 · 二）
+
+### ✨ 卡 → 宿主交互桥（卡内按钮终于能驱动 DSH 输入框）
+
+真卡的「发送到酒馆」是三级降级：① 宿主注入的全局函数 `sendUserMessage(msg)`（首选）
+② DOM 直插父文档 `#send_textarea` + `#send_but`（我们的沙箱下**必然**被跨源拒绝）
+③ 剪贴板。此前 ①② 全空、③ 只有"已复制"提示 ⇒ 用户看到的就是"蓝色卡片不能交互"。
+现在：
+- 垫片定义 `window.sendUserMessage`（ERA 卡的 ① 直接命中）→ postMessage 给宿主；
+- 垫片给「先搜自己文档 `#send_textarea`」的卡（主页.html 的 `fillSendTextarea`）注入一个
+  **隐藏收件箱**（`data-muv-inbox`，卡源码含约定符号才装）：卡用原生 setter 写值 +
+  input/change 事件时捕获，按 `mode=fill`（只填不发送，与卡自己的提示语一致）转发；
+- 宿主侧 `onMuvCardCompatMessage` 认 `__muvUserSend`（每帧 ≥800ms 节流、限长 20000），
+  `muvDeliverUserText` 用原生 setter 写 DSH 输入框；`mode=send` 再派发 Enter 键代发
+  （与 muv-choice-btn 委托同一口径）。
+
+### ✨ 运行时变量回灌 → era 桥双源合并（卡的数据区不再空白）
+
+此前 era 桥只送**卡声明的初始变量**（`/api/muv-table/tavern-card` 的 `initvarData`），
+本会话跑出来的运行时数值没有任何通路（`/api/muv-engine/extract` 零调用方）——
+卡里 世界树/世界信息/数值区 全空、数据驱动的自适应布局塌成半截（"底部缺一半"的根因之一）。
+现在：
+- 装饰管线（`_decorateOne`）在消息含 `<UpdateVariable>`/`<initvar>` 块时把它们 POST 给
+  `/api/muv-engine/extract`（服务端 `mergeState` 进会话状态；按会话+内容签名去重，
+  定位不到会话**宁可回灌**不污染 default）；
+- `muvEraFetchVars` 升级为双源：初始变量（base）⊕ `/api/muv-engine/state` 的运行时状态
+  （`muvDeepMerge`，运行时覆盖初始），era 桥投递合并后的变量树。
+- 局限（如实记录）：ST 里 `_足控天堂2` 的数据其实来自**用户装的酒馆助手「ERA变量框架」
+  脚本**（每楼快照，DSH 没有酒馆助手执行器跑不了它）——本修复覆盖"变量随消息文本走"
+  的 MUV 约定卡；框架脚本型卡要等变量框架原生实现（见 HANDOFF 待办）。
+
+### 🧪 门禁
+- `verify-card-compat.mjs`：夹具 KEEP 正则补 `PushChatLog`（`muvPushChatLog` 不含
+  "muvChat" 子串此前匹配不到 ⇒ 夹具 pushChat 落 no-op ⇒ ③b 恒红）。`--old-export` 下
+  after 24/0、before 红 16 条，对照成立。
+- `test-client-render.mjs` 扩到 195（+[16] 交互桥/回灌/双源断言）。
+- 全门禁复跑绿：status-cascade 84 · client-render 195 · regex-engine 21 ·
+  decorate-dom 七类 · visual 77 · era-bridge（`世界信息.时间.日期` 前=—— 后=2026年8月26日）
+  · card-compat · frame-height/ratchet · statusbar-layout/fence · tags-dom。
+
+## 未发布（2026-09-22）
+
+### ✨ 游戏卡标签的原生路径渲染（G_gamecard 门禁转绿）
+
+`赏令接取 / 赏令完成 / 拍卖购入 / 盲盒开启 / 道友收录 / 飞剑回信 / 自由开局`
+七个卡牌专属标签此前**只有酒馆路径**渲染；原生路径（DSH 消息美化）整段露成裸文本
+（HANDOFF §16.3 已知未覆盖第 1 条）。现在走与媒体/标签渲染同一套 DOM 段替换：
+`muvRenderGameCards` 把配对标签替换为 `.muv-game-card`（`data-card` 属性 +
+`.muv-game-card-title` 标题 + `.muv-card-field` 字段行），配色沿用已有的
+`[data-card="…"]` 属性选择器 CSS，全部内容走 textContent 不解析 HTML。
+真浏览器门禁 `verify-decorate-dom.mjs` 扩到第七类 `G_gamecard`（gameCards≥1、
+无裸标签残留），七类全绿。
+
+### 🧪 门禁探针修正（两层假象层叠出的「回归」）
+
+- **起始高度替换打坏卡 CSS**：`verify-frame-height` / `verify-frame-ratchet` 探针用
+  `/height:\d+px/` 的**第一个**匹配改写 iframe 起始高度，而真卡 CSS 里的
+  `height:62px`（srcdoc 内、style 属性之前）会先被命中 —— 起始高度从未生效、
+  卡布局反被改坏，「不收敛/视口回显」其实是探针自己制造的。现在只替换
+  `style="display:block;width:100%;height:` 这一专属前缀后的高度。
+- **Node 构建缺父页视口**：真实 DSH 在浏览器里构建 iframe，`rewriteVhMinHeight`
+  读得到 `window.innerHeight`，把 `min-height:100vh` 烤成父页视口常量；Node 提取
+  执行没有 `window` ⇒ 重写静默跳过 ⇒ 卡的 vh 在探针里跟着 iframe 高度伸缩 ⇒
+  真·不动点。`loadClientRenderersFrom(src, doc, win)` 新增 `window` 桩参数，
+  高度类门禁传 `{ innerHeight: 900 }`（探针窗口同构）。
+- **判据随语义更新**：`min-height:100vh` 的 ST 平价语义下，`正文美化` 卡合法地
+  钉在父页视口地板上（≈900），旧的 `<400` 与「不停在起始高度」判据改为
+  「钉在地板 ±8px 死区」与「600/1500 档不得停在起始值」。
+- `test-client-render.mjs` 两处与实现决策相反的断言更正（包围盒量不出来时
+  **不报数**——§15.3 禁用 body.scrollHeight 视口回声兜底；iframe 自身 style
+  无 max 上限——srcdoc 内 reset CSS 的 `max-width:100%` 不该连坐断言）。
+
+### ✅ 门禁状态（2026-09-22 全绿）
+
+test-status-cascade 84 · test-client-render 183 · test-regex-engine 21 ·
+verify-decorate-dom 七类全过（含 G_gamecard）· verify-visual 77 ·
+verify-frame-height / frame-ratchet / statusbar-layout / statusbar-fence /
+tags-dom / choices-dom / media-dom / varblocks-dom / era-bridge 全部通过。
+
 ## v0.3.9 (2026-09-20)
 
 ### ✨ 原生路径补上「插画与视频」—— 目标里明确要求的那两项

@@ -1,0 +1,40 @@
+  // ── 判据口径：什么是"真的溢出/被裁" ────────────────────────────────────────
+  //
+  // 这里量过三个口径，结论是**只有 html（文档滚动区）那一项算数**：
+  //
+  //   口径            冻短帧高（真裁 1755px）  ERA 状态栏（帧与内容齐平）
+  //   html 滚动溢出         1755px  ✅ 抓到        0px     ✅ 干净
+  //   body 滚动溢出            0px  ❌ 漏掉        5px     ❌ 假红
+  //   几何底边超出           2056>2055 ✅         929>923  ⚠ 浮动/外边距折叠造成的包围盒差
+  //
+  // 为什么 body 不可靠：reset 给 `html,body` 都上了 `overflow:hidden!important`（照 ST，
+  // 见 ST-IFRAME-SPEC.md §1/§8①），body 因此变成**不滚动的盒子**，它的 `scrollHeight`
+  // 在正常态与冻结态下都不代表被裁掉的内容量（上面两列正好互相矛盾）。而 ERA 那 5px
+  // 是 body 盒底与内容底边的差（浮动/外边距折叠），帧本身比内容还高 6px，用户什么都看不见
+  // —— 它在改动前后都以约 1/3 概率红，是**间歇假红**。
+  //
+  // 为什么几何口径也不能当判据：`topBottom(929) > docScroll(923)` 同样来自浮动/折叠，
+  // 真正被裁时它和 html 口径同向（2056 > 2055），但干净时也会因为 6px 包围盒差误报。
+  // 所以它**降级为信息行**（下面那行 `· 几何口径`），只用来和 html 口径互相印证。
+  //
+  // ★ 不许放过真溢出：下面 `=== A3 ===` 是**冻短帧高**的对照臂 —— 用样式表 `!important`
+  //   把帧高钉死在 300px（这张卡要 1080px），此时 html 滚动溢出必须 > 2px。它红了，
+  //   上面这条绿才是"真绿"。
+  const scrollOver = (r) => (r.m.docScroll || 0) - (r.m.docClient || 0)
+  const bodyOver = (r) => (r.m.bodyScroll || 0) - (r.m.bodyClient || 0)
+  const overflowed = rows.filter((r) => scrollOver(r) > 1)
+  check('★ 没有任何真卡出现内部滚动条（真正的滚动溢出：html 的 scrollHeight 不超过 clientHeight + 1）',
+    overflowed.length === 0,
+    overflowed.map((r) => r.script + ' html溢 ' + r.m.overflowPx + 'px / body溢 ' + r.m.bodyOverflowPx + 'px').join(' | '))
+  // body 口径与几何口径都**只报数字不作判据**（理由见上）。
+  const bodyNoise = rows.filter((r) => bodyOver(r) > 1)
+  const geomOver = rows.filter((r) => r.m.topBottom > r.m.docScroll + 1)
+  console.log('  · body 口径（信息，不作判据）: ' + (bodyNoise.length
+    ? bodyNoise.map((r) => r.script + ' body溢 ' + bodyOver(r) + 'px（html 溢 ' + scrollOver(r) + 'px）').join(' | ')
+    : '所有卡的 body 盒都没溢出'))
+  console.log('  · 几何口径（信息，不作判据）: ' + (geomOver.length
+    ? geomOver.map((r) => r.script + ' 底边 ' + r.m.topBottom + ' / 文档 ' + r.m.docScroll + '（差 ' + (r.m.topBottom - r.m.docScroll) + 'px，html 滚动溢出 ' + scrollOver(r) + 'px）').join(' | ')
+    : '所有卡的元素底边都没超过文档高'))
+  check('★ 文档级内容没有被裁掉（口径=真正的滚动溢出：html 的 scrollHeight ≤ clientHeight）',
+    overflowed.length === 0,
+    JSON.stringify(overflowed.map((r) => [r.script, scrollOver(r), r.m.topBottom, r.m.docScroll])))

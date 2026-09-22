@@ -1,0 +1,991 @@
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>足控天堂 · 虚拟主播篇</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Noto+Serif+SC:wght@300;400;500;600;700;900&family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+  <style>
+    /* ════════ 足控天堂 主题 ════════ */
+    :root {
+      --accent:#c9a961; --accent-bright:#e8c878; --accent-deep:#8a6d2f;
+      --purple:#6b4c8a; --purple-deep:#2d1b4e; --purple-glow:rgba(139,111,171,0.25);
+      --crimson:#8b1a1a; --blood:#5c0d0d;
+      --void:#0a0612; --abyss:#1a0f2e; --night:#0d0818;
+      --text:#e8dcc8; --text-bright:#f5ebd6; --dim:#a89a82; --faint:#6b5d48;
+      --border-soft:rgba(201,169,97,.22);
+      --text-main:#e8dcc8;
+      --bg:linear-gradient(145deg,#0a0612 0%,#140a22 40%,#1a0f2e 70%,#0d0818 100%);
+      --paper:rgba(14,8,24,0.96);
+      --bubble-bg:rgba(22,14,38,0.95);
+      --shadow:rgba(0,0,0,.45);
+      /* 夜间按钮·深靛蓝打底+暗紫收尾 */
+      --btn-night-a:#1a234f; --btn-night-b:#3c2a4d;
+      --btn-night-a-hi:#26356f; --btn-night-b-hi:#553c72;
+      --btn-night-line:#a8c0ff; --btn-night-glow:rgba(168,192,255,.45);
+      --r:4px; --smooth:cubic-bezier(.4,0,.2,1);
+      --font-display:'Cinzel','EB Garamond',serif;
+      --font-serif:'Cormorant Garamond','Noto Serif SC',serif;
+      --font-cn:'Noto Serif SC',serif;
+    }
+    /* ════════ 日间模式：青粉可爱风（夜间保持原金色暗紫） ════════ */
+    body[data-theme="day"] {
+      --accent:#ff7fb2; --accent-bright:#ffa8cd; --accent-deep:#e2559a;
+      --purple:#49b8dd; --purple-deep:#2b7f9e; --purple-glow:rgba(73,184,221,0.20);
+      --crimson:#ff5f9e; --blood:#e2559a;
+      --border-soft:rgba(255,127,178,.26);
+      --text-main:#28495c;
+      --bg:linear-gradient(160deg,#ddf2fb 0%,#eaf7fd 42%,#fdeef6 100%);
+      --paper:rgba(255,255,255,0.97);
+      --bubble-bg:rgba(255,255,255,0.96);
+      --shadow:rgba(73,184,221,.16);
+    }
+    body {
+      background:var(--bg);
+      font-family:'Noto Serif SC',serif;
+      line-height:2.05;font-size:17.2px;
+      color:var(--text-main);
+      min-height:100vh;
+      transition:background .4s,color .4s;
+      margin:0;
+    }
+    .header {
+      position:fixed;top:0;width:100%;
+      background:rgba(10,6,18,0.97);
+      border-bottom:1px solid rgba(201,169,97,.35);
+      display:flex;flex-direction:column;align-items:center;
+      padding:8px 0 6px;z-index:100;
+      box-shadow:0 4px 20px var(--purple-glow);gap:4px;
+    }
+    body[data-theme="day"] .header {
+      background:rgba(255,255,255,0.9);
+      border-bottom:2px solid rgba(143,220,242,.8);
+      box-shadow:0 4px 20px rgba(73,184,221,.18);
+    }
+    .logo-container{display:flex;align-items:center;gap:10px}
+    /* LOGO = 音乐播放器按钮（点击暂停 / 继续） */
+    .logo-btn{
+      position:relative;width:62px;height:62px;padding:0;background:none;border:none;
+      border-radius:50%;cursor:pointer;transition:transform .2s,box-shadow .2s;
+    }
+    .logo-btn img{
+      width:62px;height:62px;object-fit:cover;border-radius:50%;display:block;
+      border:3px solid var(--accent);box-shadow:0 0 20px rgba(201,169,97,.3);
+    }
+    .logo-btn:hover{transform:scale(1.07)}
+    .logo-btn:active{transform:scale(.96)}
+    .logo-btn.playing img{animation:logoSpin 9s linear infinite;border-color:var(--accent-bright)}
+    @keyframes logoSpin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+    .logo-note{
+      position:absolute;right:-4px;bottom:-4px;width:24px;height:24px;border-radius:50%;
+      display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;
+      background:var(--accent);color:#1a0f2e;border:2px solid rgba(255,255,255,.6);
+    }
+    body[data-theme="day"] .logo-note{color:#fff;border-color:#fff}
+    body[data-theme="day"] .logo-btn img{border-color:#ff7fb2;box-shadow:0 0 20px rgba(255,127,178,.35)}
+    /* 正文音频行（提示用真实元素，避免伪元素在注入环境下竖排错位） */
+    .reading-content p:has(> audio),.reading-content p:has(audio){
+      text-align:center;background:rgba(201,169,97,.08);
+      border:1.5px dashed var(--border-soft);border-radius:12px;
+      padding:8px 14px;margin:1.5em 0;
+    }
+    .reading-content p:has(audio)::before{content:none!important}
+    .audio-tip{
+      display:block;font-size:12px;letter-spacing:1px;color:var(--accent);
+      opacity:.9;margin-bottom:2px;
+    }
+    body[data-theme="day"] .reading-content p:has(audio){background:rgba(255,127,178,.1)}
+    .logo-text{font-family:var(--font-display);font-weight:700;font-size:15px;color:var(--accent);letter-spacing:3px;white-space:nowrap}
+    body[data-theme="day"] .logo-text{color:#e2559a}
+    .theme-controls{display:flex;align-items:center;gap:6px}
+    .control-btn{
+      width:42px;height:42px;border-radius:50%;
+      background:linear-gradient(145deg,var(--btn-night-a) 0%,var(--btn-night-b) 100%);
+      border:2px solid var(--btn-night-line);color:var(--btn-night-line);
+      font-size:16px;display:flex;align-items:center;justify-content:center;
+      cursor:pointer;transition:background .25s,border-color .25s,color .25s,box-shadow .25s;box-shadow:0 3px 10px rgba(60,42,77,.55);
+    }
+    body[data-theme="day"] .control-btn{background:#fff;border-color:rgba(73,184,221,.55);color:#49b8dd;box-shadow:0 3px 10px rgba(73,184,221,.2)}
+    body[data-theme="day"] .control-btn:hover{background:linear-gradient(145deg,#ff9ec8,#8fdcf2);color:#fff;border-color:#fff;box-shadow:0 0 14px rgba(255,127,178,.5)}
+    .control-btn:hover{
+      transform:scale(1.1);
+      background:linear-gradient(145deg,var(--btn-night-a-hi) 0%,var(--btn-night-b-hi) 100%);
+      color:#fff;border-color:#fff;box-shadow:0 0 14px var(--btn-night-glow);
+    }
+    .grimoire-container{
+      max-width:100%;margin:100px 0 60px;
+      background:var(--paper);padding:35px 12px 45px;
+      box-shadow:0 8px 35px var(--shadow);position:relative;overflow:hidden;
+      border:1px solid var(--border-soft);
+    }
+    body[data-theme="day"] .grimoire-container{border:1.5px solid rgba(143,220,242,.7);box-shadow:0 10px 34px rgba(73,184,221,.15)}
+    @media(min-width:769px){
+      .grimoire-container{max-width:860px;margin:118px auto 80px;padding:45px 48px 50px;border-radius:12px}
+    }
+    .grimoire-container::before{
+      content:"";position:absolute;left:-28px;top:12%;
+      width:88px;height:88px;
+      background:radial-gradient(circle,rgba(201,169,97,0.15) 25%,transparent 75%);
+      border-radius:50%;z-index:-1;
+    }
+    .grimoire-container::after{
+      content:"✦ ☽ ✧ ☽ ✦";position:absolute;left:-45px;top:18%;
+      font-size:24px;color:var(--accent);opacity:.15;line-height:1.45;
+      writing-mode:vertical-rl;letter-spacing:20px;z-index:-1;
+    }
+    .right-sticker{
+      position:absolute;right:-32px;top:32%;
+      font-size:29px;color:var(--accent);opacity:.12;line-height:1.55;
+      writing-mode:vertical-rl;letter-spacing:24px;z-index:-1;
+    }
+    .reading-content{font-size:17.2px;line-height:2.05;max-width:100%}
+    .reading-content>p{
+      position:relative;margin:0 0 2.2em;padding:0 0 0 22px;
+      text-indent:0;color:var(--text-main);letter-spacing:.04em;
+    }
+    .reading-content>p::before{
+      content:'';position:absolute;left:0;top:4px;bottom:4px;
+      width:3px;border-radius:999px;
+      background:linear-gradient(180deg,var(--accent),transparent);opacity:.45;
+    }
+    .reading-content>p:first-of-type::first-letter{
+      float:left;font-size:3.2em;line-height:.78;
+      margin:6px 8px 0 -2px;font-weight:900;color:var(--accent);
+      text-shadow:0 2px 12px rgba(201,169,97,.25);
+    }
+    .reading-content>p+p::after{
+      content:'· · ·';display:block;text-align:center;font-size:13px;
+      color:var(--accent);opacity:.35;letter-spacing:8px;
+      margin-top:-1.4em;margin-bottom:.4em;pointer-events:none;
+    }
+    .reading-content .highlight{
+      background:linear-gradient(90deg,rgba(201,169,97,.18),rgba(139,26,26,.10));
+      border-radius:4px;padding:1px 4px;font-weight:500;
+    }
+    .reading-content>p:nth-child(odd){
+      background:rgba(201,169,97,.04);border-radius:0 8px 8px 0;
+      padding:10px 12px 10px 22px;margin-left:-2px;
+    }
+    body[data-theme="day"] .reading-content>p:nth-child(odd){background:rgba(73,184,221,.055)}
+    .dialogue-container{margin:2em 0;display:flex;align-items:flex-start;gap:10px}
+    .dialogue-container.right{flex-direction:row-reverse}
+    .bubble-wrap{flex:1;min-width:0;display:flex;flex-direction:column}
+    .char-avatar-wrap{
+      flex:0 0 64px;width:64px;height:64px;
+      border-radius:50%;overflow:hidden;position:relative;
+      box-shadow:0 3px 14px rgba(0,0,0,.25);align-self:flex-start;
+    }
+    .char-avatar-wrap img{width:100%;height:100%;object-fit:cover;object-position:top center;display:block;border-radius:50%}
+    .char-avatar-wrap svg{width:44px;height:44px;flex-shrink:0}
+    .char-avatar{width:60px;height:60px;border-radius:50%;object-fit:cover;border:2.5px solid var(--accent);flex-shrink:0;box-shadow:0 3px 10px rgba(0,0,0,.15)}
+    .bubble-text p,.dialogue-container p{padding:0;margin:0;background:none}
+    .bubble-text p::before,.bubble-text p::after{display:none}
+    .character-name{
+      display:inline-flex;align-items:baseline;gap:4px;margin-bottom:7px;
+      font-family:'Noto Serif SC',serif;font-weight:900;letter-spacing:1px;line-height:1;
+    }
+    .character-name .cn-first{font-size:2em;display:inline-block;transform:rotate(-3deg);transform-origin:bottom center;text-shadow:0 2px 6px currentColor;opacity:.9}
+    .character-name .cn-rest{font-size:1.25em;opacity:.85}
+    .bubble-text{
+      position:relative;background:var(--bubble-bg);padding:14px 18px 12px;
+      border-radius:22px 22px 22px 8px;box-shadow:0 6px 18px var(--shadow);
+      border:1.6px solid var(--border-soft);width:100%;box-sizing:border-box;
+      word-break:break-word;white-space:normal;font-size:.97em;line-height:1.9;display:block;
+    }
+    .dialogue-container.right .bubble-text{border-radius:22px 22px 8px 22px}
+    /* 气泡小尾巴 */
+    .bubble-text::after{
+      content:'';position:absolute;left:-7px;top:18px;width:13px;height:13px;border-radius:0 0 0 4px;
+      background:var(--bubble-bg);
+      border-left:1.6px solid var(--border-soft);border-bottom:1.6px solid var(--border-soft);
+      transform:rotate(45deg);
+    }
+    .dialogue-container.right .bubble-text::after{
+      left:auto;right:-7px;border-left:none;border-bottom:none;border-radius:0 4px 0 0;
+      border-right:1.6px solid var(--border-soft);border-top:1.6px solid var(--border-soft);
+    }
+    /* 角色挂件（猫猫 / 狗狗 / 兔子 …） */
+    .bubble-pendant{
+      position:absolute;top:-13px;right:-6px;font-size:21px;line-height:1;
+      text-shadow:0 1px 2px rgba(0,0,0,.18);
+      animation:pendantFloat 3.4s ease-in-out infinite;
+    }
+    .dialogue-container.right .bubble-pendant{right:auto;left:-6px}
+    @keyframes pendantFloat{
+      0%,100%{transform:translateY(0) rotate(6deg)}
+      50%{transform:translateY(-3px) rotate(11deg)}
+    }
+    /* 减弱动效偏好时关闭动画（防卡顿） */
+    @media (prefers-reduced-motion: reduce){
+      .logo-btn.playing img,.bubble-pendant{animation:none!important}
+      body{transition:none}
+    }
+    .image-container{
+      margin:24px 0 18px;text-align:center;
+      background:rgba(15,10,25,0.6);border-radius:16px;padding:10px 10px 8px;
+      border:1.5px solid rgba(201,169,97,.18);
+    }
+    body[data-theme="day"] .image-container{background:rgba(228,246,253,.8);border-color:rgba(73,184,221,.28)}
+    .image-controls{display:flex;justify-content:center;gap:10px;margin-bottom:8px}
+    .image-toggle-btn,.image-refresh-btn{
+      background:linear-gradient(90deg,var(--accent),var(--crimson));color:#fff;font-weight:700;
+      border:none;border-radius:24px;padding:6px 16px;font-size:13px;
+      box-shadow:0 3px 10px rgba(139,26,26,.22);cursor:pointer;transition:transform .2s,box-shadow .2s;
+    }
+    .image-refresh-btn{width:32px;height:32px;padding:0;font-size:1.1em;border-radius:50%}
+    .image-toggle-btn:hover,.image-refresh-btn:hover{transform:translateY(-2px) scale(1.05)}
+    .image-sub-tip{
+      font-size:12px;color:var(--accent);opacity:.75;text-align:center;
+      margin-bottom:6px;letter-spacing:.5px;
+      background:rgba(201,169,97,.08);border-radius:8px;padding:4px 10px;
+    }
+    body[data-theme="day"] .image-sub-tip{background:rgba(255,127,178,.12);color:#e2559a}
+    .img-miss{
+      text-align:center;font-size:12.5px;letter-spacing:1px;color:var(--accent);opacity:.85;
+      background:rgba(201,169,97,.08);border:1.5px dashed var(--border-soft);
+      border-radius:12px;padding:14px 12px;margin:2px 0;
+    }
+    body[data-theme="day"] .img-miss{background:rgba(255,127,178,.1)}
+    .image-content{max-height:0;overflow:hidden;opacity:0;transition:opacity .25s ease}
+    .image-content.expanded{max-height:none;opacity:1}
+    .image-content img{border-radius:14px;border:4px solid rgba(201,169,97,.2);box-shadow:0 10px 30px rgba(0,0,0,.3);max-width:100%;display:block;margin:0 auto}
+    body[data-theme="day"] .image-content img{border-color:#fff;box-shadow:0 10px 30px rgba(73,184,221,.26)}
+    @media(max-width:768px){
+      .header{padding:8px 0 6px;height:auto;gap:4px}
+      .grimoire-container{margin:100px 0 60px;padding:28px 10px 40px}
+      .dialogue-container{gap:10px}
+      .char-avatar-wrap{flex:0 0 50px !important;width:50px !important;height:50px !important}
+      .char-avatar-wrap svg{width:38px !important;height:38px !important}
+      .character-name{font-size:12px;padding:2px 8px 2px 6px}
+      .bubble-text{padding:9px 12px;font-size:.94em}
+    }
+  </style>
+</head>
+<body data-theme="night">
+
+  <div class="header">
+    <div class="logo-container">
+      <button class="logo-btn" id="logoBtn" onclick="toggleAudio()" title="播放 / 暂停背景音乐">
+        <img src="https://cdn.imgchest.com/files/737bf25367fa.webp" alt="logo">
+        <span class="logo-note" id="logoNote">♪</span>
+      </button>
+      <div class="logo-text">足控天堂 Ⅱ · FOOT HEAVEN</div>
+    </div>
+    <div class="theme-controls">
+      <button class="control-btn" onclick="adjustFontSize(-1)" title="缩小字体">A−</button>
+      <button class="control-btn" onclick="adjustFontSize(1)"  title="增大字体">A+</button>
+      <button class="control-btn" onclick="toggleTheme()" id="themeBtn" title="切换日间模式">☀️</button>
+    </div>
+  </div>
+
+  <div class="grimoire-container">
+    <div class="right-sticker">✦ ☽ ✧ ☽ ✦</div>
+    <div class="reading-content" id="readingContent">$1</div>
+  </div>
+
+  <script>
+    const BASE_URL = 'https://zyxjack123.top/足控天堂/';
+
+    /* ════════ 地图图片配置（独立于 SFW/NSFW CG 系统）════════
+     * URL 格式：BASE_URL + 插图/地图/地点.webp （扁平结构，无世界子目录）
+     * 示例：https://zyxjack123.top/足控天堂/插图/地图/公司天台1.webp
+     * 标签格式：<img>地图/大世界/地点</img> 、 地图/地点 、 或 <img>大世界/地点</img>
+     * 示例：地图/公司本部/公司天台 、 地图/公司1 、 地图/临江市/江堤夜市
+     * 支持模糊匹配：天台→公司天台1 ， 浴城→临江丝足足浴城1 等
+     * 匹配不到时回退到同世界随机地点 */
+    const WORLD_MAP_PLACES = {
+      '公司本部': [
+        '公司本部1','公司天台1','公司门口台阶1','公司走道·楼梯间1','公司直播间矩阵1',
+        '沙发区·验货后宫1','仓库舞台1','厨房1','发明角1','画室1',
+        '保健室1','植物角1','晾衣阳台1','蹦床房1','练歌房1'
+      ],
+      '临江市': [
+        '西市口老街1','罗森便利店1','市民文化广场1','滨江路1','江堤夜市1',
+        '星海体育馆1','电竞网吧1','七奈画稿直播间1','老城区菜市场1','社区医院1',
+        '快递驿站1','量贩KTV1','咖啡厅1','地下直播沙龙1','魔界保健室1',
+        '临江丝足足浴城1'
+      ],
+      '专属场景': [
+        '天使白袜试炼间1','周三验脚审讯室1','喷泉玉足练舞房1','防走光发明舱1','白丝晾晒小屋1',
+        '薯片脚趾游戏屋1','犬娘脚趾猜猜房1','滨江光脚晒台1','腿环鉴赏室1','兔兔蹦床PK台1',
+        '妈妈系汤足食堂1','女仆翻车电竞舱1','画脚速写室1','歌姬高音房1','黑丝船长舱1',
+        '窗边清唱角1','雪见酒台1','魅魔体检室1','虎牙留白画坊1','骰子天命脚奴局1',
+        '泥脚森林温室1','白袜终演天台1'
+      ]
+    };
+    /* 模糊匹配地点名：精确→包含(全部收集随机选)→逐词→LCS(全部收集随机选)→随机回退 */
+    function _lcsLen(a,b){const na=a.replace(/[·\s]/g,''),nb=b.replace(/[·\s]/g,'');let mx=0;for(let i=0;i<na.length;i++)for(let j=0;j<nb.length;j++){let k=0;while(i+k<na.length&&j+k<nb.length&&na[i+k]===nb[j+k])k++;if(k>mx)mx=k;}return mx;}
+    function _pick(arr){return arr[Math.floor(Math.random()*arr.length)];}
+    function _findBestMatchPlace(world,keyword){
+      const kw=String(keyword||'').trim().replace(/\.\w+$/,'').replace(/\d+$/,'');
+      if(!kw||!WORLD_MAP_PLACES[world])return null;
+      const bases=WORLD_MAP_PLACES[world].map(p=>({orig:p,base:p.replace(/\d+$/,'')}));
+      /* 1. 精确匹配 */
+      const exact=bases.filter(p=>p.base===kw||p.base.replace(/[·\s]/g,'')===kw.replace(/[·\s]/g,''));
+      if(exact.length)return {place:_pick(exact).orig,fallback:false,origKeyword:kw};
+      /* 2. 包含匹配：收集所有包含关键词或被关键词包含的地点，随机选一个 */
+      const contained=bases.filter(p=>p.base.includes(kw)||kw.includes(p.base));
+      if(contained.length)return {place:_pick(contained).orig,fallback:false,origKeyword:kw};
+      /* 3. 逐词匹配 */
+      const kwWords=kw.split(/[·\/]/).filter(w=>w.length>=1);
+      if(kwWords.length>1){
+        const wm=bases.filter(p=>kwWords.every(w=>p.base.includes(w)));
+        if(wm.length)return {place:_pick(wm).orig,fallback:false,origKeyword:kw};
+      }
+      /* 4. LCS 模糊匹配：收集所有达到阈值的，随机选一个 */
+      const lcsMatches=[];
+      let bestScore=0;
+      for(const p of bases){
+        const score=_lcsLen(p.base,kw);
+        const threshold=Math.min(p.base.length,kw.length)*0.4;
+        if(score>=threshold){
+          if(score>bestScore){bestScore=score;lcsMatches.length=0;lcsMatches.push(p);}
+          else if(score===bestScore)lcsMatches.push(p);
+        }
+      }
+      if(lcsMatches.length)return {place:_pick(lcsMatches).orig,fallback:false,origKeyword:kw};
+      /* 5. 全部失败 → 同世界随机地点 */
+      const places=WORLD_MAP_PLACES[world];
+      return {place:_pick(places),fallback:true,origKeyword:kw};
+    }
+    /* 处理文本中的地图标签，替换为地图图片容器
+     * 只认 地图/世界/地点 格式，一个标签只生成一张图
+     * 处理两种情况：
+     *   A. <img src="地图/公司本部/公司天台"> — src 属性中包含 地图/
+     *   B. 文本节点中包含 地图/公司本部/公司天台 — <img>地图/... 被浏览器解析为 void 元素后
+     * 匹配不到时回退到同世界随机地点 */
+    function processMapTags(){
+      try{
+        const content=document.getElementById('readingContent');
+        const worldKeys=Object.keys(WORLD_MAP_PLACES).join('|');
+        const mapRe=new RegExp('地图\\/('+worldKeys+')\\/([^<&\\s,。！？、；：\\/]+)');
+        /* 兼容省略世界名的写法：地图/公司1 → 全地图模糊匹配 */
+        const mapReLoose=/地图\/([^<&\s,。！？、；：\/]+)/;
+        const _matchTag=(text)=>{
+          const mf=text.match(mapRe), ml=text.match(mapReLoose);
+          if(mf&&(!ml||mf.index<=ml.index)) return {world:mf[1],keyword:mf[2],index:mf.index,len:mf[0].length};
+          if(ml) return {world:null,keyword:ml[1],index:ml.index,len:ml[0].length};
+          return null;
+        };
+        const _resolveAny=(kw)=>{
+          const worlds=Object.keys(WORLD_MAP_PLACES), hits=[];
+          for(const w of worlds){
+            const r=_findBestMatchPlace(w,kw);
+            if(r&&!r.fallback) hits.push({world:w,res:r});
+          }
+          if(hits.length){ const p=hits[Math.floor(Math.random()*hits.length)]; return {world:p.world,res:p.res}; }
+          const w=worlds[Math.floor(Math.random()*worlds.length)];
+          return {world:w,res:_findBestMatchPlace(w,kw)};
+        };
+        const _makeContainer=(worldName,bestPlace,tipText)=>{
+          const imgSrc=`${BASE_URL}插图/地图/${bestPlace}.webp`;
+          const id='map-'+Math.random().toString(36).substr(2,9);
+          const mapLabel=`${worldName} · ${bestPlace}`;
+          const subTip=tipText?`<div class="image-sub-tip">${tipText}</div>`:'';
+          const div=document.createElement('div');
+          div.className='image-container map-image-container';
+          div.setAttribute('data-map-world',worldName);
+          div.setAttribute('data-map-place',bestPlace);
+          div.innerHTML=
+            `<div class="image-controls">`+
+            `<button class="image-toggle-btn" onclick="toggleImage('${id}')">${mapLabel}</button>`+
+            `</div>${subTip}`+
+            `<div class="image-content expanded" id="${id}">`+
+            `<img src="${imgSrc}" alt="${mapLabel}" loading="lazy" onerror="this.onerror=null;this.alt='图片加载失败';this.style.opacity='0.3';">`+
+            `</div>`;
+          return div;
+        };
+        const _resolve=(w,p)=>{
+          if(!WORLD_MAP_PLACES[w])return null;
+          return _findBestMatchPlace(w,p);
+        };
+        const _build=(w,pr)=>{
+          if(!w){
+            const any=_resolveAny(String(pr).trim());
+            if(!any||!any.res) return null;
+            return _makeContainer(any.world,any.res.place,
+              `无地点「${any.res.origKeyword}」插图，已替换为「${any.world} · ${any.res.place}」`);
+          }
+          const r=_resolve(String(w).trim(),String(pr).trim());
+          if(!r)return null;
+          /* 精确匹配不显示提示；模糊匹配和回退都显示 */
+          const placeBase=r.place.replace(/\d+$/,'');
+          const isExact=placeBase===r.origKeyword||placeBase.replace(/[·\s]/g,'')===r.origKeyword.replace(/[·\s]/g,'');
+          const tip=isExact?null:`无地点「${r.origKeyword}」插图，已替换为「${r.place}」`;
+          return _makeContainer(String(w).trim(),r.place,tip);
+        };
+
+        /* A. 处理 <img src="地图/世界/地点"> — src 属性中包含 地图/ */
+        content.querySelectorAll('img').forEach(img=>{
+          const src=img.getAttribute('src')||'';
+          const m=_matchTag(src);
+          if(m){
+            const c=_build(m.world,m.keyword);
+            if(c) img.replaceWith(c);
+          }
+        });
+
+        /* B. 处理文本节点中的 地图/世界/地点 — TreeWalker 遍历 */
+        const walker=document.createTreeWalker(content,NodeFilter.SHOW_TEXT,null);
+        const targets=[];
+        let node;
+        while((node=walker.nextNode())){
+          const text=node.nodeValue;
+          if(!text||!text.includes('地图/')) continue;
+          const m=_matchTag(text);
+          if(m) targets.push({node,match:m,text});
+        }
+        for(const t of targets){
+          const c=_build(t.match.world,t.match.keyword);
+          if(c){
+            const before=t.text.substring(0,t.match.index);
+            const after=t.text.substring(t.match.index+t.match.len);
+            const parent=t.node.parentNode;
+            if(before) parent.insertBefore(document.createTextNode(before),t.node);
+            parent.insertBefore(c,t.node);
+            if(after) parent.insertBefore(document.createTextNode(after),t.node);
+            parent.removeChild(t.node);
+          }
+        }
+
+        /* 清理：删除无 src 的空 <img> 元素 */
+        content.querySelectorAll('img').forEach(img=>{
+          if(!img.getAttribute('src')) img.remove();
+        });
+      }catch(e){ /* 地图处理出错时不影响 CG 流程 */ }
+    }
+
+    /* ── CG 插图配置（与状态栏一致） ──
+     * SFW: 10种表情 | NSFW: 12种场景（足控天堂2 图床场景）
+     * 全角色共用 _SFW_COMMON / _NSFW_COMMON */
+    const _SFW_COMMON={ "开心":1,"微笑":1,"害羞":1,"生气":1,"嫌弃":1,"困惑":1,"惊讶":1,"尴尬":1,"严肃":1,"悲伤":1 };
+    const _NSFW_COMMON={ "足底特写":3,"丝袜特写":3,"脱袜":3,"验收":3,"舔脚":3,"足交":3,"踩踏":3,"原味交接":3,"泡脚护理":3,"脚趾夹物":3,"脚心蹭脸":3,"闷脸":3 };
+    const _CG_TEMPLATE={..._SFW_COMMON,..._NSFW_COMMON};
+    /* 足控天堂2 · 23位虚拟主播 */
+    const _ALL_CHAR_NAMES=[
+      'AZKi','东雪莲','兔田佩克拉','兔田妈妈','凑阿库娅','哈珂斯·贝尔丝','嘉然',
+      '噶呜·古拉','塞莱希·法娜','宝钟玛琳','愈月巧可','时乃空','时雨羽衣','星街彗星',
+      '永雏塔菲','润羽露西娅','白上吹雪','神乐七奈','茸茸·阿比斯加德','超天酱','软软·阿比斯加德',
+      '雪花菈米','鲨鱼子saba'
+    ];
+    const IMAGE_LISTS={};
+    _ALL_CHAR_NAMES.forEach(n=>IMAGE_LISTS[n]={..._CG_TEMPLATE});
+
+    const CHARACTER_CONFIG = {
+      // ── 足控天堂2 · 23位虚拟主播 ──
+      'AZKi': {
+        color:'#e8437a',bg:'rgba(232,67,122,0.10)',border:'rgba(232,67,122,0.30)',
+        aliases:['AZKi','azki','阿兹基'],
+        avatar:'https://img.naixiai.cn/2026/09/15/AZKi_00001.webp'
+      },
+      '东雪莲': {
+        color:'#7fb3d5',bg:'rgba(127,179,213,0.10)',border:'rgba(127,179,213,0.30)',
+        aliases:['东雪莲','雪莲'],
+        avatar:'https://img.naixiai.cn/2026/09/15/1.webp'
+      },
+      '兔田佩克拉': {
+        color:'#f0a0b0',bg:'rgba(240,160,176,0.10)',border:'rgba(240,160,176,0.30)',
+        aliases:['兔田佩克拉','佩克拉','Pekora','兔田'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00001c56387601c87eb6c.webp'
+      },
+      '兔田妈妈': {
+        color:'#d988b0',bg:'rgba(217,136,176,0.10)',border:'rgba(217,136,176,0.30)',
+        aliases:['兔田妈妈','兔妈'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00001605321bf7b3136af.webp'
+      },
+      '凑阿库娅': {
+        color:'#5dade2',bg:'rgba(93,173,226,0.10)',border:'rgba(93,173,226,0.30)',
+        aliases:['凑阿库娅','阿库娅','阿夸','Aqua'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00001ce15af3afae6c387.webp'
+      },
+      '哈珂斯·贝尔丝': {
+        color:'#9b59b6',bg:'rgba(155,89,182,0.10)',border:'rgba(155,89,182,0.30)',
+        aliases:['哈珂斯·贝尔丝','哈珂斯','贝尔丝'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_000012a64017b4fa5f087.webp'
+      },
+      '嘉然': {
+        color:'#ff8fa3',bg:'rgba(255,143,163,0.10)',border:'rgba(255,143,163,0.30)',
+        aliases:['嘉然','然然','Diana'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_000014f667d71f2e5b42f.webp'
+      },
+      '噶呜·古拉': {
+        color:'#48c9b0',bg:'rgba(72,201,176,0.10)',border:'rgba(72,201,176,0.30)',
+        aliases:['噶呜·古拉','古拉','噶呜','Gura'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00001c5d2e138bbe35692.webp'
+      },
+      '塞莱希·法娜': {
+        color:'#7dcea0',bg:'rgba(125,206,160,0.10)',border:'rgba(125,206,160,0.30)',
+        aliases:['塞莱希·法娜','塞莱希','法娜','Fauna'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00001b553f4f268c5c6e8.webp'
+      },
+      '宝钟玛琳': {
+        color:'#e67e22',bg:'rgba(230,126,34,0.10)',border:'rgba(230,126,34,0.30)',
+        aliases:['宝钟玛琳','玛琳','宝钟','Marine'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00001701829bfd27d722f.webp'
+      },
+      '愈月巧可': {
+        color:'#c39bd3',bg:'rgba(195,155,211,0.10)',border:'rgba(195,155,211,0.30)',
+        aliases:['愈月巧可','巧可','Choco'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_0000171399df627cc35e1.webp'
+      },
+      '时乃空': {
+        color:'#aed6f1',bg:'rgba(174,214,241,0.10)',border:'rgba(174,214,241,0.30)',
+        aliases:['时乃空','空妈','Sora'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_0000189ed790f06e9790e.webp'
+      },
+      '时雨羽衣': {
+        color:'#aab7ff',bg:'rgba(170,183,255,0.10)',border:'rgba(170,183,255,0.30)',
+        aliases:['时雨羽衣','羽衣','Ui'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00001f702564844519afe.webp'
+      },
+      '星街彗星': {
+        color:'#5b8ff9',bg:'rgba(91,143,249,0.10)',border:'rgba(91,143,249,0.30)',
+        aliases:['星街彗星','彗星','星街','Suisei'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_0000100bc359a4ff2e82f.webp'
+      },
+      '永雏塔菲': {
+        color:'#ffd166',bg:'rgba(255,209,102,0.10)',border:'rgba(255,209,102,0.30)',
+        aliases:['永雏塔菲','塔菲','Taffy'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00001bb9e0dd73323a99d.webp'
+      },
+      '润羽露西娅': {
+        color:'#af7ac5',bg:'rgba(175,122,197,0.10)',border:'rgba(175,122,197,0.30)',
+        aliases:['润羽露西娅','露西娅','露西亚','Luna'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_000011a094fd69390e9ad.webp'
+      },
+      '白上吹雪': {
+        color:'#85c1e9',bg:'rgba(133,193,233,0.10)',border:'rgba(133,193,233,0.30)',
+        aliases:['白上吹雪','吹雪','小狐狸','Fubuki'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00001318aa24d6472f572.webp'
+      },
+      '神乐七奈': {
+        color:'#f5b7b1',bg:'rgba(245,183,177,0.10)',border:'rgba(245,183,177,0.30)',
+        aliases:['神乐七奈','七奈','Nana'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00001.webp'
+      },
+      '茸茸·阿比斯加德': {
+        color:'#f7c59f',bg:'rgba(247,197,159,0.10)',border:'rgba(247,197,159,0.30)',
+        aliases:['茸茸·阿比斯加德','茸茸'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00002.webp'
+      },
+      '超天酱': {
+        color:'#ff5fa2',bg:'rgba(255,95,162,0.10)',border:'rgba(255,95,162,0.30)',
+        aliases:['超天酱','酱酱'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00001dc7109d072183d4b.webp'
+      },
+      '软软·阿比斯加德': {
+        color:'#ffb3c6',bg:'rgba(255,179,198,0.10)',border:'rgba(255,179,198,0.30)',
+        aliases:['软软·阿比斯加德','软软'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_00001bab8227e208323db.webp'
+      },
+      '雪花菈米': {
+        color:'#a8dadc',bg:'rgba(168,218,220,0.10)',border:'rgba(168,218,220,0.30)',
+        aliases:['雪花菈米','菈米','雪花','Rami'],
+        avatar:'https://img.naixiai.cn/2026/09/15/_000011a3148554241c997.webp'
+      },
+      '鲨鱼子saba': {
+        color:'#6fc3df',bg:'rgba(111,195,223,0.10)',border:'rgba(111,195,223,0.30)',
+        aliases:['鲨鱼子saba','鲨鱼子','saba','Saba'],
+        avatar:'https://img.naixiai.cn/2026/09/15/saba_00001.webp'
+      }
+    };
+
+    /* ── 主播头像映射（图源：naixiai 图床，2026.09.15 上传） ──
+     * 与上面 CHARACTER_CONFIG 的 avatar 保持一致，此处再覆盖一次以便统一维护 */
+    const AVATAR_MAP={
+      "神乐七奈":"https://img.naixiai.cn/2026/09/15/_00001.webp",
+      "AZKi":"https://img.naixiai.cn/2026/09/15/AZKi_00001.webp",
+      "白上吹雪":"https://img.naixiai.cn/2026/09/15/_00001318aa24d6472f572.webp",
+      "宝钟玛琳":"https://img.naixiai.cn/2026/09/15/_00001701829bfd27d722f.webp",
+      "超天酱":"https://img.naixiai.cn/2026/09/15/_00001dc7109d072183d4b.webp",
+      "凑阿库娅":"https://img.naixiai.cn/2026/09/15/_00001ce15af3afae6c387.webp",
+      "东雪莲":"https://img.naixiai.cn/2026/09/15/1.webp",
+      "噶呜·古拉":"https://img.naixiai.cn/2026/09/15/_00001c5d2e138bbe35692.webp",
+      "哈珂斯·贝尔丝":"https://img.naixiai.cn/2026/09/15/_000012a64017b4fa5f087.webp",
+      "嘉然":"https://img.naixiai.cn/2026/09/15/_000014f667d71f2e5b42f.webp",
+      "茸茸·阿比斯加德":"https://img.naixiai.cn/2026/09/15/_00002.webp",
+      "软软·阿比斯加德":"https://img.naixiai.cn/2026/09/15/_00001bab8227e208323db.webp",
+      "润羽露西娅":"https://img.naixiai.cn/2026/09/15/_000011a094fd69390e9ad.webp",
+      "塞莱希·法娜":"https://img.naixiai.cn/2026/09/15/_00001b553f4f268c5c6e8.webp",
+      "鲨鱼子saba":"https://img.naixiai.cn/2026/09/15/saba_00001.webp",
+      "星街彗星":"https://img.naixiai.cn/2026/09/15/_0000100bc359a4ff2e82f.webp",
+      "雪花菈米":"https://img.naixiai.cn/2026/09/15/_000011a3148554241c997.webp",
+      "永雏塔菲":"https://img.naixiai.cn/2026/09/15/_00001bb9e0dd73323a99d.webp",
+      "愈月巧可":"https://img.naixiai.cn/2026/09/15/_0000171399df627cc35e1.webp",
+      "时乃空":"https://img.naixiai.cn/2026/09/15/_0000189ed790f06e9790e.webp",
+      "时雨羽衣":"https://img.naixiai.cn/2026/09/15/_00001f702564844519afe.webp",
+      "兔田妈妈":"https://img.naixiai.cn/2026/09/15/_00001605321bf7b3136af.webp",
+      "兔田佩克拉":"https://img.naixiai.cn/2026/09/15/_00001c56387601c87eb6c.webp"
+    };
+    Object.keys(AVATAR_MAP).forEach(function(k){
+      if(CHARACTER_CONFIG[k])CHARACTER_CONFIG[k].avatar=AVATAR_MAP[k];
+    });
+
+    let currentFontSize = 17.2;
+    function adjustFontSize(d) {
+      currentFontSize = Math.max(14, Math.min(24, currentFontSize + d));
+      document.querySelector('.reading-content').style.fontSize = currentFontSize + 'px';
+      localStorage.setItem('zkt2-font-size', currentFontSize);
+    }
+    function toggleTheme() {
+      const b = document.body;
+      const night = b.getAttribute('data-theme') === 'night';
+      b.setAttribute('data-theme', night ? 'day' : 'night');
+      document.getElementById('themeBtn').textContent = night ? '☀️' : '🌙';
+      localStorage.setItem('zkt2-theme', night ? 'day' : 'night');
+    }
+    function safeDecode(s) { try { return decodeURIComponent(s); } catch { return s; } }
+    function normalizeCharacterName(raw) {
+      const n = String(raw||'').trim().replace(/^[\s"'"'「」《》()【】]+|[\s"'"'「」《》()【】]+$/g,'');
+      for (const [k,c] of Object.entries(CHARACTER_CONFIG))
+        if (k===n || c.aliases?.includes(n)) return k;
+      return null;
+    }
+
+    /* ════════ 角色挂件：按人设自动配 猫猫 / 狗狗 / 兔子 … ════════ */
+    const PENDANTS = [
+      [/犬|茸茸|软软/,'🐶'],[/兔/,'🐰'],[/狐|吹雪/,'🦊'],[/鼠|哈珂斯/,'🐭'],
+      [/鲨|鱼|古拉/,'🦈'],[/猫/,'🐱'],[/偶像|超天酱|嘉然/,'🪽'],
+      [/雪莲|花/,'🌸'],[/彗星|星/,'⭐'],[/死灵|露西娅|鬼/,'💀'],
+      [/羽衣|七奈|画/,'🎨'],[/女仆|阿库娅/,'🧹'],[/海贼|玛琳/,'🏴‍☠️'],
+      [/医生|巧可/,'🩺'],[/菈米|酒/,'🍶'],[/塞莱希|自然/,'🌿'],
+      [/乃空|AZKi|歌姬|时乃空/,'🎵'],[/塔菲|发明/,'🔧']
+    ];
+    function pendantFor(name){
+      for (const [re, emo] of PENDANTS) if (re.test(name)) return emo;
+      return '♡';
+    }
+
+    function processDialogue() {
+      const content = document.getElementById('readingContent');
+      const paras = content.innerHTML.trim().split(/\n\s*\n+/).filter(p=>p.trim());
+      content.innerHTML = paras.map(p => {
+        p = p.trim();
+        // 段内任意位置匹配「角色名「对白」」，不再要求整段匹配
+        const re = /([^\s"'"'「」]+)[\s"'"'「」]*[「"'](.+?)[」"']/g;
+        let out = '';
+        let last = 0;
+        let m;
+        let matched = false;
+        while ((m = re.exec(p)) !== null) {
+          const charName = normalizeCharacterName(m[1]);
+          if (!charName) continue; // 名字不在配置中，跳过该匹配
+          matched = true;
+          const lead = p.slice(last, m.index).trim();
+          if (lead) out += `<p>${lead}</p>`;
+          const c = CHARACTER_CONFIG[charName];
+          const fn = charName.charAt(0);
+          const fr = charName.slice(1);
+          out += `<div class="dialogue-container">
+              <div class="char-avatar-wrap" style="border:2.5px solid ${c.border};">
+                <img src="${c.avatar}" alt="${charName}"
+                  onerror="this.style.display='none';">
+              </div>
+              <div class="bubble-wrap">
+                <div class="character-name" style="color:${c.color};">
+                  <span class="cn-first">${fn}</span><span class="cn-rest">${fr}</span>
+                </div>
+                <div class="bubble-text">${m[2]}<span class="bubble-pendant">${pendantFor(charName)}</span></div>
+              </div>
+            </div>`;
+          last = m.index + m[0].length;
+        }
+        if (matched) {
+          const tail = p.slice(last).trim();
+          if (tail) out += `<p>${tail}</p>`;
+          return out;
+        }
+        return `<p>${p}</p>`;
+      }).join('');
+    }
+
+    function _findCgIndex(parts){ return parts.findIndex(p=>safeDecode(p)==='NSFW'||safeDecode(p)==='SFW'); }
+    function _cgLookup(char,type){
+      let d=IMAGE_LISTS[char]; if(d?.[type]) return d[type];
+      const nc=char.trim().normalize('NFC');
+      if(!d){ const k=Object.keys(IMAGE_LISTS).find(c=>c.trim().normalize('NFC')===nc||c.replace(/\s/g,'')===char.replace(/\s/g,'')); if(k) d=IMAGE_LISTS[k]; }
+      if(!d) return 0;
+      if(d[type]) return d[type];
+      const nt=type.trim().normalize('NFC');
+      const k2=Object.keys(d).find(t=>t.trim().normalize('NFC')===nt||t.replace(/\s/g,'')===type.replace(/\s/g,''));
+      return k2?d[k2]:0;
+    }
+    function _pickSubChar(originalChar){
+      const pool=_ALL_CHAR_NAMES.filter(c=>c!==originalChar);
+      return pool[Math.floor(Math.random()*pool.length)]||_ALL_CHAR_NAMES[0];
+    }
+    function _pickSubType(cat,excludeType){
+      const isSfw=safeDecode(cat)==='SFW';
+      const src=isSfw?_SFW_COMMON:_NSFW_COMMON;
+      const keys=Object.keys(src).filter(k=>k!==excludeType);
+      if(!keys.length) return Object.keys(src)[0]||excludeType;
+      return keys[Math.floor(Math.random()*keys.length)];
+    }
+    function _charExists(char){
+      if(IMAGE_LISTS[char]) return true;
+      const nc=char.trim().normalize('NFC');
+      return Object.keys(IMAGE_LISTS).some(c=>c.trim().normalize('NFC')===nc||c.replace(/\s/g,'')===char.replace(/\s/g,''));
+    }
+    function _sceneExists(cat,scene){
+      const src=cat==='SFW'?_SFW_COMMON:_NSFW_COMMON;
+      if(src[scene]) return true;
+      const ns=scene.trim().normalize('NFC');
+      return Object.keys(src).some(k=>k.trim().normalize('NFC')===ns||k.replace(/\s/g,'')===scene.replace(/\s/g,''));
+    }
+    function autoAssignImageNumber(src) {
+      const parts=src.split('/');
+      const idx=_findCgIndex(parts);
+      if(idx<0||idx+2>=parts.length) return {src,tip:null};
+      const cat=parts[idx]; let char=safeDecode(parts[idx+1]);
+      let name=safeDecode(parts[idx+2]).replace(/\.webp$/,'');
+      let tip=null;
+
+      /* 剥离数字后缀，提取基础场景名 */
+      const fm=name.match(/^(.+?)(\d+)$/);
+      const baseName=fm?fm[1]:name;
+      const hasNum=!!fm;
+      const charOk=_charExists(char);
+      const sceneOk=charOk ? !!_cgLookup(char,baseName) : _sceneExists(safeDecode(cat),baseName);
+
+      /* 正常：角色+场景都存在 */
+      if(charOk && sceneOk){
+        if(hasNum) return {src,tip:null};
+        const max=_cgLookup(char,baseName);
+        parts[idx+2]=encodeURIComponent(baseName+(Math.floor(Math.random()*max)+1)+'.webp');
+        return {src:parts.join('/'),tip:null};
+      }
+
+      /* 情况1：角色不存在 + 场景存在 → 只换角色，保留场景 */
+      if(!charOk && sceneOk){
+        const origChar=char;
+        const subChar=_pickSubChar(char);
+        parts[idx+1]=encodeURIComponent(subChar);
+        const max=_cgLookup(subChar,baseName);
+        if(!max) return {src:parts.join('/'),tip:null};
+        parts[idx+2]=encodeURIComponent(baseName+(Math.floor(Math.random()*max)+1)+'.webp');
+        tip=`角色「${origChar}」无插图，已替换为「${subChar} · ${baseName}」`;
+        return {src:parts.join('/'),tip};
+      }
+
+      /* 情况2：角色不存在 + 场景也不存在 → 换角色+换场景 */
+      if(!charOk && !sceneOk){
+        const origChar=char, origType=baseName;
+        const subChar=_pickSubChar(char);
+        const subType=_pickSubType(cat,baseName);
+        parts[idx+1]=encodeURIComponent(subChar);
+        const max=_cgLookup(subChar,subType);
+        if(!max) return {src:parts.join('/'),tip:`角色「${origChar}」场景「${origType}」无插图`};
+        parts[idx+2]=encodeURIComponent(subType+(Math.floor(Math.random()*max)+1)+'.webp');
+        tip=`「${origChar}」无插图，「${origType}」不存在，已替换为「${subChar} · ${subType}」`;
+        return {src:parts.join('/'),tip};
+      }
+
+      /* 情况3：角色存在 + 场景不存在 → 只换场景 */
+      const origType=baseName;
+      const subType=_pickSubType(cat,baseName);
+      const max=_cgLookup(char,subType);
+      if(!max) return {src:parts.join('/'),tip:null};
+      parts[idx+2]=encodeURIComponent(subType+(Math.floor(Math.random()*max)+1)+'.webp');
+      tip=`「${char}」无「${origType}」插图，已替换为「${subType}」`;
+      return {src:parts.join('/'),tip};
+    }
+
+    function createInteractiveImageContainer(imgHTML) {
+      const id = 'img-' + Math.random().toString(36).substr(2,9);
+      const m = imgHTML.match(/src=["']([^"']+)["']/i);
+      let tipText=null;
+      if (m) {
+        const result=autoAssignImageNumber(m[1]);
+        imgHTML = imgHTML.replace(m[1], result.src);
+        tipText=result.tip;
+      }
+      const subTip = tipText
+        ? `<div class="image-sub-tip">${tipText}</div>`
+        : '';
+      return `<div class="image-container">
+        <div class="image-controls">
+          <button class="image-toggle-btn" onclick="toggleImage('${id}')">查看插画</button>
+          <button class="image-refresh-btn" onclick="refreshImage('${id}',event)" title="随机切换">↻</button>
+        </div>
+        ${subTip}
+        <div class="image-content expanded" id="${id}">${imgHTML}</div>
+      </div>`;
+    }
+
+    window.toggleImage = id => {
+      const d = document.getElementById(id);
+      const btn = d.parentElement.querySelector('.image-toggle-btn');
+      const expanded = d.classList.toggle('expanded');
+      const mapContainer = d.parentElement.closest('.map-image-container');
+      if (mapContainer) {
+        const label = `${mapContainer.dataset.mapWorld||''} · ${mapContainer.dataset.mapPlace||''}`.trim();
+        btn.textContent = expanded ? label : `查看：${label}`;
+      } else {
+        btn.textContent = expanded ? '收起' : '查看插画';
+      }
+    };
+    window.refreshImage = (id,e) => {
+      const img = document.getElementById(id).querySelector('img');
+      if(!img) return;
+      const btn = e?.target?.closest('.image-refresh-btn');
+      if (btn) { btn.style.transform='rotate(360deg)'; setTimeout(()=>btn.style.transform='',500); }
+      img.style.opacity = '0.4';
+      img.style.transition = 'opacity 0.3s ease';
+      const _updateTip=(container,text)=>{
+        if(!container) return;
+        let tip=container.querySelector('.image-sub-tip');
+        if(!tip){ tip=document.createElement('div'); tip.className='image-sub-tip'; container.querySelector('.image-content').before(tip); }
+        tip.textContent=text;
+      };
+      try{
+        const parts = img.src.split('/');
+        const idx = _findCgIndex(parts);
+        if(idx<0||idx+2>=parts.length){ img.style.opacity='1'; return; }
+        const cat = parts[idx]; let char = safeDecode(parts[idx+1]);
+        const rawFile = safeDecode(parts[idx+2]).replace(/\.webp$/,'');
+        const fm = rawFile.match(/^(.+?)(\d+)$/);
+        let type = fm ? fm[1] : rawFile;
+        const curNum = fm ? parseInt(fm[2]) : 0;
+        const container=img.closest('.image-container');
+
+        /* 情况1：角色不存在 → 替换角色 */
+        if(!_charExists(char)){
+          const origChar=char;
+          const subChar=_pickSubChar(char);
+          parts[idx+1]=encodeURIComponent(subChar);
+          char=subChar;
+          let max=_cgLookup(char,type);
+          if(!max){
+            const origType=type;
+            const subType=_pickSubType(cat,type);
+            max=_cgLookup(char,subType)||1;
+            type=subType;
+            _updateTip(container,`「${origChar}」无插图，「${origType}」不存在，已替换为「${subChar} · ${subType}」`);
+          }else{
+            _updateTip(container,`角色「${origChar}」无插图，已替换为「${subChar} · ${type}」`);
+          }
+          let newNum; if(max===1) newNum=1; else do{ newNum=Math.floor(Math.random()*max)+1; }while(newNum===curNum);
+          parts[idx+2]=encodeURIComponent(type+newNum+'.webp');
+          img.onload=()=>{img.style.opacity='1';}; img.onerror=()=>{img.style.opacity='1';};
+          img.src=parts.join('/');
+          return;
+        }
+
+        /* 情况2：角色存在但场景不存在 → 替换场景 */
+        let max = _cgLookup(char,type);
+        if(!max){
+          const origType=type;
+          const subType=_pickSubType(cat,type);
+          max=_cgLookup(char,subType)||1;
+          type=subType;
+          _updateTip(container,`「${char}」无「${origType}」插图，已替换为「${subType}」`);
+        }
+
+        let newNum;
+        if(max===1) newNum=1;
+        else do{ newNum=Math.floor(Math.random()*max)+1; }while(newNum===curNum);
+        parts[idx+2] = encodeURIComponent(type+newNum+'.webp');
+        img.onload = ()=>{ img.style.opacity='1'; };
+        img.onerror = ()=>{ img.style.opacity='1'; };
+        img.src = parts.join('/');
+      }catch(err){ img.style.opacity='1'; }
+    };
+
+    function processAllImages() {
+      document.getElementById('readingContent').querySelectorAll('img').forEach(img => {
+        if (img.closest('.image-container') || img.closest('.char-avatar-wrap')) return;
+        /* 跳过没有 src 的空 <img>（地图标签残留 void 元素） */
+        if (!img.getAttribute('src')) { img.remove(); return; }
+        /* 跳过 src 中包含 地图/ 的图片（地图图片不归 CG 管） */
+        if (img.getAttribute('src').includes('地图/')) return;
+        const wrap = document.createElement('div');
+        wrap.innerHTML = createInteractiveImageContainer(img.outerHTML);
+        const el = wrap.firstElementChild;
+        img.replaceWith(el);
+        /* 图床尚未上传该插图时：显示占位提示，不显示破图 */
+        const newImg = el.querySelector('img');
+        if (newImg) {
+          newImg.addEventListener('error', () => {
+            newImg.style.display = 'none';
+            const box = newImg.parentElement;
+            if (box && !box.querySelector('.img-miss')) {
+              const d = document.createElement('div');
+              d.className = 'img-miss';
+              d.textContent = '插图暂未上传 · 图床同步后自动显示';
+              box.appendChild(d);
+            }
+          }, { once: true });
+        }
+      });
+    }
+
+    /* ════════ 音频：<audio>日常1</audio> -> 自动播放一次（不循环） ════════
+     * 识别正则：/<audio>(.*?)<\/audio>/g
+     * 替换为：<audio id="audio-element" preload="auto" autoplay>
+     *           <source src="https://zyxjack123.top/足控天堂/音频/$1.mp3" type="audio/mpeg">
+     *         </audio>
+     */
+    function processAudio() {
+      const content = document.getElementById('readingContent');
+      if (!content) return;
+      const AUDIO_RE = /<audio>(.*?)<\/audio>/g;
+      if (!AUDIO_RE.test(content.innerHTML)) return;
+      let lastName = '';
+      content.innerHTML = content.innerHTML.replace(/<audio>(.*?)<\/audio>/g, (m, name) => {
+        const n = String(name).trim();
+        lastName = n;
+        return `<span class="audio-tip">♪ 场景音乐 · 点击左上角 LOGO 可暂停 / 继续</span>` +
+          `<audio id="audio-element" preload="auto" autoplay>` +
+          `<source src="${BASE_URL}音频/${n}.mp3" type="audio/mpeg"></audio>`;
+      });
+      const audio = document.getElementById('audio-element');
+      if (!audio) return;
+      /* 只播放一次：不设 loop，播完即停 */
+      audio.loop = false;
+      audio.addEventListener('play',  syncAudioIcon);
+      audio.addEventListener('pause', syncAudioIcon);
+      audio.addEventListener('ended', syncAudioIcon);
+      audio.addEventListener('error', () => {
+        const tip = audio.closest('p');
+        if (tip) tip.style.opacity = '.55';
+      });
+      const p = audio.play();
+      if (p && p.catch) p.catch(() => {});
+      syncAudioIcon();
+      audio.title = lastName;
+    }
+
+    /* LOGO 按钮：播放 / 暂停 */
+    window.toggleAudio = function () {
+      const a = document.getElementById('audio-element');
+      if (!a) return;
+      if (a.paused) { const p = a.play(); if (p && p.catch) p.catch(()=>{}); }
+      else { a.pause(); }
+      syncAudioIcon();
+    };
+    function syncAudioIcon() {
+      const a = document.getElementById('audio-element');
+      const btn = document.getElementById('logoBtn');
+      const note = document.getElementById('logoNote');
+      const playing = !!a && !a.paused && !a.ended;
+      if (note) note.textContent = playing ? '❚❚' : '♪';
+      if (btn) btn.classList.toggle('playing', playing);
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const sz = localStorage.getItem('zkt2-font-size');
+      if (sz) { currentFontSize=parseFloat(sz); document.querySelector('.reading-content').style.fontSize=sz+'px'; }
+      const th = localStorage.getItem('zkt2-theme');
+      if (th) { document.body.setAttribute('data-theme',th); document.getElementById('themeBtn').textContent=th==='night'?'🌙':'☀️'; }
+      processDialogue();
+      processMapTags();
+      processAllImages();
+      processAudio();
+    });
+  </script>
+</body>
+</html>
+```

@@ -1,0 +1,4 @@
+补 23 ← 原件 33: "  else { fail++; console.log('  FAIL ' + name + (detail ? '  -> ' + detail : '')) }"
+补 40 ← 原件 50: "  return m ? m[0] : ''"
+补 229 ← 原件 208: "    await rt.cdp.send('Page.navigate', { url: 'file:///' + d.file.replace(/\\\\/g, '/') + '?"
+补 360 ← 原件 277: "process.exit(fail ? 1 : 0)"

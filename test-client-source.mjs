@@ -84,18 +84,29 @@ function sliceBalanced(src, start) {
   if (i < 0) return null
   let depth = 0
   let state = 'code'
+  // `/` 是**除号**还是**正则字面量开头**，词法上不可判定，只能看前文：
+  // 前一个有效字符是标识符字符 / `)` / `]` / 引号 ⇒ 除号；否则是正则。
+  // ★ 为什么必须这么判：`rewriteVhMinHeight` 里有一行
+  //   `var px = Math.round(vh * parseFloat(m[1]) / 100)`。把它当正则开头，扫描器会
+  //   一路吃到下一个 `/`（那是 `rewriteVhMinHeight` 之后某个函数里的注释放头），
+  //   于是注释状态被吞掉、**切片越界到下一个函数**，`new Function` 当场
+  //   `SyntaxError: Unexpected token 'function'`。
+  //   ⇒ 表现是「三门禁一起崩、报的错在别的文件里」，而真因在这个扫描器的词法判断上。
+  //   同类：`verify-shared.mjs` 的 `extractFunction` 早就有这套判断（`regexAllowed`）。
+  let prev = ''
   for (; i < src.length; i++) {
     const c = src[i], n = src[i + 1]
     if (state === 'code') {
       if (c === '/' && n === '/') { state = 'line'; i++; continue }
       if (c === '/' && n === '*') { state = 'block'; i++; continue }
-      if (c === "'" || c === '"' || c === '`') { state = c; continue }
-      if (c === '/') { state = 'regex'; continue }
+      if (c === "'" || c === '"' || c === '`') { state = c; prev = c; continue }
+      if (c === '/' && regexAllowed(src, i, prev)) { state = 'regex'; continue }
       if (c === '{') depth++
       else if (c === '}') { depth--; if (depth === 0) return src.slice(start, i + 1) }
+      else if (!/\s/.test(c)) prev = c
     } else if (state === 'regex') {
       if (c === '\\') { i++; continue }
-      if (c === '/') state = 'code'
+      if (c === '/') { state = 'code'; prev = '/' }
     } else if (state === 'line') {
       if (c === '\n') state = 'code'
     } else if (state === 'block') {
@@ -108,6 +119,14 @@ function sliceBalanced(src, start) {
   return null
 }
 
+/** `src[j]` 处的 `/` 是否为正则字面量开头（见 sliceBalanced 里的说明）。 */
+function regexAllowed(src, j, prev) {
+  if (!prev) return true
+  if (!/[A-Za-z0-9_$)\]'"`]/.test(prev)) return true
+  const m = /([A-Za-z_$][\w$]*)\s*$/.exec(src.slice(Math.max(0, j - 16), j))
+  return !!(m && /^(?:return|typeof|instanceof|in|of|new|delete|void|case|do|else|yield|await)$/.test(m[1]))
+}
+
 /**
  * Evaluate the shipped render helpers and return them as real functions.
  *
@@ -118,8 +137,23 @@ function sliceBalanced(src, start) {
  *   withFrameHeightBootstrap: Function, onMuvFrameHeightMessage: Function,
  *   muvFrameBootstrap: Function, muvFrameHeightLimits: Function, sandbox: string}}
  */
-export function loadClientRenderers(doc) {
-  const src = clientSource()
+export function loadClientRenderers(doc, win) {
+  return loadClientRenderersFrom(clientSource(), doc, win)
+}
+
+/**
+ * 同一件事，但源码由调用方给 —— 用于 **before 对照臂**（`git show <rev>:lib/client.js` 写进临时文件）。
+ * 没有对照臂的门禁只能证明"现在没报错"，证明不了"这条判据真的能红"。
+ * @param {string} src client.js 源码
+ * @param {object} [doc]
+ * @param {object} [win] `window` 桩。★ 为什么需要：`rewriteVhMinHeight` /
+ *   `muvHostViewportHeight` 在**真实 DSH** 里读父页 `window.innerHeight`（vh 重写因此把
+ *   `min-height:100vh` 烤成父页视口常量）。Node 里没有 `window` ⇒ 重写静默跳过 ⇒
+ *   卡里的 `min-height:100vh` 原样进 iframe ⇒ 在探针里变成「随 iframe 高度伸缩」的
+ *   真·不动点。高度收敛类门禁必须传一个 `{ innerHeight: <探针窗口高> }` 桩，
+ *   否则测的是 Node 沙箱的缺省行为，不是上线行为（2026-09-22 verify-frame-height 之教训）。
+ */
+export function loadClientRenderersFrom(src, doc, win) {
   const sandboxDecl = /var MUV_CARD_SANDBOX\s*=\s*'([^']*)'/.exec(src)
 
   // 依赖自动发现：扫函数体里出现的 `名字(`，凡是真的能从顶层源码里提取出来的就一起带上。
@@ -150,11 +184,15 @@ export function loadClientRenderers(doc) {
     }
   }
 
-  const build = new Function('MUV_CARD_SANDBOX', 'document', code + '\nreturn {' +
+  // `window` 作为**形参**注入（不是全局）：沙箱里 `typeof window === 'undefined'` 的
+  // 三个守卫点（rewriteVhMinHeight / ensureFrameHeightListener / ensureCardCompatListener）
+  // 在传入桩时走"真实浏览器"分支。不给 win 时保持 undefined，行为与旧版完全一致。
+  const build = new Function('MUV_CARD_SANDBOX', 'document', 'window', code + '\nreturn {' +
     RENDER_EXPORTS.map(n => n + ': ' + n).join(', ') +
     '}')
   const out = build(sandboxDecl ? sandboxDecl[1] : 'allow-scripts',
-    doc || { querySelectorAll: () => [] })
+    doc || { querySelectorAll: () => [] },
+    win)
   out.sandbox = sandboxDecl ? sandboxDecl[1] : 'allow-scripts'
   out.liftedNames = [...have]
   return out

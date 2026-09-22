@@ -461,7 +461,11 @@ const frameApi = buildFrom(
 const boot = frameApi.muvFrameBootstrap()
 const lim = frameApi.muvFrameHeightLimits()
 
-check('夹取范围是 [160, 2400]', lim.min === 160 && lim.max === 2400, JSON.stringify(lim))
+// 上限的**意图**是「拦畸形值」，不是「给内容封顶」：ST 本体无上限（ST-IFRAME-SPEC §6），
+// 我们留一条只为 `__muvFrameHeight: 1e9` 这种值兜底。判据写成量级区间而不是等号：
+// 写死数字会让「上限到底该多大」这件事只能靠改测试来表达（2400 曾经真的裁过卡）。
+check('夹取下限 160，上限远高于真卡实测（2083）且仍在防护量级内',
+  lim.min === 160 && lim.max >= 6000 && lim.max <= 100000, JSON.stringify(lim))
 check('★ 引导脚本不含反引号', !boot.includes('`'), boot.slice(0, 60))
 check('★ 引导脚本的源码里没有裸的 </script> 字面量（拼出来才不会截断内联的插件脚本）',
   !extractFunction(SRC, 'muvFrameBootstrap').includes('</script>'))
@@ -480,8 +484,8 @@ check('排除 display:none / visibility:hidden / 零尺寸元素',
   boot.includes('"none"') && boot.includes('"hidden"'))
 check('每个元素取 max(rect.height, scrollHeight)（兜住被 overflow 裁掉的子元素）',
   boot.includes('Math.max(r.height,el.scrollHeight'))
-check('包围盒量不出来时才退回 body.scrollHeight 兜底',
-  /e>0\?e:/.test(boot) && boot.includes('document.body.scrollHeight'))
+check('★ 包围盒量不出来时不报数（body.scrollHeight 视口回声兜底已被 §15.3 禁用）',
+  /if\(e>0\)window\.parent\.postMessage/.test(boot) && !boot.includes('document.body.scrollHeight'))
 check('.muv-frame 度量不带 documentElement.scrollHeight（那是视口回显）',
   !boot.includes('document.documentElement.scrollHeight'))
 check('有 ResizeObserver + 防抖 + 定时兜底',
@@ -515,7 +519,14 @@ const built = frameApi.cardHtmlIframe(docHtml)
 check('cardHtmlIframe 产出恰好 1 个 iframe', (built.match(/<iframe/g) || []).length === 1, built.slice(0, 80))
 check('沙箱走 MUV_CARD_SANDBOX（allow-scripts，无 allow-same-origin）',
   built.includes('sandbox="allow-scripts"') && !built.includes('allow-same-origin'))
-check('默认高度仍是 600px（收不到报数时的兜底，不比修之前差）', built.includes('height:600px'))
+check('默认高度是 900px 的兜底（收不到报数时不至于是个矮框；收到报数就被覆盖）', built.includes('height:900px'))
+check('默认尺寸没有 max-height / max-width 上限（用户要"和 ST 一样大"）',
+  (() => {
+    // 只检查 iframe 自身的 style 属性：srcdoc 内的 reset CSS 合法地含
+    // `max-width:100%`（§15.1，照 ST 的宿主侧卫生），不该连坐这一断言。
+    const m = /<iframe[^>]*style="([^"]*)"/.exec(built)
+    return !!m && !/max-(width|height)/.test(m[1])
+  })())
 check('srcdoc 是转义过的（里面没有裸双引号/尖括号）',
   /srcdoc="[^"]*"/.test(built) && !/srcdoc="[^"]*<[^"]*"/.test(built))
 check('srcdoc 里带着引导脚本', built.includes('__muvH'))
@@ -531,7 +542,8 @@ const snapshot = heightFrames.map(f => f.style.height).join(',')
 handle({ data: { __muvFrameHeight: 9999 }, source: {} })
 check('★ 陌生 source 的消息被丢弃', heightFrames.map(f => f.style.height).join(',') === snapshot)
 handle({ data: { __muvFrameHeight: 99999 }, source: heightFrames[0].contentWindow })
-check('上限夹到 2400（恶意卡不能把页面撑坏）', heightFrames[0].style.height === '2400px', heightFrames[0].style.height)
+check('上限夹到 muvFrameHeightLimits().max（畸形卡不能把页面撑坏）',
+  heightFrames[0].style.height === lim.max + 'px', heightFrames[0].style.height + ' vs ' + lim.max)
 handle({ data: { __muvFrameHeight: 1 }, source: heightFrames[0].contentWindow })
 check('下限夹到 160', heightFrames[0].style.height === '160px', heightFrames[0].style.height)
 const kept = heightFrames[0].style.height
@@ -539,12 +551,19 @@ for (const bad of [undefined, null, {}, { __muvFrameHeight: 'NaN' }, { __muvFram
   handle({ data: bad, source: heightFrames[0].contentWindow })
 }
 check('★ 非数字/负数/无关负载一律不改高度', heightFrames[0].style.height === kept, heightFrames[0].style.height)
-// 差值阈值：亚像素/小抖动不该引发连续改高 + 重排
+// 差值阈值**只作用在收缩方向**：亚像素/小抖动不该引发连续改高 + 重排，
+// 但增长方向的几像素是**真溢出**（孩子侧报的是 body.scrollHeight 精确值），丢了就是永久裁掉。
 heightFrames[0].style.height = '900px'
-handle({ data: { __muvFrameHeight: 904 }, source: heightFrames[0].contentWindow })
-check('★ 差值 <8px 时不动高度（防抖动引发连续重排）', heightFrames[0].style.height === '900px', heightFrames[0].style.height)
+handle({ data: { __muvFrameHeight: 896 }, source: heightFrames[0].contentWindow })
+check('★ 收缩方向差值 <8px 时不动高度（防抖动引发连续重排）', heightFrames[0].style.height === '900px', heightFrames[0].style.height)
 handle({ data: { __muvFrameHeight: 940 }, source: heightFrames[0].contentWindow })
 check('差值 >=8px 时正常改高', heightFrames[0].style.height === '940px', heightFrames[0].style.height)
+// ★★ 实测回归：真卡 `_足控天堂2` 的 ERA 状态栏 内容 894 / 帧 889（差 5px，落在死区里）。
+//    被吞掉的那 5px 就是**卡底部永久少一条**（reset 是 overflow:hidden!important）。
+heightFrames[0].style.height = '889px'
+handle({ data: { __muvFrameHeight: 894 }, source: heightFrames[0].contentWindow })
+check('★★ 增长 5px 必须生效（溢出的最后几像素不许被死区吃掉）',
+  heightFrames[0].style.height === '894px', heightFrames[0].style.height)
 
 // ── 10. 酒馆路径（window._tavernRenderTags）也要把围栏整页文档转成 iframe ──────
 //
@@ -813,9 +832,316 @@ check('★ <img> 只带 src/alt + 固定属性（不搬 on*）', (() => {
   return b.includes("setAttribute('src'") && b.includes("setAttribute('alt'") && !/on[a-z]+\s*=/.test(b)
 })())
 check('<img> 没有 src 的形态不动它', extractFunction(SRC, 'muvRenderImages').includes('return null'))
-console.log('  NOTE 有意未覆盖：卡牌专属的「游戏标签」（赏令接取 / 拍卖购入 / 盲盒开启 /')
-console.log('       道友收录 / 飞剑回信 / 自由开局 …）—— 酒馆路径要按卡字段做信息卡（上百行），')
-console.log('       另算一类。`<choices>` / `<插图>` / 变量块由各自步骤处理。')
+
+// ── 15.1 卡牌专属游戏标签（原生路径，G_gamecard） ────────────────────────────
+// 上一版这里还是「有意未覆盖」的 NOTE；现在补齐了：原生路径与酒馆路径同一份
+// 标签集合，渲染成 .muv-game-card（data-card 属性 + 标题 + 字段行）。
+console.log('\n[15.1] 游戏卡标签（原生路径）')
+const gameTagsDecl = /var MUV_GAME_TAGS = \[[\s\S]*?\n      \]/.exec(SRC)
+check('存在 MUV_GAME_TAGS 表', !!gameTagsDecl)
+const GAME_TAGS = ['赏令接取', '赏令完成', '拍卖购入', '盲盒开启', '道友收录', '飞剑回信', '自由开局']
+const missingGame = GAME_TAGS.filter(t => !gameTagsDecl || !gameTagsDecl[0].includes(t))
+check('★ 7 个游戏标签全部在表里', missingGame.length === 0, '缺: ' + missingGame.join(', '))
+check('★ 钩进 muvRenderTagRules（否则等于没写）',
+  extractFunction(SRC, 'muvRenderTagRules').includes('muvRenderGameCards(root)'))
+const gameCardSrc = extractFunction(SRC, 'muvRenderGameCards')
+check('产出 .muv-game-card + data-card 属性',
+  gameCardSrc.includes("muv-game-card") && gameCardSrc.includes("setAttribute('data-card'"))
+check('标题与字段全走 textContent（不解析 HTML）',
+  gameCardSrc.includes('textContent') && !/\.innerHTML/.test(gameCardSrc))
+check('★ 字段行是 .muv-card-field（门禁判据数它）',
+  extractFunction(SRC, 'muvFillGameCardFields').includes('muv-card-field'))
+check('★ 配色走既有 [data-card=…] CSS，元素不带内联样式',
+  !/style=/.test(gameCardSrc) && SRC.includes('[data-card="赏令接取"]'))
+
+// ── 16. 卡 → 宿主交互桥 + 运行时变量回灌（2026-09-22） ──────────────────────
+console.log('\n[16] 用户消息桥 + 变量回灌')
+const compatSrc = extractFunction(SRC, 'muvCardCompatScript')
+check('★ 垫片定义 sendUserMessage（ERA 卡 sendToTavern 的首选路径）',
+  compatSrc.includes('def("sendUserMessage"'))
+check('★ 垫片有隐藏 #send_textarea 收件箱（主页卡 fillSendTextarea 的自文档路径）',
+  compatSrc.includes('send_textarea') && compatSrc.includes('data-muv-inbox'))
+check('★ 收件箱按需安装（卡源码不含约定符号就不装）',
+  compatSrc.includes('indexOf("send_textarea")===-1') || compatSrc.includes('indexOf("send_textarea")===-1'))
+check('★ 转发消息走 __muvUserSend 且限长 20000',
+  compatSrc.includes('__muvUserSend:{text:s') && compatSrc.includes('s.length>20000'))
+check('★ 宿主处理器认 __muvUserSend 且有每帧节流',
+  SRC.includes('__muvUserSend') && SRC.includes('MUV_USERSEND_MIN_GAP'))
+const deliverSrc = extractFunction(SRC, 'muvDeliverUserText')
+check('★ 落地函数用原生 setter 写输入框（受控组件）',
+  deliverSrc.includes('getOwnPropertyDescriptor') && deliverSrc.includes('dispatchEvent(new Event(\'input\''))
+check('★ send 模式走 Enter 键代发（与选项委托同一口径）',
+  deliverSrc.includes("key: 'Enter'"))
+check('★ 装饰管线挂了变量回灌（_decorateOne → muvFeedVariables）',
+  /muvPushChatLog\(raw\)[\s\S]{0,400}muvFeedVariables\(/.test(SRC))
+// ★ 喂的必须是 innerHTML：DSH 把消息渲染成元素时，`<VariableEdit>` 的**标签名不在 innerText 里**
+//   （只剩 JSON 文本），拿 innerText 喂等于永远匹配不到标签 ⇒ 变量静默不生效（无异常、无请求）。
+check('★★ 回灌喂 innerHTML（不是 innerText），否则标签名可能不在文本里',
+  /muvFeedVariables\(body\.innerHTML\)/.test(SRC))
+const feedSrc = extractFunction(SRC, 'muvFeedVariables')
+check('★ 回灌收两种数据源：initvar/UpdateVariable + ERA 增量块（VariableEdit 等）+ 消息键 era_data',
+  feedSrc.includes('<UpdateVariable') && feedSrc.includes('VariableEdit') && feedSrc.includes('era_data'))
+check('★ 回灌前做实体解码（`&lt;VariableEdit&gt;` 形态也能命中）',
+  feedSrc.includes('&lt;'))
+check('★ 先剔掉 VariableThink 再扫块（模型会在思考里"提及"标签名，会错配到真块）',
+  feedSrc.length > 0 && extractFunction(SRC, 'muvFeedVariables').length > 0 &&
+  /THINK|VariableThink/i.test(SRC))
+check('★ 回灌后主动把新状态推给在线卡帧（否则卡停在加载时那一次查询的旧值）',
+  SRC.includes('muvEraPushNow') && SRC.includes('muvEraSchedulePush'))
+// ★ 必须**多档重推**：卡 iframe 是消息渲染时才创建的，而回灌发生在渲染之前 ——
+//   最后一次回灌完成时卡帧还不存在，推一次就落空（实测：服务端状态里有真值、卡上还是初值）。
+check('★★ 重推是多档的（立刻 / 1.5s / 4s 三档覆盖晚出生的卡帧）',
+  /var delays = \[0, 1500, 4000\]/.test(SRC) && SRC.includes('setTimeout(muvEraPushNow, delays[i])'))
+check('推送有可观测日志（控制台能看到"推了几棵树给几帧"，否则症状不可观测）',
+  /era push → /.test(SRC))
+check('★ 回灌要求能定位会话（否则宁可不灌）',
+  feedSrc.includes('currentSessionId()') && !/sessionId:\s*sid \|\| 'default'/.test(feedSrc))
+const eraFetchSrc = extractFunction(SRC, 'muvEraFetchVars')
+check('★ era 桥双源取数：初始变量(tavern-card) + 运行时(muv-engine/state)',
+  eraFetchSrc.includes('/api/muv-table/tavern-card') && eraFetchSrc.includes('/api/muv-engine/state'))
+check('★ 运行时状态覆盖初始变量（muvDeepMerge，runtime 在上）',
+  eraFetchSrc.includes('muvDeepMerge(base, run)'))
+
+// ── 17. 把"别人的一大段文本"拼进替换串 —— 必须函数式替换 ──────────────────────
+//
+// 与服务端第 4 轮那个 `$'` bug 是**同一个坑的两端**：`String.replace` 的**字符串替换**里，
+// `$&` / `` $` `` / `$'` / `$$` / `$1…$99` / `$<name>` 都是引用语法。
+// 而这里拼的是**卡自己的 JS**（210KB 整页文档）——真出过：
+//   卡的 ERA 脚本里 `key.charAt(0)===&#39;$&#39;`，`$` 后紧跟 `&` 被当成 `$&`，
+//   那行变成 `===&#39;<<StatusPlaceHolderImpl/>#39;}` ⇒ **卡脚本语法错误** ⇒
+//   界面照常渲染、功能全废（选项空白 / 数值不动 / tab 点不动）。
+console.log('\n[17] 卡 HTML 拼进替换串必须用函数式替换')
+{
+  const fnSrc = extractFunction(SRC, 'muvFrameBlock')
+  check('★ muvFrameBlock 是独立函数（三处拼接都走它）', fnSrc.includes('muv-statusbar-wrap'))
+  const block = new Function('return (' + fnSrc + ')')()('PAYLOAD')
+  // 造一份带全部危险序列的"卡文档"
+  const doc = 'var k=1; f(\'$&\'); g(a)=\'$\'\'; h=`$`x`; i="$1"; j="$<n>";'
+  const blockWithDoc = new Function('return (' + fnSrc + ')')()(doc)
+  check('muvFrameBlock 原样保留载荷', blockWithDoc.includes(doc), blockWithDoc.slice(0, 80))
+  // ★ 行为对照：函数式安全 / 字符串替换**确实**会改写（证明判据能红）
+  const viaFn = 'A<PH>B'.replace(/<PH>/, function () { return blockWithDoc })
+  check('★★ 函数式替换：含 $& / $\' / $` / $1 的卡 HTML 逐字入文', viaFn.includes(doc),
+    JSON.stringify(viaFn.slice(0, 120)))
+  const viaStr = 'A<PH>B'.replace(/<PH>/, 'PRE' + blockWithDoc + 'POST')
+  check('★★ 对照臂：字符串替换**确实**会改写它（同内容换写法就坏了 —— 判据不是空转）',
+    !viaStr.includes(doc), JSON.stringify(viaStr.slice(0, 120)))
+  // 源码级：三处调用点都不许退回字符串形态
+  const sites = SRC.match(/replace\(STATUS_PH_ALL,\s*function|replace\([\s\S]{0,120}?Status_block[\s\S]{0,200}?function \(\)/g) || []
+  check('★ 三处占位符/状态块替换都用了函数式形态', sites.length >= 3, '命中 ' + sites.length + ' 处')
+  check('★ 不再存在"字符串替换 + muv-statusbar-wrap 拼接"的写法',
+    !/replace\(\s*STATUS_PH_ALL\s*,\s*\n?\s*'<div class="muv-statusbar-wrap">'/.test(SRC) &&
+    !/replace\([\s\S]{0,80}Status_block[\s\S]{0,80}?,\s*\n?\s*'<div class="muv-statusbar-wrap">'/.test(SRC))
+}
+
+console.log('\n[18] 绝不把自己的产物当成原文再跑一遍（重复装饰）')
+{
+  // ── 源码级：三条守卫必须都在 _decorateOne 里，且在取文之前 ──────────────
+  const one = extractFunction(SRC, '_decorateOne')
+  check('★ _decorateOne 有"已有我们的产物就跳过"守卫', one.includes('muvHasOwnArtifacts(body)'))
+  check('★ _decorateOne 有"只认消息正文容器"守卫', one.includes('muvMessageBodyOf(body)'))
+  check('★ _decorateOne 取文走 muvRawTextOf（不再裸读 body.innerText）',
+    one.includes('muvRawTextOf(body)') && !/body\.innerText/.test(one))
+  const iArt = one.indexOf('muvHasOwnArtifacts(body)')
+  const iBody = one.indexOf('muvMessageBodyOf(body)')
+  const iRaw = one.indexOf('muvRawTextOf(body)')
+  check('★ 守卫在取文之前（顺序：产物 → 正文 → 取文）',
+    iArt >= 0 && iBody > iArt && iRaw > iBody, [iArt, iBody, iRaw].join('/'))
+
+  // ── 行为：把真实现成函数跑一遍（两个闭包变量从源码里取）────────────────
+  const selVal = /var MUV_OWN_SEL = '([^']*)'/.exec(SRC)[1]
+  const reExpr = /var MSG_BODY_RE = (\/[^\n]*)/.exec(SRC)[1]
+  const MSG_BODY_RE = new Function('return ' + reExpr)()
+  check('★ 产物选择器按前缀兜（不枚举类名 —— 本项目栽过三次）',
+    selVal.includes('[class*="muv-"]'), selVal)
+  const hasArt = new Function('MUV_OWN_SEL', 'return (' + extractFunction(SRC, 'muvHasOwnArtifacts') + ')')(selVal)
+  const bodyOf = new Function('MSG_BODY_RE', 'return (' + extractFunction(SRC, 'muvMessageBodyOf') + ')')(MSG_BODY_RE)
+
+  // ★ 这条就是线上那个 bug 的形态：正文里已经有我们的产物 ⇒ 必须拒绝
+  const decorated = { querySelector: (s) => (String(s).includes('muv-') ? {} : null), matches: () => false }
+  check('★★ 已含我们产物（iframe/📖 摘要框/💭 变量推演）的正文 ⇒ 拒绝装饰',
+    hasArt(decorated) === true)
+  // 对照臂：干净正文必须放行（否则守卫会把整条链掐死，判据变成"永真"）
+  const clean = { querySelector: () => null, matches: () => false }
+  check('★★ 对照臂：干净正文 ⇒ 放行（守卫不是永真）', hasArt(clean) === false)
+
+  // 面板/侧栏里没有正文容器 ⇒ 必须拒绝（实测 DSH 的 _paneBody_* 曾被吃掉内容）
+  const pane = { className: '_paneBody_17p4l_478', querySelectorAll: () => [] }
+  check('★★ 面板（_paneBody_*）里没有 _markdown_* ⇒ 拒绝', bodyOf(pane) === null)
+  // 正文容器本身 / 恰好包一个正文容器的消息根 ⇒ 放行，且归一到正文容器
+  const bodyEl = { className: '_markdown_kcgor_5' }
+  check('正文容器本身 ⇒ 直接用它', bodyOf(bodyEl) === bodyEl)
+  const inner = { className: '_markdown_ab12_7' }
+  const wrapper = { className: 'flowItem', querySelectorAll: () => [inner] }
+  check('★ 消息根（恰好包一个正文容器）⇒ 归一到正文容器（不写根节点）',
+    bodyOf(wrapper) === inner)
+  const twoBodies = { className: 'list', querySelectorAll: () => [inner, { className: '_markdown_cd_1' }] }
+  check('包里有两个正文容器 ⇒ 拒绝（那是消息列表，不是一条消息）', bodyOf(twoBodies) === null)
+
+  // ── 取文：隐藏 → 读 → 还原 ────────────────────────────────────────────
+  const ops = []
+  const junk = { style: { getPropertyValue: () => '', setProperty: (k, v) => ops.push('set:' + k + '=' + v), removeProperty: () => ops.push('rm:display') } }
+  const fake = { querySelectorAll: () => [junk], innerText: '正文\n✏️' }
+  const rawText = new Function('MUV_OWN_SEL', 'return (' + extractFunction(SRC, 'muvRawTextOf') + ')')(selVal)
+  check('取文返回 innerText（不是 textContent —— 保留块级换行）', rawText(fake) === '正文\n✏️')
+  check('★ 取文期间把非正文 DOM 藏起来，读完还原',
+    ops[0] === 'set:display=none' && ops[ops.length - 1] === 'rm:display', JSON.stringify(ops))
+}
+
+console.log('\n[19] 卡 iframe 垫片的音频兜底（CDN 文件名带序号）')
+{
+  // 取垫片里那段代码（就是若干字符串字面量的拼接）
+  const lines = SRC.split('\n')
+  const iS = lines.findIndex((l) => l.includes('var __muvAudioTried='))
+  let iE = -1
+  for (let i = iS; i < lines.length; i++) if (lines[i].includes('addEventListener("error"')) { iE = i; break }
+  check('★ 垫片里有音频兜底段', iS >= 0 && iE > iS)
+  const shim = new Function('return (' + lines.slice(iS, iE + 1).join('\n').replace(/\s+\+\s*$/, '') + ')')()
+  check('  兜底代码可求值且已挂 error 监听', shim.includes('__muvAudioFix') && shim.includes('addEventListener("error"'))
+  check('★ 只认 .mp3（别的资源一概不碰）', /\\\.mp3\$\/i/.test(shim), shim.slice(0, 40))
+  check('★ 只认 audio（source 会回溯到父节点）', shim.includes('a=a.parentNode') && shim.includes('!=="audio"'))
+  check('★★ 名字已带数字结尾就不猜（不许把正解猜坏）',
+    shim.includes('!a.__muvAudioBase&&/') && shim.includes('.test(name))return'), shim.slice(0, 60))
+  check('★★ 别名记号挂在**元素**上而不是全局名字表（全局表会改坏别的元素上合法的 日常1）',
+    shim.includes('a.__muvAudioBase') && !/__muvAudioBase\[/.test(shim))
+  check('★★ 重试上限 3（不许无限打 CDN）', shim.includes('if(n>=3)return'))
+  check('★ 改写时清掉 <source> 子节点再设 src（只改 source.src 不会重新触发选源）',
+    shim.includes('while(a.firstChild)a.removeChild(a.firstChild)') && shim.includes('a.setAttribute("src",cand)'))
+}
+
+// ── 20. 卡 iframe 注入 ST 同款前端库（Tailwind/jQuery/jQuery-UI/Vue/Vue-Router/FA）──
+//
+// 事实（从 ST 的 dist/index.js 里逐字取出的 `v1`）：ST 的 `b1()` **无条件**把六个库
+// 塞进每一个卡 iframe ⇒ ST 里的卡 HTML 天然拥有 Tailwind 工具类、`$()`、Vue、
+// FontAwesome。写卡的人直接依赖它们 ⇒ 我们一个都不注入时，卡会"布局塌 + 脚本第一行就抛"
+// ——界面照常渲染、功能全废，和 §18/§21 那两次 `$'` / `$&` 打坏卡脚本是同一类观感。
+console.log('\n[20] 卡 iframe 注入 ST 同款前端库')
+{
+  // 开关是布尔常量（`var MUV_CARD_LIBS = true`），不是字符串 —— 单独取
+  const libsLiteral = (/(?:^|\n)\s*var MUV_CARD_LIBS\s*=\s*(true|false)\s*$/m.exec(SRC) || [])[1]
+  check('★ 存在显式开关 MUV_CARD_LIBS', !!libsLiteral, String(libsLiteral))
+  check('★ 默认开启（ST 是无条件注入的，关掉会让部分卡显示不全）', libsLiteral === 'true', String(libsLiteral))
+
+  const tagsSrc = extractFunction(SRC, 'muvCardLibTags')
+  const tags = buildFrom(['muvCardLibTags'], {}, 'muvCardLibTags')()
+  const LIBS = [
+    ['FontAwesome', /fontawesome-free@[\d.]+\/css\/all\.min\.css/],
+    ['Tailwind', /@tailwindcss\/browser@[\d.]+\/dist\/index\.global\.js/],
+    ['jQuery', /jquery@[\d.]+\/dist\/jquery\.min\.js/],
+    ['jQuery-UI', /jquery-ui-dist@[\d.]+\/jquery-ui\.min\.js/],
+    ['Vue', /vue@[\d.]+\/dist\/vue\.global\.prod\.js/],
+    ['Vue-Router', /vue-router@[\d.]+\/dist\/vue-router\.global\.prod\.js/],
+  ]
+  for (const [name, re] of LIBS) {
+    check('注入了 ' + name, re.test(tags), tags.slice(0, 60))
+  }
+  check('★ 六个 URL 全部走 https 的 jsdelivr（钉版本，不用 latest）',
+    (tags.match(/https:\/\/cdn\.jsdelivr\.net\/npm\//g) || []).length === 6 && !/@latest/.test(tags),
+    String((tags.match(/https:\/\/cdn\.jsdelivr\.net\/npm\//g) || []).length))
+  // 顺序：ST 是「先 CSS 后 JS，jQuery 在 Vue 前」—— Vue-Router 依赖全局 Vue、
+  // jQuery-UI 依赖全局 jQuery，顺序错了就是静默少一个库。
+  const iFa = tags.indexOf('fontawesome')
+  const iJq = tags.indexOf('jquery@')
+  const iVue = tags.indexOf('vue@')
+  const iVr = tags.indexOf('vue-router@')
+  check('★ 顺序：FontAwesome(CSS) 在最前', iFa >= 0 && iFa < iJq, [iFa, iJq].join('/'))
+  check('★ 顺序：jQuery 在 Vue 之前', iJq < iVue, [iJq, iVue].join('/'))
+  check('★ 顺序：Vue 在 Vue-Router 之前', iVue < iVr, [iVue, iVr].join('/'))
+  // 两条硬约束（宿主可能把客户端代码内联进 <script> 标签）
+  check('★ 不含裸的 </script>（否则会截断宿主的 script 标签）',
+    !/<\/script>/.test(tagsSrc), tagsSrc.slice(0, 60))
+  check('★ 不含反引号（与 muvFrameBootstrap 同一约束）', !tagsSrc.includes('`'))
+  check('★ 沙箱没被放宽（注入库不是放开 allow-same-origin 的理由）',
+    sandbox === 'allow-scripts' && !/allow-same-origin/.test(SRC.split('MUV_CARD_SANDBOX')[0].slice(-200)))
+
+  // ── 行为：把真函数跑一遍 ───────────────────────────────────────────────
+  const withCardLibs = buildFrom(['withCardLibs'], { MUV_CARD_LIBS: true }, 'withCardLibs')
+  const withCardLibsOff = buildFrom(['withCardLibs'], { MUV_CARD_LIBS: false }, 'withCardLibs')
+  const doc = '<!DOCTYPE html><html><head><title>t</title></head><body><p>hi</p></body></html>'
+  const out = withCardLibs(doc)
+  check('★★ 注入发生在 </head> 之前（body 之前 ⇒ 卡的脚本拿得到这些全局）',
+    out.indexOf('data-muv-libs') > -1 && out.indexOf('data-muv-libs') < out.indexOf('</head>') &&
+    out.indexOf('data-muv-libs') < out.indexOf('<body'), out.slice(0, 80))
+  check('★★ 幂等：同一个文档注入两次 ⇒ 第二次逐字不变', withCardLibs(out) === out)
+  check('★★ 开关关闭 ⇒ 逐字不动（一个字符都不加）', withCardLibsOff(doc) === doc)
+  // 对照臂：不注入时文档里确实没有这些库 —— 否则上面"注入了 X"是永真
+  check('★★ 对照臂：未注入的文档里没有 data-muv-libs（判据不是空转）',
+    doc.indexOf('data-muv-libs') === -1)
+  // 卡自己的 JS 字符串里写着 </head> ⇒ 落点不许落进那个字符串内部（否则切断卡的脚本）
+  const tricky = '<!DOCTYPE html><html><head><script>var s="</head>";</script></head><body>x</body></html>'
+  const out2 = withCardLibs(tricky)
+  const iTag = out2.indexOf('data-muv-libs')
+  check('★★ 卡脚本字符串里的 </head> 不被当成落点（注入点仍在真 head 末尾）',
+    iTag > out2.indexOf('</script>'), out2.slice(out2.indexOf('<script'), out2.indexOf('<script') + 90))
+  // 没有 head 的文档 / 纯片段：仍然注入（不静默放弃）
+  check('没有 </head>/<head> 的文档 ⇒ 退到 <html> 之后', withCardLibs('<html><body>x</body></html>').includes('data-muv-libs'))
+  check('纯片段 ⇒ 接在最前面', withCardLibs('<div>x</div>').indexOf('data-muv-libs') < 20)
+}
+
+// ── 21. 隐藏与 iframe 重复的整页源码块（ST 的 hidden! 的等价物）─────────────────
+//
+// ST 给消息里残留的 <pre><code> 加 hidden!。我们靠"整页 HTML 换成 iframe"绕过了大部分
+// 情况，但卡正则没产出整页文档时那一大段源码仍然露成裸文本。
+// 判据必须**窄**：无差别隐藏所有代码块会把用户正常的 ``` 代码块一起吃掉。
+console.log('\n[21] 隐藏与 iframe 重复的整页源码块')
+{
+  const isPage = buildFrom(['muvIsPageSourceText'], {}, 'muvIsPageSourceText')
+  const longDoc = '<!DOCTYPE html>\n<html><head><title>卡</title></head><body>' +
+    '<div class="w-full">状态栏</div>'.repeat(20) + '</body></html>'
+  check('★ 整页 HTML（doctype + html/head/body）⇒ 认', isPage(longDoc) === true)
+  check('★ 没有 doctype 但 head+body 都在 ⇒ 认', isPage('<head><style>a{}</style></head><body>' + 'x'.repeat(300) + '</body>') === true)
+  check('★ 含 __muvReset（我们自己注入过的产物）⇒ 认',
+    isPage('x'.repeat(300) + '<style data-muv-reset="__muvReset">a{}</style>') === true)
+  check('★ 普通 ```js 代码块 ⇒ 不认', isPage('const a = 1;\n'.repeat(30)) === false)
+  check('★ 普通 ```html 片段（只有标签，没有 html/head/body 组合）⇒ 不认',
+    isPage('<div class="card">' + '<span>字段</span>'.repeat(30) + '</div>') === false)
+  check('★ 正文里举例提一句 <!DOCTYPE html>（短文）⇒ 不认',
+    isPage('HTML 文档都以 <!DOCTYPE html> 开头，这一点很重要。') === false)
+
+  // ── 行为：真函数 + 假 DOM ──────────────────────────────────────────────
+  const mkPre = (text, opts = {}) => {
+    const st = []
+    return {
+      textContent: text,
+      getAttribute: () => null,
+      setAttribute: (k) => st.push('attr:' + k),
+      closest: () => (opts.own ? {} : null),
+      style: { setProperty: (k, v, p) => st.push('set:' + k + '=' + v + '@' + p) },
+      _ops: st,
+    }
+  }
+  const mkBody = (pres) => ({ querySelectorAll: (sel) => (String(sel).includes('pre') ? pres : []) })
+  const hide = buildFrom(['muvHidePageSourceBlocks'], {}, 'muvHidePageSourceBlocks')
+
+  const pagePre = mkPre(longDoc)
+  const codePre = mkPre('const a = 1;\n'.repeat(30))
+  const ownPre = mkPre(longDoc, { own: true })
+  const body = mkBody([pagePre, codePre, ownPre])
+  const n = hide(body)
+  check('★★ 整页源码块被隐藏（display:none!important）',
+    pagePre._ops.some((o) => o === 'set:display=none@important'), JSON.stringify(pagePre._ops))
+  check('★ 打上 data-muv-src-hidden 记号（门禁与排障数得到）',
+    pagePre._ops.includes('attr:data-muv-src-hidden'), JSON.stringify(pagePre._ops))
+  check('★★ 普通代码块**一个字符都不动**（不许无差别隐藏）',
+    codePre._ops.length === 0, JSON.stringify(codePre._ops))
+  check('★★ 我们自己产物里的 <pre> 不动（不许把刚渲染的折叠卡吞掉）',
+    ownPre._ops.length === 0, JSON.stringify(ownPre._ops))
+  check('返回值 = 隐藏的块数', n === 1, String(n))
+  check('幂等：再跑一次不重复处理（已带记号就跳过）',
+    (function () { const p = mkPre(longDoc); p.getAttribute = () => '1'; hide(mkBody([p])); return p._ops.length === 0 })())
+
+  // ★★ 变异对照臂：把判据改成"什么都不认" ⇒ 同一份 DOM 上一块都不会被隐藏。
+  //   没有这一条，上面的"整页源码块被隐藏"永远为真（判据空转 = 没证明任何事）。
+  const mutantSrc = extractFunction(SRC, 'muvHidePageSourceBlocks')
+    .replace(/if \(!muvIsPageSourceText\(t\)\) continue/, 'if (true) continue')
+  check('★★ 变异对照臂：判据被摘掉后 ⇒ 一块都不隐藏（证明判据能红）',
+    mutantSrc.includes('if (true) continue') &&
+    (function () {
+      const p = mkPre(longDoc)
+      new Function('muvIsPageSourceText', 'return (' + mutantSrc + ')')(isPage)(mkBody([p]))
+      return p._ops.length === 0
+    })())
+}
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)
 process.exit(fail ? 1 : 0)

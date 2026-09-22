@@ -1,0 +1,14 @@
+<maintext>
+夜里的电台还在响，………………她转过身来。
+<div style="position:relative; width:80%; max-width:800px; margin:0 auto;">
+  <video id="myVideo" autoplay playsinline controls muted loop
+    style="width:100%; border-radius:10px; box-shadow:5px 5px 10px rgba(0,0,0,0.5);"
+    src="https://zyxjack123.top/足控天堂/视频/日常1.mp4">
+  </video>
+</div>
+</maintext>
+
+<Status_block>
+名字: "哈珂斯"
+状态: "平静"
+</Status_block>

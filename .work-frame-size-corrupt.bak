@@ -1,0 +1,321 @@
+﻿// 鍗＄晫闈€屽昂瀵?/ 鐓?ST 骞充环銆嶉獙鏀跺彴銆?//
+// 鐢ㄦ埛鎶ョ殑銆岀珛缁樺緢灏忋€佸唴瀹瑰浜嗐€佹閲岃繕鏈夋粴鍔ㄦ潯銆嶇殑鏍瑰洜鏄?*寰幆瀹氫箟**锛?//   鍗＄殑 CSS 鍐?`min-height:100vh` 鈫?`100vh` 鍦?iframe 閲屽氨鏄?iframe 鑷繁鐨勯珮搴?鈫?//   鑰屾垜浠張瑕併€屼互鍐呭鍖呭洿鐩掑喅瀹?iframe 鐨勯珮搴︺€嶃€備袱杈逛簰涓哄洜鏋滐紝涓€鏃︽姤灏忓氨鍐嶄篃闀夸笉鍥炲幓銆?// ST 鐨勫姙娉曟槸鎶?`min-height:鈥h` 閲嶅啓鎴愮埗绐楀彛瑙嗗彛楂橈紙瀹炴祴 1080px锛夈€傝繖涓伐鍏烽獙鏀舵垜浠収鍋氬悗鐨勬晥鏋溿€?//
+// 鍥涜妭锛?//   A. min-height:鈥h 閲嶅啓锛堝崟鍏?+ 鐪熷崱绔埌绔細涓嶅啀鏈夊唴閮ㄦ粴鍔ㄦ潯锛?//   B. reset 娉ㄥ叆锛坆ox-sizing / html,body 鐨?margin路padding路overflow路max-width锛?//   C. iframe display:block锛堝崱涓嬫柟涓嶅鍑哄熀绾跨┖闅欙級
+//   D. 瀹藉害涓嬮檺锛氱獎绐楀彛涓嬪崱浼氬垏鍒?*鎵嬫満鍒嗘敮**锛堟槸鍙︿竴绉嶅竷灞€锛屼笉鏄缉鏀撅級鈥斺€?鎶ュ嚭闃堝€?//
+// 杩愯锛?env:MUV_EDGE="...\msedge.exe"; node verify-frame-size.mjs
+// 鈿?娴忚鍣ㄧ獥鍙ｉ珮搴﹀繀椤绘槸**鐪熷疄灏哄**锛堥粯璁?1400脳980锛夛細閲嶅啓鍚庣殑 min-height 鍙栫殑灏辨槸鐖剁獥鍙?//   innerHeight锛岀敤 3200 楂樼殑鏃犲ご绐楀彛浼氬緱鍒颁竴涓笉浠ｈ〃鐢ㄦ埛鐨勫法澶у€笺€傝繖鏉℃湰韬篃鏂█浣忋€?
+import { writeFileSync, readFileSync, mkdirSync } from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+import {
+  readEngineSource, buildFrom, sandboxOf, collectDocs, openPage, evalJson, heightRuntimeSource, sleep,
+} from './verify-shared.mjs'
+
+const OUT = path.join(os.tmpdir(), 'muv-frame-size')
+mkdirSync(OUT, { recursive: true })
+const EDGE = process.env.MUV_EDGE || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+const SRC = readEngineSource()
+const SANDBOX = sandboxOf(SRC)
+
+let pass = 0, fail = 0
+const check = (name, cond, detail) => {
+  if (cond) { pass++; console.log('  OK   ' + name) }
+  else { fail++; console.log('  FAIL ' + name + (detail ? '  -> ' + detail : '')) }
+}
+
+const STUB_VH = 1080      // 鍗曞厓鏂█閲屾敞鍏ョ殑鐖剁獥鍙ｈ鍙ｉ珮锛? A2 澶瑰叿閲岄噸鍐欏嚭鏉ョ殑閭ｄ釜鍊硷級
+const HEIGHT_RUNTIME = heightRuntimeSource(SRC)
+const api = buildFrom(
+  SRC, ['cardHtmlIframe', 'rewriteVhMinHeight'],
+  { MUV_CARD_SANDBOX: SANDBOX, window: { addEventListener() {}, innerHeight: STUB_VH }, document: { querySelectorAll: () => [] } },
+  '{cardHtmlIframe, rewriteVhMinHeight}'
+)
+const WRAP_RULE = (() => {
+  const m = /\.muv-statusbar-wrap\{[^}]*\}/.exec(SRC)
+  if (!m) throw new Error('婧愮爜閲屾壘涓嶅埌 .muv-statusbar-wrap 瑙勫垯')
+  return m[0]
+})()
+const IFRAME_RULE = (() => {
+  const m = /\.muv-iframe\{[^}]*\}/.exec(SRC)
+  return m ? m[0] : ''
+})()
+
+// 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?A1. 閲嶅啓鐨勫崟鍏冩柇瑷€ 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?console.log('=== A1. min-height:鈥h 閲嶅啓锛堝崟鍏冿紝娉ㄥ叆 window.innerHeight=1080锛?==')
+const R = api.rewriteVhMinHeight
+check('100vh 鈫?1080px', R('a{min-height:100vh}').includes('min-height:1080px'), R('a{min-height:100vh}'))
+check('甯︾┖鏍?`min-height: 100vh` 涔熼噸鍐?, R('a{min-height: 100vh}').includes('min-height:1080px'), R('a{min-height: 100vh}'))
+check('86vh 鈫?929px锛堟寜姣斾緥锛屼笉鏄竴寰嬫浛鎹㈡垚 100vh 鐨勫€硷級',
+  R('a{min-height:86vh}').includes('min-height:929px'), R('a{min-height:86vh}'))
+check('鍐呰仈 style="min-height:100vh" 涔熼噸鍐?,
+  R('<div style="min-height:100vh">').includes('min-height:1080px'), R('<div style="min-height:100vh">'))
+check('鈽?max-height:86vh 涓嶅姩锛堜笌 ST 涓€鑷达級', R('a{max-height:86vh}').includes('max-height:86vh'), R('a{max-height:86vh}'))
+check('鈽?height:100vh 涓嶅姩', R('a{height:100vh}').includes('height:100vh'), R('a{height:100vh}'))
+check('鈽?<script> 閲岀殑鍚屽悕鏂囨湰涓嶅姩',
+  R('<script>var css="min-height:100vh"</script>').includes('min-height:100vh'),
+  R('<script>var css="min-height:100vh"</script>'))
+check('script 涔嬪鐨勯偅澶勪粛鐒惰鏀癸紙璺宠繃涓嶆槸鏁存鏀惧純锛?,
+  R('<style>a{min-height:100vh}</style><script>var s="min-height:100vh"</script>').startsWith('<style>a{min-height:1080px}</style><script>var s="min-height:100vh"'),
+  R('<style>a{min-height:100vh}</style><script>var s="min-height:100vh"</script>'))
+check('娌℃湁 vh 澹版槑鏃跺師鏍疯繑鍥烇紙涓嶅紩鍏ユ棤璋撴敼鍔級', R('<p>hi</p>') === '<p>hi</p>')
+check('min-height:0 / 52px 杩欑被闈?vh 鍊间笉鍔?, R('a{min-height:0;b:min-height:52px}') === 'a{min-height:0;b:min-height:52px}')
+{
+  // 鎷夸笉鍒板彲淇¤鍙ｉ珮鏃跺繀椤?*涓嶉噸鍐?*锛堝啓涓敊鐨勫浐瀹氬€兼瘮涓嶆敼鏇寸碂锛?  const noVh = buildFrom(SRC, ['rewriteVhMinHeight'], { MUV_CARD_SANDBOX: SANDBOX, window: {}, document: { querySelectorAll: () => [] } }, 'rewriteVhMinHeight')
+  check('鈽?鎷夸笉鍒?window.innerHeight 鏃跺師鏍疯繑鍥烇紙瀹佸彲涓嶆敼锛?,
+    noVh('a{min-height:100vh}') === 'a{min-height:100vh}', noVh('a{min-height:100vh}'))
+  const tiny = buildFrom(SRC, ['rewriteVhMinHeight'], { MUV_CARD_SANDBOX: SANDBOX, window: { innerHeight: 12 }, document: { querySelectorAll: () => [] } }, 'rewriteVhMinHeight')
+  check('鈽?瑙嗗彛楂樼璋憋紙12px锛夋椂涔熶笉閲嶅啓', tiny('a{min-height:100vh}') === 'a{min-height:100vh}', tiny('a{min-height:100vh}'))
+}
+
+// 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?B/C 婧愮爜鏂█ 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?console.log('\n=== B/C. reset 涓?iframe 鐩掑瓙锛堟簮鐮佹柇瑷€锛?==')
+let resetProbe = null
+try {
+  const withCardReset = buildFrom(SRC, ['withCardReset', 'muvCardResetCss'], { MUV_CARD_SANDBOX: SANDBOX, window: { addEventListener() {} }, document: { querySelectorAll: () => [] } }, 'withCardReset')
+  resetProbe = withCardReset('<html><head><title>t</title></head><body>x</body></html>')
+} catch (e) {
+  resetProbe = null
+}
+if (resetProbe === null) {
+  check('B: withCardReset 瀛樺湪锛坮eset 娉ㄥ叆鐐癸級', false, '婧愮爜閲岃繕娌℃湁 withCardReset锛圔 灏氭湭瀹炵幇锛?)
+  console.log('       锛圔 鏈疄鐜版椂杩欎竴鑺傛寜"鏈畬鎴?澶勭悊锛屼笉璁″叆澶辫触鏁帮細涓嬮潰鐢?SKIP 鏍囨敞锛?)
+} else {
+  const need = [
+    ['box-sizing:border-box', /\*[^{]*\{[^}]*box-sizing:border-box/],
+    ['html,body margin:0!important', /html\s*,\s*body\{[^}]*margin:0!important/],
+    ['html,body padding:0', /html\s*,\s*body\{[^}]*padding:0/],
+    ['html,body max-width:100%!important', /html\s*,\s*body\{[^}]*max-width:100%!important/],
+    // 鈽?宸叉寜 ST 瑙勬牸瀵归綈锛歋T 鐨?`b1()` 娉ㄥ叆鐨勬槸**涓€鏉¤鍒欍€佸崟涓畝鍐欏睘鎬?*
+    //   `html,body{鈥?overflow:hidden!important}`锛堣 ST-IFRAME-SPEC.md 搂1锛夈€?    //   鎴戜滑姝ゅ墠鏄€屾í鍚?hidden銆佺旱鍚?auto銆嶇殑鍋忕锛岀悊鐢辨槸"璁╁崱鑷繁鑳芥粴"锛涗絾閭ｆ潯鍋忕
+    //   姝ｆ槸鐢ㄦ埛鐪嬪埌鐨?妗嗛噷杩樻湁婊氬姩鏉?锛岃€屼笖鍜岄珮搴﹀彛寰勪簰涓哄洜鏋滐紙绾靛悜闈犳粴鍔ㄥ厹搴?鈬?    //   鍐呭鍐嶉珮涔熶笉鎶ラ珮搴︼級銆傜幇鍦ㄩ珮搴︽寜鍐呭閲忚蛋 鈬?蹇呴』璺?ST 涓€鏍?hidden銆?    //   鈿?鎯虫敼鍥?`overflow-y:auto` 涔嬪墠锛屽厛璇?muvCardResetCss 鐨勬敞閲婁笌 搂8 鍋忕琛ㄣ€?    ['html,body overflow:hidden!important锛圫T 鍙ｅ緞锛岀畝鍐欏睘鎬э級', /html\s*,\s*body\{[^}]*overflow:hidden!important/],
+  ]
+  for (const [label, re] of need) check('B: reset 鍚?' + label, re.test(resetProbe), resetProbe.slice(0, 260))
+  // 鍙嶅悜鏂█锛氶攣姝绘棫鍋忕锛屽埆璁╁畠鎮勬倓鍥為€€锛堝洖閫€浜嗗崱閲屽氨浼氶噸鏂伴暱鍑哄唴閮ㄦ粴鍔ㄦ潯锛?  check('B: reset 涓嶅惈 overflow-y:auto锛堟棫鍋忕涓嶈鍥為€€锛?,
+    !/overflow-y\s*:\s*auto/.test(resetProbe), resetProbe.slice(0, 260))
+  check('B: reset 鍦?<body> 涔嬪墠锛堢涓€甯у氨鐢熸晥锛屼笉闂級', resetProbe.indexOf('<style') < resetProbe.indexOf('<body'), resetProbe.slice(0, 200))
+  check('B: <script> 閲岀殑 <head> 涓嶅綋浣滄敞鍏ョ偣', (() => {
+    try {
+      const w = buildFrom(SRC, ['withCardReset', 'muvCardResetCss'], { MUV_CARD_SANDBOX: SANDBOX, window: {}, document: { querySelectorAll: () => [] } }, 'withCardReset')
+      const out = w('<html><head><script>var s="<head>"</script></head><body>x</body></html>')
+      return out.indexOf('<style') < out.indexOf('</head>')
+    } catch (_) { return false }
+  })())
+  check('B: 涓嶉噸澶嶆敞鍏ワ紙宸叉敞鍏ュ垯鍘熸牱杩斿洖锛?, (() => {
+    try {
+      const w = buildFrom(SRC, ['withCardReset', 'muvCardResetCss'], { MUV_CARD_SANDBOX: SANDBOX, window: {}, document: { querySelectorAll: () => [] } }, 'withCardReset')
+      return w(resetProbe) === resetProbe
+    } catch (_) { return false }
+  })())
+}
+const iframeTag = (/<iframe\b[^>]*>/.exec(api.cardHtmlIframe('<p>x</p>')) || [''])[0].replace(/srcdoc="[^"]*"/, 'srcdoc="鈥?')
+check('C: iframe 鏍囩鍐呰仈浜?display:block', /display:block/.test(iframeTag), iframeTag)
+check('C: .muv-iframe 瑙勫垯涔熷惈 display:block', /display:block/.test(IFRAME_RULE), IFRAME_RULE)
+
+// 鈹€鈹€ 鐖堕〉璁拌处锛氬悓涓€浠?raw 璋冧袱娆★紝浜х墿蹇呴』閫愬瓧鑺傜浉鍚岋紝涓旀敞鍏ョ紦瀛樺彧澧?1 椤?鈹€鈹€
+// 杩欐潯鎸＄殑鏄?姣忔閲嶅缓閮藉線缂撳瓨閲屽涓€浠芥柊浜х墿"杩欑鐪嬩笉瑙佺殑娉勬紡锛氬崱涓€澶氾紙鎴栨秷鎭竴閲嶆覆鏌擄級
+// 鍐呭瓨灏辫窡鐫€娑紝鑰?*澶栬涓婂畬鍏ㄦ甯?*銆傞€愬瓧鑺傜浉鍚屽悓鏃朵篃鏄箓绛夋€х殑鍓嶆彁鏉′欢銆?{
+  const raw = '<!DOCTYPE html><html><head><title>t</title></head><body><p>hi</p></body></html>'
+  // `muvInjectCache` 鏄埗椤电殑妯″潡绾?`var`锛坈lient.js:2264锛夈€傝繖閲屾妸瀹冨綋 **dep 浼犺繘鍘?*
+  // 锛堜笉鏄瀹冭嚜鍔ㄦ敞鍏ワ級锛氳嚜鍔ㄦ敞鍏ヤ細鎶?`var muvInjectCache = {}` 涔熷杩涘嚱鏁板ご锛?  // 閭ｄ細**閲嶇疆**鎺夋垜浠兂瑙傛祴鐨勯偅涓璞★紙var 閲嶅澹版槑鎶婂弬鏁扮殑鍊煎啿鎺夛級銆?  const cache = {}
+  const api2 = buildFrom(SRC, ['cardHtmlIframe'],
+    { MUV_CARD_SANDBOX: SANDBOX, muvInjectCache: cache, window: { addEventListener() {} }, document: { querySelectorAll: () => [] } },
+    '({html:cardHtmlIframe,gc:function(){var n=0;for(var k in muvInjectCache){if(Object.prototype.hasOwnProperty.call(muvInjectCache,k))n++}return n}})')
+  const raw2 = '<!DOCTYPE html><html><head><title>t2</title></head><body><p>yo</p></body></html>'
+  const n0 = api2.gc()
+  const a1 = api2.html(raw)
+  const a2 = api2.html(raw)
+  check('鈽?鍚屼竴 raw 涓ゆ cardHtmlIframe 浜х墿閫愬瓧鑺傜浉鍚岋紙骞傜瓑锛屼笉鍚椂闂存埑/闅忔満鏁帮級', a1 === a2,
+    '闀垮害 ' + a1.length + ' vs ' + a2.length + '锛岄澶勪笉鍚?@' +
+    (() => { let i = 0; while (i < Math.min(a1.length, a2.length) && a1[i] === a2[i]) i++; return i })())
+  const n1 = api2.gc()
+  const a3 = api2.html(raw)
+  const n2 = api2.gc()
+  const b1 = api2.html(raw2)
+  const n3 = api2.gc()
+  // 杩欐潯鎸＄殑鏄?姣忔閲嶅缓閮藉線缂撳瓨閲屽涓€浠芥柊浜х墿"杩欑鐪嬩笉瑙佺殑娉勬紡锛氬崱涓€澶氥€佹秷鎭竴閲嶆覆鏌擄紝
+  // 鍐呭瓨灏辫窡鐫€娑紝鑰?*澶栬涓婂畬鍏ㄦ甯?*銆傚垽鎹槸"鍚?raw N 娆?鈬?鎭板ソ 1 椤?锛屼笉鏄?N 娆?鈬?N 椤?銆?  check('鈽?鐖堕〉 muvInjectCache 鎸?raw 璁拌处锛氬悓 raw 璋?3 娆″彧鍏ヨ处 1 椤?, n1 === n0 + 1 && n2 === n0 + 1,
+    '璧峰 ' + n0 + ' 鈫?绗?1 娆?' + n1 + ' 鈫?绗?3 娆?' + n2 + '锛堟瘡娆′骇鐗╅兘涓庨娆＄浉鍚岋紵' + (a3 === a1) + '锛?)
+  check('鈽?鎹竴浠?raw 鎵?+1锛堜笉鏄?浠€涔堥兘娌¤"锛?, n3 === n0 + 2 && b1 !== a1,
+    '鏂?raw 鍚?' + n3 + ' 椤癸紙鏈熸湜 ' + (n0 + 2) + '锛?)
+}
+
+// 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?A2. 鐪熷崱绔埌绔?鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?console.log('\n=== A2. 鐪熷崱绔埌绔紙iframe 890脳900 闄勮繎锛岀埗绐楀彛楂樺害涓虹湡瀹炲昂瀵革級===')
+const cards = collectDocs()
+check('璇诲埌鐪熷崱鐣岄潰锛堥槻绌虹煩闃靛亣缁匡級', cards.length >= 5, '鍙鍒?' + cards.length + ' 浠?)
+
+const HOST = `<style>
+  html,body{margin:0;padding:0;background:#16181d}
+  /* 妯℃嫙 DSH 鑱婂ぉ鍒楋細940px 鍐呭瀹斤紱flex 琛?+ 40px 澶村儚 鈬?鍗?iframe 瀹為檯瀹?890px */
+  .col{width:940px;box-sizing:content-box;padding:8px}
+  .row{display:flex;gap:8px}
+  .avatar{flex:0 0 40px;width:40px;height:40px;background:#333}
+  .cap{font:12px monospace;color:#8b93a1}
+  ${WRAP_RULE}
+  ${IFRAME_RULE}
+</style>`
+
+const MEASURE = `(function(){
+  var de = document.documentElement, b = document.body;
+  var app = document.getElementById('app') || b;
+  var cs = getComputedStyle(app), bs = getComputedStyle(b), hs = getComputedStyle(de);
+  var over = de.scrollHeight - de.clientHeight;
+  var all = b.getElementsByTagName('*'), maxB = 0, visB = 0, y = window.scrollY || 0;
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i], s2; try { s2 = getComputedStyle(el) } catch(_) { continue }
+    if (s2.position === 'fixed' || s2.position === 'sticky') continue;
+    if (s2.display === 'none' || s2.visibility === 'hidden') continue;
+    var r = el.getBoundingClientRect(); if (r.height === 0 && r.width === 0) continue;
+    var bot = r.top + y + Math.max(r.height, el.scrollHeight || 0); if (bot > maxB) maxB = bot;
+    // 绾嚑浣曞簳杈癸紙涓嶅惈 el.scrollHeight 鐨?琚埗绾ц鎺変篃绠?閭ｄ竴椤癸級锛氳鍒囩殑鍒ゆ嵁鐢ㄨ繖涓€?    // 鐢ㄥ墠闈㈤偅涓細璇姤 鈥斺€?寮曞鑴氭湰鏁呮剰鎶?overflow 瑁佹帀鐨勯潤鎬佸瓙鍏冪礌涔熺畻杩涘幓銆?    var vb = r.top + y + r.height; if (vb > visB) visB = vb;
+  }
+  // body 鐨?*鐩存帴瀛愬厓绱?*搴曡竟锛氳繖浜涚殑婧㈠嚭鎵嶄細浼犲鍒版枃妗ｏ紙鏇存繁鐨勫厓绱犲彲鑳借鍗¤嚜宸辩殑
+  // overflow 瑁佺潃锛岄偅绉?鍑犱綍搴曡竟瓒呭嚭"鏄崱鑷繁鐨勮璁★紝涓嶆槸鎴戜滑鐨勫抚鐭簡锛夈€?  var topB = 0, kids = b.children;
+  for (var j = 0; j < kids.length; j++) {
+    var ke = kids[j], ks; try { ks = getComputedStyle(ke) } catch(_) { continue }
+    if (ks.position === 'fixed' || ks.position === 'sticky') continue;
+    if (ks.display === 'none' || ks.visibility === 'hidden') continue;
+    var kr = ke.getBoundingClientRect();
+    var kb = kr.top + y + kr.height; if (kb > topB) topB = kb;
+  }
+  return JSON.stringify({
+    iw: innerWidth, ih: innerHeight,
+    appMinH: cs.minHeight, bodyMinH: bs.minHeight,
+    bodyOverflowY: bs.overflowY, bodyOverflowX: bs.overflowX,
+    htmlOverflowY: hs.overflowY, bodyMargin: bs.marginTop,
+    docScroll: de.scrollHeight, docClient: de.clientHeight, overflowPx: over,
+    bodyScroll: b.scrollHeight, bodyClient: b.clientHeight, bodyOverflowPx: b.scrollHeight - b.clientHeight,
+    contentBottom: Math.ceil(maxB), visibleBottom: Math.ceil(visB), topBottom: Math.ceil(topB)
+  });
+})()`
+
+for (const d of cards) {
+  const frame = api.cardHtmlIframe(d.body)
+  // 鈽?蹇呴』甯︿笂**鐪熷疄鐨?*楂樺害杩愯鏃讹細涓嶅甫瀹冿紝iframe 浼氭案杩滃仠鍦ㄩ粯璁?900px锛?  //   "鏈夋病鏈夊唴閮ㄦ粴鍔ㄦ潯"灏卞彉鎴愪簡澶瑰叿鑷繁閫犲嚭鏉ョ殑鍋囪薄锛堟垜绗竴鐗堝氨娌″甫锛岄噺鍑轰竴鍫嗗亣婧㈠嚭锛夈€?  const page = `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>size</title>${HOST}
+</head><body><div class="col"><div class="cap">${d.card} / ${d.script}</div><div class="row"><div class="avatar"></div>${frame}</div></div>
+<script>/* 楂樺害杩愯鏃讹細閫愬瓧鎻愬彇鑷?lib/client.js */<\/script>
+<script>${HEIGHT_RUNTIME.replace(/<\/script/gi, '<\\/script')}<\/script>
+</body></html>`
+  d.rewrote = api.rewriteVhMinHeight(d.body) !== d.body
+  const file = path.join(OUT, 'size-' + (d.card + '-' + d.script).replace(/[^\w\u4e00-\u9fa5]/g, '') + '.html')
+  writeFileSync(file, page, 'utf8')
+  d.file = file
+}
+
+const rt = await openPage(EDGE, { url: 'file:///' + cards[0].file.replace(/\\/g, '/'), outDir: OUT, windowSize: '1400,980' })
+try {
+  const hostVh = await evalJson(rt.cdp, 'JSON.stringify({ih: innerHeight, iw: innerWidth})', rt.pageSession)
+  console.log('  鐖剁獥鍙ｈ鍙?= ' + hostVh.iw + '脳' + hostVh.ih + '锛堥噸鍐欏悗鐨?min-height 搴斿綋鈮堣繖涓珮搴︼級')
+  check('鈽?澶瑰叿绐楀彛鏄湡瀹炲昂瀵革紙楂?< 1200锛夆€斺€?鍚﹀垯閲忓嚭鏉ョ殑 min-height 涓嶄唬琛ㄧ敤鎴风幆澧?,
+    hostVh.ih < 1200, 'ih=' + hostVh.ih)
+
+  const rows = []
+  for (const d of cards) {
+    const before = rt.cdp.iframeSessions.length
+    await rt.cdp.send('Page.navigate', { url: 'file:///' + d.file.replace(/\\/g, '/') + '?v=' + Date.now() }, rt.pageSession)
+    const t0 = Date.now()
+    while (rt.cdp.iframeSessions.length === before && Date.now() - t0 < 15000) await sleep(100)
+    const sess = rt.cdp.iframeSessions[rt.cdp.iframeSessions.length - 1]
+    await sleep(2600)
+    const m = await evalJson(rt.cdp, MEASURE, sess.sessionId)
+    d.m = m
+    rows.push(d)
+    console.log('  ' + (d.card + ' / ' + d.script).padEnd(42) +
+      ' 甯?' + String(m.iw).padStart(4) + '脳' + String(m.ih).padStart(4) +
+      ' minH(app)=' + String(m.appMinH).padStart(8) +
+      ' 鍐呭搴?' + String(m.contentBottom).padStart(5) +
+      ' 鏂囨。=' + String(m.docScroll).padStart(5) + '/' + String(m.docClient).padStart(4) +
+      (m.overflowPx > 1 ? '  鈿?鍐呴儴婧㈠嚭 ' + m.overflowPx + 'px' : '  鉁?鏃犲唴閮ㄦ孩鍑?))
+  }
+
+  const stillVh = rows.filter((r) => /vh|dvh|svh|lvh/i.test(r.m.appMinH) || /vh|dvh|svh|lvh/i.test(r.m.bodyMinH))
+  check('鈽?娌℃湁浠讳綍鐪熷崱鐨?min-height 杩樻槸 vh 鍗曚綅锛堥噸鍐欑敓鏁堬級', stillVh.length === 0,
+    stillVh.map((r) => r.script + ': app=' + r.m.appMinH + ' body=' + r.m.bodyMinH).join(' | '))
+  // 鈹€鈹€ 鍒ゆ嵁鍙ｅ緞锛堢収 lib 渚у疄娴嬬粨璁烘敼锛岃涓嬮潰鐨勯暱娉ㄩ噴锛夆攢鈹€
+  //
+  // 鍘熸潵绗竴鏉℃槸 `overflowPx > 1 || bodyOverflowPx > 1`锛坄scrollHeight - clientHeight`锛夛紝
+  // 绗簩鏉℃槸 `topBottom > docScroll + 1` 鈥斺€?**鍑犱綍鍖呭洿鐩?*鍙ｅ緞銆俵ib 渚у疄娴嬶細`ERA 鐘舵€佹爮`
+  // 鐨?body 鐩存帴瀛愬厓绱犳渶澶у簳杈?929 楂樿繃鏂囨。楂?923"閲岄偅 6px 鏄?*娴姩 / 澶栬竟璺濇姌鍙?*閫犳垚鐨?  // 鍖呭洿鐩掑樊锛宍docScroll == docClient`銆乭tml 渚ф孩鍑?0px 鈬?**涓嶄骇鐢熶换浣曟粴鍔ㄦ孩鍑?*锛屼篃灏辨病鏈?  // 浠讳綍涓滆タ琚鎺夈€傛嬁鍖呭洿鐩掑綋婧㈠嚭鍒ゆ嵁 鈬?绾?1/3 姒傜巼鐨?*闂存瓏鍋囩孩**锛堝悓涓€涓簩杩涘埗锛屽悓鏍风殑杈撳叆锛夈€?  //
+  // 鏂板彛寰勶細**鍙湁婊氬姩瀹瑰櫒鑷繁璇?鎴戞孩鍑轰簡"鎵嶇畻婧㈠嚭** 鈥斺€?`body.scrollHeight > body.clientHeight`
+  // 鎴?`html.scrollHeight > html.clientHeight`銆俽eset 缁欎袱鑰呴兘涓婁簡 `overflow:hidden!important`锛?  // 婧㈠嚭鍗?*瑁佸垏**锛屾墍浠ヨ繖涓ゆ潯姝ｅソ灏辨槸"鏈夋病鏈夎瑁?鐨勫垽鎹紙鐓?ST锛岃 ST-IFRAME-SPEC.md 搂1/搂8鈶狅級銆?  //
+  // 鈽?鏀瑰彛寰?*涓嶈鏀捐繃鐪熸孩鍑?*锛氫笅闈?`=== A3 ===` 閭ｈ妭鏄?*鍐荤粨甯ч珮**鐨勫鐓ц噦 鈥斺€?鎶婄埗椤电殑
+  //   楂樺害澶勭悊鍣ㄥ仠鎺夈€佸抚楂樺己琛岄拤鍦?300px锛屽唴瀹癸紙杩欐潯鍗¤ 1080px锛夊繀鐒舵孩鍑恒€傚鏋滄敼瀹屽彛寰勪箣鍚?  //   閭ｄ竴鑷備笉鍐嶇孩锛岃鏄庡垽鎹鏀瑰簾浜嗐€?  const scrollOver = (r) => Math.max(
+    (r.m.docScroll || 0) - (r.m.docClient || 0),
+    (r.m.bodyScroll || 0) - (r.m.bodyClient || 0))
+  const overflowed = rows.filter((r) => scrollOver(r) > 1)
+  check('鈽?娌℃湁浠讳綍鐪熷崱鍑虹幇鍐呴儴婊氬姩鏉★紙鐪熸鐨勬粴鍔ㄦ孩鍑猴細html 涓?body 鐨?scrollHeight 閮戒笉瓒呰繃 clientHeight + 1锛?,
+    overflowed.length === 0,
+    overflowed.map((r) => r.script + ' html婧?' + r.m.overflowPx + 'px / body婧?' + r.m.bodyOverflowPx + 'px').join(' | '))
+  // 鍑犱綍鍖呭洿鐩掗偅鏉?*闄嶇骇涓烘姤鍛?*锛堝畠閲忕殑鏄?鏈変笢瑗跨敾鍒版澶栭潰浜?锛屼笉鏄?鏈変笢瑗胯瑁佷簡"锛?  // 娴姩涓庢姌鍙犲杈硅窛閮戒細璁╁簳杈硅秴鍑烘枃妗ｉ珮锛岃€岃繖鏃舵粴鍔ㄥ尯鑷繁鏄共鍑€鐨勶級銆?  // 涔嬫墍浠ョ暀鐫€鎵撴暟瀛楋細瀹冩槸"鍐呭姣旀楂?鐨?*涓婄晫**锛岀湡鍑洪棶棰樻椂鑳藉拰婊氬姩鍙ｅ緞浜掔浉鍗拌瘉銆?  const geomOver = rows.filter((r) => r.m.topBottom > r.m.docScroll + 1)
+  console.log('  路 鍑犱綍鍙ｅ緞锛堜俊鎭紝涓嶄綔鍒ゆ嵁锛? ' +
+    (geomOver.length
+      ? geomOver.map((r) => r.script + ' 搴曡竟 ' + r.m.topBottom + ' / 鏂囨。 ' + r.m.docScroll + '锛堝樊 ' + (r.m.topBottom - r.m.docScroll) + 'px锛屾粴鍔ㄦ孩鍑?' + scrollOver(r) + 'px锛?).join(' | ')
+      : '鎵€鏈夊崱鐨勫厓绱犲簳杈归兘娌¤秴杩囨枃妗ｉ珮'))
+  check('鈽?鏂囨。绾у唴瀹规病鏈夎瑁佹帀锛堝彛寰?鐪熸鐨勬粴鍔ㄦ孩鍑猴細涓や釜婊氬姩鍖洪兘娌℃湁 scrollHeight > clientHeight锛?,
+    overflowed.length === 0,
+    JSON.stringify(overflowed.map((r) => [r.script, scrollOver(r), r.m.topBottom, r.m.docScroll])))
+  check('B: 鐪熷崱涓?reset 鐢熸晥锛坆ody 鐨?overflow/margin 琚帴绠★級',
+    rows.every((r) => r.m.bodyMargin === '0px' && r.m.bodyOverflowY !== '' ),
+    JSON.stringify(rows.map((r) => [r.script, r.m.bodyMargin, r.m.bodyOverflowX, r.m.bodyOverflowY])))
+  check('B: html/body 绾靛悜 overflow 鏄?hidden锛圫T 鍙ｅ緞 鈥斺€?瑙?ST-IFRAME-SPEC.md 搂1 / 搂8鈶狅級',
+    rows.every((r) => r.m.bodyOverflowY === 'hidden' && r.m.htmlOverflowY === 'hidden'),
+    JSON.stringify(rows.map((r) => [r.script, r.m.htmlOverflowY, r.m.bodyOverflowY])))
+  // 閲嶅啓杩囩殑鍗★細鏂囨。楂樺繀椤荤湡鐨勮鎶埌 STUB_VH 涔嬩笂锛堣瘉鏄?min-height 鐪熺殑鐢熸晥锛?  // 鑰屼笉鏄?璇昏捣鏉ヤ笉鏄?vh 浜嗐€佸叾瀹炴病璧蜂綔鐢?锛?  const rewritten = rows.filter((r) => r.rewrote)
+  check('鏈?' + rewritten.length + ' 浠藉崱琚噸鍐欒繃锛堜笉鏄竴浠介兘娌℃敼锛?, rewritten.length >= 2, 'rewritten=' + rewritten.length)
+  check('鈽?閲嶅啓杩囩殑鍗★細鏂囨。楂樼‘瀹炶鎶埌 ' + STUB_VH + 'px 閲忕骇锛坢in-height 鐪熺敓鏁堬級',
+    rewritten.every((r) => r.m.docScroll >= STUB_VH * 0.9),
+    JSON.stringify(rewritten.map((r) => [r.script, r.m.docScroll])))
+
+  // 鈹€鈹€ D. 瀹藉害涓嬮檺 鈹€鈹€
+  console.log('\n=== D. 瀹藉害涓嬮檺锛堢獎绐楀彛涓嬪崱浼氬垏鍒板彟涓€濂楀竷灞€锛屼笉鏄缉鏀撅級===')
+  const lastSession = rt.cdp.iframeSessions[rt.cdp.iframeSessions.length - 1].sessionId
+  const mq = await evalJson(rt.cdp, `JSON.stringify((function(){
+    var out = [];
+    for (var i = 0; i < document.styleSheets.length; i++) {
+      var sh = document.styleSheets[i], rules;
+      try { rules = sh.cssRules } catch(_) { continue }
+      if (!rules) continue;
+      for (var j = 0; j < rules.length; j++) {
+        var r = rules[j];
+        if (r.media && /max-width|min-width/.test(r.media.mediaText)) out.push(r.media.mediaText);
+        if (r.cssRules) for (var k = 0; k < r.cssRules.length; k++) {
+          var r2 = r.cssRules[k];
+          if (r2.media && /max-width|min-width/.test(r2.media.mediaText)) out.push(r2.media.mediaText);
+        }
+      }
+    }
+    var u = []; for (var z = 0; z < out.length; z++) if (u.indexOf(out[z]) < 0) u.push(out[z]);
+    return { count: u.length, sample: u.slice(0, 10) };
+  })())`, lastSession)
+  console.log('  鏈€鍚庝竴浠界晫闈㈤噷甯?max/min-width 鐨勫獟浣撴煡璇?' + mq.count + ' 鏉★細' + JSON.stringify(mq.sample))
+  console.log('  鈬?杩欎簺鏂偣鎸?**iframe 瀹藉害** 姹傚€硷細瀹瑰櫒绐勪簬鏂偣鏃跺崱浼氬垏鍒?*鎵嬫満鍒嗘敮**锛堝彟涓€绉嶅竷灞€锛屼笉鏄缉鏀撅級銆?)
+  console.log('     缁撹锛氫笉瑕佷负浜?鐪嬭捣鏉ュ悎閫?鎶婂鍣ㄥ仛绐勶紱婊″锛堚増890px锛夊湪澶氭暟鍗′笂鏄闈㈠垎鏀€?)
+
+  // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?A3. 鍙ｅ緞鐨勫鐓ц噦锛氭妸甯ч珮鍐荤煭锛屽垽鎹繀椤荤孩 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?  //
+  // 涓轰粈涔堝繀椤诲仛锛氭妸"婧㈠嚭"浠庡嚑浣曞寘鍥寸洅鎹㈡垚婊氬姩瀹瑰櫒鍙ｅ緞锛?*鏈夊彲鑳芥妸鍒ゆ嵁鎹㈠簾** 鈥斺€?  // 涓囦竴 `scrollHeight` 鍦ㄨ繖浜涘崱涓婃案杩滅瓑浜?`clientHeight`锛岄偅涓ゆ潯鏂█灏卞彉鎴愪簡鎭掔湡銆?  // 杩欎竴鑷傛妸鐖堕〉鐨勯珮搴﹀鐞嗗櫒鍋滄帀銆佸抚楂橀拤姝诲湪 300px锛堝唴瀹硅 1080px锛夛紝鍒堕€?*纭畾鐨勮鍒?*锛?  // 婊氬姩鍙ｅ緞涓庡嚑浣曞彛寰?*閮?*蹇呴』鎶ョ孩銆傚畠绾簡锛屼笂闈㈤偅涓ゆ潯缁挎墠鏈夋剰涔夈€?  console.log('\n=== A3. 瀵圭収鑷傦細鍐荤煭甯ч珮锛堝垽鎹繀椤昏兘绾級===')
+  {
+    const d = rows[0]
+    // 鐢?*鏍峰紡琛?!important** 鎶婂抚楂橀拤鍦?300px锛氶珮搴﹀鐞嗗櫒鍐欑殑鏄唴鑱?`style.height`锛堜笉甯?    // !important锛夛紝鏍峰紡琛ㄨ兘鐩栦綇瀹?鈬?甯ф案杩?300px锛岃€岃繖寮犲崱瑕?1080px 鈬?蹇呯劧瑁佸垏銆?    // 杩欐瘮"鎯冲姙娉曟妸鐖堕〉鐨?message 鐩戝惉鍣ㄦ憳鎺?绋冲緱澶氾紙鎽樼洃鍚櫒瑕佷緷璧栧嚱鏁板悕锛岃剢锛夈€?    const page = fs.readFileSync(d.file, 'utf8')
+      .replace('</style>', '  iframe.muv-iframe{height:300px !important}\n</style>')
+    const file2 = path.join(OUT, 'frozen-300.html')
+    fs.writeFileSync(file2, page, 'utf8')
+    const before2 = rt.cdp.iframeSessions.length
+    await rt.cdp.send('Page.navigate', { url: 'file:///' + file2.replace(/\\/g, '/') + '?v=' + Date.now() }, rt.pageSession)
+    const t1 = Date.now()
+    while (rt.cdp.iframeSessions.length === before2 && Date.now() - t1 < 15000) await sleep(100)
+    const sess2 = rt.cdp.iframeSessions[rt.cdp.iframeSessions.length - 1]
+    await sleep(2600)
+    const m2 = await evalJson(rt.cdp, MEASURE, sess2.sessionId)
+    const over2 = Math.max(m2.docScroll - m2.docClient, m2.bodyScroll - m2.bodyClient)
+    console.log('  鍐荤煭鍚庣殑 "' + d.script + '": 甯?' + m2.iw + '脳' + m2.ih +
+      ' 婊氬姩婧㈠嚭=' + over2 + 'px锛坔tml ' + (m2.docScroll - m2.docClient) + ' / body ' + (m2.bodyScroll - m2.bodyClient) + '锛? +
+      ' 鍑犱綍搴曡竟=' + m2.topBottom + ' / 鏂囨。=' + m2.docScroll)
+    check('鈽呪槄 鍐荤煭甯ч珮鍚庛€屾粴鍔ㄦ孩鍑哄彛寰勩€嶅繀椤荤孩锛堝惁鍒欎笂闈㈤偅涓ゆ潯鏄亽鐪燂級', over2 > 2, '婊氬姩婧㈠嚭=' + over2 + 'px')
+    check('鈽呪槄 鍐荤煭甯ч珮鍚庛€屽嚑浣曞簳杈广€嶄篃蹇呴』绾紙鐪熻鍒囦笅涓や釜鍙ｅ緞鏂瑰悜涓€鑷达級',
+      m2.topBottom > m2.docScroll + 1, '搴曡竟=' + m2.topBottom + ' 鏂囨。=' + m2.docScroll)
+  }
+} finally {
+  rt.close()
+}
+
+console.log(`\n=== 鏂█: ${pass} 閫氳繃, ${fail} 澶辫触 ===`)
+console.log('浜х墿: ' + OUT)
+process.exit(fail ? 1 : 0)
+

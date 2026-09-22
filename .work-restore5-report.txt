@@ -1,0 +1,42 @@
+!! 注释歧义 1 最高=0
+!! 注释歧义 2 最高=0
+!! 注释歧义 3 最高=0
+!! 注释歧义 4 最高=0
+!! 注释歧义 5 最高=0
+!! 注释歧义 6 最高=0
+字符串 26: "const STUB_VH = 1080      // 单元断言里注入的父窗口视口高�? A2 夹具里重写出来的那个值" ⇒ "const STUB_VH = 1080      // 单元断言里注入的父窗口视口高（= A2 夹具里重写出来的那个值"
+注释块 43 ← 原件 54（1 行，覆盖 0.93）
+字符串 46: "check('100vh �?1080px', R('a{min-height:100vh}').includes('m" ⇒ "check('100vh → 1080px', R('a{min-height:100vh}').includes('m"
+字符串 47: "check('带空�?`min-height: 100vh` 也重写', R('a{min-height: 100vh}" ⇒ "check('带空格 `min-height: 100vh` 也重写', R('a{min-height: 100vh}"
+字符串 48: "check('86vh �?929px（按比例，不是一律替换成 100vh 的值）'," ⇒ "check('86vh → 929px（按比例，不是一律替换成 100vh 的值）',"
+字符串 52: "check('�?max-height:86vh 不动（与 ST 一致）', R('a{max-height:86vh}" ⇒ "check('★ max-height:86vh 不动（与 ST 一致）', R('a{max-height:86vh}"
+字符串 53: "check('�?height:100vh 不动', R('a{height:100vh}').includes('he" ⇒ "check('★ height:100vh 不动', R('a{height:100vh}').includes('he"
+字符串 54: "check('�?<script> 里的同名文本不动'," ⇒ "check('★ <script> 里的同名文本不动',"
+字符串 61: "check('min-height:0 / 52px 这类�?vh 值不�', R('a{min-height:0;b:" ⇒ "check('min-height:0 / 52px 这类非 vh 值不动', R('a{min-height:0;b:"
+!! 注释歧义 63 最高=0
+字符串 68: "  check('�?视口高离谱（12px）时也不重写', tiny('a{min-height:100vh}') ==" ⇒ "  check('★ 视口高离谱（12px）时也不重写', tiny('a{min-height:100vh}') =="
+注释块 71 ← 原件 82（1 行，覆盖 0.92）
+字符串 101: "  check('B: reset �?<body> 之前（第一帧就生效，不闪）', resetProbe.indexO" ⇒ "  check('B: reset 在 <body> 之前（第一帧就生效，不闪）', resetProbe.indexO"
+字符串 116: "const iframeTag = (/<iframe\\b[^>]*>/.exec(api.cardHtmlIframe" ⇒ "const iframeTag = (/<iframe\\b[^>]*>/.exec(api.cardHtmlIframe"
+字符串 117: "check('C: iframe 标签内联�?display:block', /display:block/.test(" ⇒ "check('C: iframe 标签内联了 display:block', /display:block/.test("
+!! 注释歧义 120 最高=0
+!! 注释歧义 121 最高=0
+!! 注释歧义 122 最高=0
+!! 注释歧义 125 最高=0
+!! 注释歧义 126 最高=0
+!! 注释歧义 143 最高=0
+!! 注释歧义 144 最高=0
+注释块 151 ← 原件 131（1 行，覆盖 0.89）
+!! 注释歧义 183 最高=0
+注释块 207 ← 原件 186（2 行，覆盖 0.90）
+字符串 211: "<script>/* 高度运行时：逐字提取�?lib/client.js */<\\/script>" ⇒ "<script>/* 高度运行时：逐字提取自 lib/client.js */<\\/script>"
+字符串 239: "      ' �?' + String(m.iw).padStart(4) + '×' + String(m.ih)." ⇒ "      ' 帧 ' + String(m.iw).padStart(4) + '×' + String(m.ih)."
+字符串 241: "      ' 内容�?' + String(m.contentBottom).padStart(5) +" ⇒ "      ' 内容底=' + String(m.contentBottom).padStart(5) +"
+注释块 295 ← 原件 240（2 行，覆盖 0.85）
+字符串 299: "  check('�?重写过的卡：文档高确实被抬到 ' + STUB_VH + 'px 量级（min-height 真生" ⇒ "  check('★ 重写过的卡：文档高确实被抬到 ' + STUB_VH + 'px 量级（min-height 真生"
+!! 注释歧义 328 最高=0
+!! 注释歧义 329 最高=0
+!! 注释歧义 333 最高=0
+字符串 339: "    await rt.cdp.send('Page.navigate', { url: 'file:///' + f" ⇒ "    await rt.cdp.send('Page.navigate', { url: 'file:///' + d"
+
+重复注释行=[]

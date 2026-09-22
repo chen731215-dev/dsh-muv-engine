@@ -1,0 +1,1 @@
+export const x = JSON.stringify((function(){try{var d=window.parent.document;return {reached:!!d,tag:d&&d.documentElement?d.documentElement.tagName:null}}catch(e){return {threw:true,name:String((e&&e.name)||e)}})())

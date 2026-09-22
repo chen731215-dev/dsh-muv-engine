@@ -46,6 +46,12 @@ const MARKDOWN = `
 <pre><code>const a = 1</code></pre>
 <ul><li>列表项一</li><li>列表项二</li></ul>`
 
+// 一段"整页 HTML 源码"（转义后当 <pre> 的文本内容）。`NAKEDDOC` 是探针字符串：
+// 它还出现在 innerText 里 = 源码块没被藏住（用户看到裸文本）。
+const NAKED_DOC = '&lt;!DOCTYPE html&gt;\n&lt;html&gt;\n&lt;head&gt;&lt;title&gt;卡&lt;/title&gt;&lt;/head&gt;\n&lt;body&gt;\n' +
+  Array.from({ length: 6 }, () => '&lt;div class="w-full"&gt;NAKEDDOC 状态栏字段&lt;/div&gt;').join('\n') +
+  '\n&lt;/body&gt;\n&lt;/html&gt;'
+
 const MESSAGES = {
   A_choices: `${MARKDOWN}
 <p>安柏压低声音：「这里的风不对劲。」</p>
@@ -81,6 +87,17 @@ B. 先在入口扎营
 <p>&lt;dialogue&gt;「你跟紧我。」&lt;/dialogue&gt;</p>
 <p>&lt;char&gt;安柏&lt;/char&gt;握紧了弓。</p>
 <p>&lt;location&gt;遗迹入口&lt;/location&gt;</p>`,
+  // 卡牌专属的「游戏标签」：酒馆路径按字段渲染信息卡（带独立配色），
+  // 原生路径此前**没有**渲染器 ⇒ 整块标签外泄成裸文本。
+  // 用 <br> 分行：真实 DSH 把模型的行分隔渲染成块/换行，直接写裸换行会被 HTML 折成空格。
+  G_gamecard: `${MARKDOWN}
+<p>&lt;赏令接取&gt;<br>委托名称：清除遗迹外围的史莱姆<br>委托人：西风骑士团<br>奖励：2000 摩拉<br>期限：明日黄昏前<br>&lt;/赏令接取&gt;</p>`,
+  // H：与 iframe 内容**重复**的整页源码块（ST 给残留 <pre><code> 加 hidden! 的那一条）。
+  // 卡的正则没产出整页文档时，这一大段源码会露成裸文本 —— 用户看到的就是"没渲染"。
+  // 同时带一个普通 ``` 代码块：它**必须活着**（判据的第二面，防"无差别隐藏"）。
+  H_source: `${MARKDOWN}
+<pre><code>${NAKED_DOC}</code></pre>
+<pre><code>const keep = 1  // 普通代码块：一个字符都不许动</code></pre>`,
 }
 
 /** 每条消息「该渲染出来的东西」——**两个方向都要钉**：markdown 不能丢，功能也不能丢。 */
@@ -91,6 +108,9 @@ const NEEDS = {
   D_xss: ['videos', 'illustrations'],
   E_variable: ['variableBlocks', 'abstracts'],
   F_tags: ['speechBlocks', 'dialogueBlocks', 'charNames', 'locations'],
+  G_gamecard: ['gameCards'],
+  // srcHidden = 被藏起来的整页源码块；preVisible = 仍然可见的 <pre>（普通代码块 + markdown 的 pre）
+  H_source: ['srcHidden', 'preVisible'],
 }
 
 const page = `<!DOCTYPE html>
@@ -115,6 +135,13 @@ ${Object.keys(MESSAGES).map((k) => `  <div class="cap">${k}</div>\n  <div class=
   var notes = [];
   function msg(k) { return document.getElementById('msg_' + k) }
   function count(k, sel) { var m = msg(k); return m ? m.querySelectorAll(sel).length : -1 }
+  // 仍然**看得见**的 <pre> 数量（display:none 的不算）—— 判据第二面：不许无差别隐藏
+  function visiblePre(k) {
+    var m = msg(k); if (!m) return -1;
+    var ps = m.querySelectorAll('pre'), n = 0;
+    for (var i = 0; i < ps.length; i++) { if (getComputedStyle(ps[i]).display !== 'none') n++ }
+    return n;
+  }
   function emit(state) {
     for (var i = 0; i < KEYS.length; i++) {
       var k = KEYS[i], m = msg(k), txt = m ? m.innerText : '';
@@ -129,6 +156,10 @@ ${Object.keys(MESSAGES).map((k) => `  <div class="cap">${k}</div>\n  <div class=
         + ' variableBlocks=' + count(k, '.muv-varedit') + ' abstracts=' + count(k, '.muv-abstract')
         + ' speechBlocks=' + count(k, '.muv-speech') + ' charNames=' + count(k, '.muv-char-name')
         + ' dialogueBlocks=' + count(k, '.muv-dialogue') + ' locations=' + count(k, '.muv-location')
+        + ' gameCards=' + count(k, '.muv-game-card') + ' cardFields=' + count(k, '.muv-card-field')
+        + ' srcHidden=' + count(k, '[data-muv-src-hidden]')
+        + ' preVisible=' + visiblePre(k)
+        + ' srcLeak=' + (txt.indexOf('NAKEDDOC') >= 0 ? 1 : 0)
         // 第三类真正的用户可见症状：**标签外泄成裸文本**（不是丢 markdown）。
         // 用字符串查找而不是正则字面量：这段代码在模板字符串里，正则的转义斜杠会被
         // 模板字符串先吃掉一层，于是正则在中途的斜杠处提前结束、整段脚本语法错误
@@ -228,13 +259,17 @@ for (const raw of verdicts) {
   // 第三类的用户可见症状是「标签外泄成裸文本」——它和 markdown 是两件事，必须单独钉
   const needsNoRawTags = key === 'E_variable' || key === 'F_tags'
   const rawTagsOk = !needsNoRawTags || num('rawTags') === 0
-  const ok = markdownKept && featureOk && rawTagsOk
+  // H：源码块藏住了 **且** 普通代码块还在（只钉一面会放过"无差别隐藏"）
+  const needsNoSrcLeak = key === 'H_source'
+  const srcLeakOk = !needsNoSrcLeak || num('srcLeak') === 0
+  const ok = markdownKept && featureOk && rawTagsOk && srcLeakOk
   if (!ok) bad++
   console.log(`\n  [${key}] ${ok ? 'PASS' : 'FAIL'}`)
   console.log('    ' + v)
   console.log('    markdown 存活=' + (markdownKept ? '是' : '**否**') +
     '   ' + needs.map((n) => n + '=' + num(n)).join(' ') +
-    (needsNoRawTags ? '   裸标签残留=' + (rawTagsOk ? '无' : '**有**') : ''))
+    (needsNoRawTags ? '   裸标签残留=' + (rawTagsOk ? '无' : '**有**') : '') +
+    (needsNoSrcLeak ? '   裸源码残留=' + (srcLeakOk ? '无' : '**有**') : ''))
 }
 // 防空循环：每条消息都必须有结果
 for (const k of Object.keys(MESSAGES)) {

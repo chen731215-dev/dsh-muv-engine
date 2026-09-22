@@ -907,6 +907,21 @@ check('★ era 桥双源取数：初始变量(tavern-card) + 运行时(muv-engin
 check('★ 运行时状态覆盖初始变量（muvDeepMerge，runtime 在上）',
   eraFetchSrc.includes('muvDeepMerge(base, run)'))
 
+// ── 垫片的「ST `predefine.js` 全局清单」覆盖（2026-09-23 第 31 轮）──────────────
+//   每一条都指得到 ST 的源码符号；**故意没补的三个**也钉在这里，免得后来人以为是漏了。
+check('★★ 垫片补了 waitGlobalInitialized（ST 侧：predefine.js 的 `_bind` 表把 `_waitGlobalInitialized` 去掉前缀后 bind(window)）',
+  compatSrc.includes('def("waitGlobalInitialized"'))
+check('★ waitGlobalInitialized 对**已经就位**的全局立刻 resolve（我们的 Mvu 是同步就位 ⇒ 这是语义正确，不是假装）',
+  compatSrc.includes('return Promise.resolve(v)'))
+check('★ waitGlobalInitialized 取不到那个名字时**不 reject**（卡的 .then 不该因为我们掉进 catch）',
+  compatSrc.includes('clearInterval(t);res(undefined)'))
+check('★ 垫片已有的 ST predefine 全局仍在：SillyTavern / TavernHelper / Mvu / toastr / eventClearAll',
+  compatSrc.includes('def("SillyTavern"') && compatSrc.includes('def("TavernHelper"') &&
+  compatSrc.includes('def("Mvu"') && compatSrc.includes('def("toastr"') &&
+  compatSrc.includes('def("eventClearAll"'))
+check('★ 故意**不补**的三个（卡侧实测 0 处引用；给空壳会让卡以为渲染成功而写错数据）',
+  !/def\("EjsTemplate"/.test(compatSrc) && !/def\("YAML"/.test(compatSrc) && !/def\("showdown"/.test(compatSrc))
+
 // ── 17. 把"别人的一大段文本"拼进替换串 —— 必须函数式替换 ──────────────────────
 //
 // 与服务端第 4 轮那个 `$'` bug 是**同一个坑的两端**：`String.replace` 的**字符串替换**里，
@@ -1036,13 +1051,22 @@ console.log('\n[20] 卡 iframe 注入 ST 同款前端库')
     ['jQuery-UI', /jquery-ui-dist@[\d.]+\/jquery-ui\.min\.js/],
     ['Vue', /vue@[\d.]+\/dist\/vue\.global\.prod\.js/],
     ['Vue-Router', /vue-router@[\d.]+\/dist\/vue-router\.global\.prod\.js/],
+    // ── 2026-09-23（第 31 轮）：不在 ST 的 `v1` 里、而在 `predefine.js` 里的两项 ──
+    //   `_`（lodash，predefine.js:1）与 `z`（zod，predefine.js:12）。版本都钉 ST 那一代。
+    ['lodash', /lodash@[\d.]+\/lodash\.min\.js/],
+    ['zod', /zod@[\d.]+\/\+esm/],
   ]
   for (const [name, re] of LIBS) {
     check('注入了 ' + name, re.test(tags), tags.slice(0, 60))
   }
-  check('★ 六个 URL 全部走 https 的 jsdelivr（钉版本，不用 latest）',
-    (tags.match(/https:\/\/cdn\.jsdelivr\.net\/npm\//g) || []).length === 6 && !/@latest/.test(tags),
+  check('★ 八个 URL 全部走 https 的 jsdelivr（钉版本，不用 latest）',
+    (tags.match(/https:\/\/cdn\.jsdelivr\.net\/npm\//g) || []).length === 8 && !/@latest/.test(tags),
     String((tags.match(/https:\/\/cdn\.jsdelivr\.net\/npm\//g) || []).length))
+  // ★ 版本必须是 ST 那一代（我们是从 ST 源码里读出来钉的，不是随手挑的 latest）：
+  //   lodash 4.18.1 = `SillyTavern/node_modules/lodash/package.json` 的 version；
+  //   zod 4.4.3     = `JS-Slash-Runner/package.json` 的 `"zod": "^4.4.3"`。
+  check('★ lodash 钉的是 ST 本体的 4.18.1', /lodash@4\.18\.1\//.test(tags), tags.match(/lodash@[\d.]+/) + '')
+  check('★ zod 钉的是酒馆助手的 4.4.3', /zod@4\.4\.3\//.test(tags), tags.match(/zod@[\d.]+/) + '')
   // 顺序：ST 是「先 CSS 后 JS，jQuery 在 Vue 前」—— Vue-Router 依赖全局 Vue、
   // jQuery-UI 依赖全局 jQuery，顺序错了就是静默少一个库。
   const iFa = tags.indexOf('fontawesome')
@@ -1052,10 +1076,42 @@ console.log('\n[20] 卡 iframe 注入 ST 同款前端库')
   check('★ 顺序：FontAwesome(CSS) 在最前', iFa >= 0 && iFa < iJq, [iFa, iJq].join('/'))
   check('★ 顺序：jQuery 在 Vue 之前', iJq < iVue, [iJq, iVue].join('/'))
   check('★ 顺序：Vue 在 Vue-Router 之前', iVue < iVr, [iVue, iVr].join('/'))
-  // 两条硬约束（宿主可能把客户端代码内联进 <script> 标签）
-  check('★ 不含裸的 </script>（否则会截断宿主的 script 标签）',
+  // ── 2026-09-23（第 31 轮）新增项的形状断言 ────────────────────────────────
+  // lodash 必须是**三段**且顺序正确：存旧值 → 加载 → 还原。顺序一错，语义直接反过来
+  // （变成"永远用 lodash" 或 "永远用卡的"），所以它比 URL 本身更值得钉。
+  const iSave = tags.indexOf('data-muv-libs="dash-save"')
+  const iDash = tags.indexOf('data-muv-libs="lodash"')
+  const iKeep = tags.indexOf('data-muv-libs="dash-keep"')
+  check('★★ lodash 三段顺序 = 存旧值 → 加载 → 还原（实现"只在缺失时补"的唯一办法，' +
+    '因为 lodash 的 UMD 收尾是无条件 `root._ = lodash`）',
+    iSave >= 0 && iSave < iDash && iDash < iKeep, [iSave, iDash, iKeep].join('/'))
+  check('★★ lodash 是**经典 script**（同步阻塞 ⇒ 卡那些 defer 的 module 必然排在它之后）',
+    tags.includes('<script data-muv-libs="lodash" src="') && !tags.includes('data-muv-libs="lodash">'),
+    tags.slice(iDash, iDash + 70))
+  check('★★ 还原那一步只认"当初真的存过"（hasOwnProperty），不认"值是不是假的"',
+    tags.includes('hasOwnProperty.call(window,"__muvDashPrev")'), '')
+  const iZod = tags.indexOf('data-muv-libs="zod"')
+  check('★★ zod 只能是 module：实测 zod@4.4.3 的 npm 包里没有 UMD 构建' +
+    '（dist/zod.umd.js、dist/index.umd.js 全是 404，只有 jsdelivr 现打的 +esm）',
+    iZod >= 0 && tags.slice(iZod - 30, iZod + 40).includes('type="module"'), tags.slice(iZod - 30, iZod + 30))
+  check('★ zod 仍然"只在缺失时"落位（卡自己定义了 window.z 就不动它）',
+    tags.includes('typeof window.z==="undefined"'), '')
+  // 对照臂：把 lodash 三段摘掉 ⇒ 文档里就只剩 5 个 data-muv-libs（判据不是空转）
+  const noDash = tags.replace(/<script data-muv-libs="dash-(save|keep)">[\s\S]*?<\/script>/g, '')
+    .replace(/<script data-muv-libs="lodash" src="[^"]*"><\/script>/g, '')
+  check('★★ 对照臂：摘掉 lodash 三段后确实没了（说明上面那几条不是永真）',
+    !/data-muv-libs="lodash"/.test(noDash) && !/lodash@/.test(noDash), String((noDash.match(/data-muv-libs=/g) || []).length))
+  // 两条硬约束（宿主可能把客户端代码内联进 <script> 标签）。
+  // ★ 判据分开取，别混（2026-09-23 第 31 轮实测踩过）：
+  //   · `</script>` 看**源码**（`tagsSrc`）—— 约束是"**字面量**里不许出现它"，
+  //     收尾标签必须写成 `'</' + 'script>'` 拼出来。运行时产物 `tags` 里当然有
+  //     `</script>`（那是标签正常收尾），拿它当判据必然假红。
+  //   · 反引号看**运行时产物**（`tags`）—— 约束是"注入进 HTML 的字符串不能带反引号"。
+  //     源码里函数体内的 `//` 注释**会被 `extractFunction` 一起提取**，而注释里写反引号
+  //     （`` `_` ``、`` `z` ``）完全无害；拿源码当判据会逼着后来人不敢写注释。
+  check('★★ 源码里不含裸的 </script> 字面量（收尾标签必须用拼接写法）',
     !/<\/script>/.test(tagsSrc), tagsSrc.slice(0, 60))
-  check('★ 不含反引号（与 muvFrameBootstrap 同一约束）', !tagsSrc.includes('`'))
+  check('★★ 注入串里不含反引号（与 muvFrameBootstrap 同一约束）', !tags.includes('`'), tags.slice(0, 60))
   check('★ 沙箱没被放宽（注入库不是放开 allow-same-origin 的理由）',
     sandbox === 'allow-scripts' && !/allow-same-origin/.test(SRC.split('MUV_CARD_SANDBOX')[0].slice(-200)))
 

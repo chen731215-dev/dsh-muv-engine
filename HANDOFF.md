@@ -1955,6 +1955,149 @@ node -e "import('dsh-muv-table/lib/png-card.js').then(m=>{
    - bundle 会 `_.set(window.parent, 'Mvu', …)` —— 跨源写父页属性在 strict 模式下会抛；
      这条要靠真机观察它是否被上层 `Promise.allSettled` 兜住。
 
+## 31. 第 31 轮：补齐 ST `predefine.js` 的全局（lodash / zod）· `2026-09-22r`
+
+### 31.1 上一轮留下的第一顺位，本轮做实
+
+§30.8 第 3 条：HUD 仍不出时"最可能的原因"是卡脚本裸引用全局 **`_` (lodash)**，
+而 ST 由 `predefine.js` 提供、我们跨源拿不到。本轮补上，并拿到**直接证据**（§31.6）。
+
+### 31.2 ST 侧注入清单（只读源码逐条实测，2026-09-23）
+
+出处：`C:\MySpecialFolder\SillyTavern\public\scripts\extensions\third-party\JS-Slash-Runner\`
+
+`b1()`（iframe 文档模板，`dist/index.js` ~853393）注入了 4 个 `<script src>` +
+`${v1}` 那一大块；这四个 src 常量由 `src/iframe/script_url.ts` 从 `?raw` 源码
+`URL.createObjectURL` 出来（**不是** URL 路径，所以 `dist/` 里搜不到文件名）：
+
+| b1 里的槽位 | 真身 | 注入了什么 |
+|---|---|---|
+| `${v1}` | 内联字符串 | FontAwesome CSS + Tailwind + jQuery + jQuery-UI(+theme CSS+touch-punch) + Vue(runtime) + Vue-Router |
+| `${_1}` | `parent_jquery.js` | `window.$ = window.parent.$` / `window.jQuery = window.parent.jQuery` |
+| （硬编码） | `node_modules/log.js` | 只覆盖 `console.*` 转发给面板（**无新全局**） |
+| `${m1}` | **`predefine.js`** | ★ 本节重点，逐条见下表 |
+| `${p1}` | `adjust_iframe_height.js` | 高度上报（用 `_.throttle`） |
+
+`predefine.js` 逐条（文件行号为准）：
+
+| # | 行 | 注入物 | ST 语义 |
+|---|---|---|---|
+| 1 | `:1` | **`window._`** | `= window.parent._`（ST 本体的 lodash） |
+| 2 | `:11-19` | （消费方） | `_(window).merge(_.pick(parent,[…]))` 把父页一堆东西摊到 window |
+| 3 | `:12` | **`EjsTemplate` `TavernHelper` `YAML` `showdown` `toastr` `z`** | 六个名字整份搬过来（`z` = zod） |
+| 4 | `:13` | TavernHelper 的全部方法（去掉 `_bind`） | 摊成裸全局 |
+| 5 | `:14-18` | `_bind` 表里的方法，**去掉前导 `_`** 后 `bind(window)` | ⇒ 裸全局 `eventOn / eventEmit / getVariables / triggerSlash / **waitGlobalInitialized** / …` |
+| 6 | `:22-24` | `__VUE_PROD_DEVTOOLS__` / `__VUE_OPTIONS_API__` / `__VUE_PROD_HYDRATION_MISMATCH_DETAILS__` | 给 pinia 一类库看的 build flag |
+| 7 | `:26-34` | `SillyTavern`（defineProperty getter） | `getContext()` + `writeExtensionField` |
+| 8 | `:37-44` | `Mvu`（defineProperty getter，仅当父页有） | get 转发父页、**set 是空的**（comment：Mvu 脚本自己会 `_.set`） |
+| 9 | `:2-10` | `__TH_IFRAME_ID` / `window.name` | iframe 身份（酒馆助手自己用） |
+| 10 | `:46-48` | （消费方） | `$(window).on('pagehide', () => eventClearAll())` —— 名字对不上会当场抛 |
+
+版本依据（两处都读的原始文件，不是猜）：
+- lodash `4.18.1` ← `SillyTavern/node_modules/lodash/package.json` 的 `"version"`
+  （jsdelivr 也有这个版本，73,234 字节）；
+- zod `4.4.3` ← `JS-Slash-Runner/package.json:89` `"zod": "^4.4.3"`。
+
+### 31.3 卡侧证据（没有它就不加 —— 本轮的口径）
+
+从真卡 PNG 的 tEXt `chara`（**内容是 base64 的 JSON**，直接 `JSON.parse` 会抛）
+取 `data.extensions.tavern_helper.scripts`，逐条 grep：
+
+| 全局 | 裸引用 | 出处（哪一条脚本） |
+|---|---|---|
+| `_` | **151** | 星辉MVU核心 74 · 其余零散 |
+| `z` | **143** | 单条「8.2·星辉zod·等级能力一致性与比例数值」 |
+| `SillyTavern` | 34 | 状态栏 / NPC 控制台 |
+| `TavernHelper` | 28 | —— |
+| `Mvu` | 82 | —— |
+| `toastr` | 16 | —— |
+| `eventOn` | 25 | —— |
+| `getVariables` | 13 · `triggerSlash` 8 · `replaceVariables` 2 · `insertOrAssignVariables` 2 | —— |
+| `waitGlobalInitialized` | **8**（**探测式**，自带 typeof 兜底） | 星辉MVU核心 3 · 事件推进器 2 |
+| `EjsTemplate` / `YAML` / `showdown` | **0 / 0 / 0** | —— |
+
+★ `z` 那条最凶的细节：它 `import { registerMvuSchema } from '…/mvu_zod.js'`，
+**从不 import `z`** —— `z.object/z.record/z.preprocess/z.coerce.string()/…prefault` 全是裸引用
+⇒ 缺 `z` 时在**求值顶层 Schema 常量**时就 `ReferenceError`，`registerMvuSchema(Schema)`
+永远跑不到。
+
+### 31.4 补齐情况（表）
+
+| ST 注入物 | 我们 | 做法 / 位置 |
+|---|---|---|
+| `_` lodash | ✅ **本轮** | `muvCardLibTags()` 里**三段**：`dash-save` → `lodash@4.18.1/lodash.min.js` → `dash-keep`。理由：lodash 的 UMD 收尾**无条件** `root._ = lodash`，而要求是"只在缺失时补"——三段是纯 HTML 层实现该语义的唯一办法。标记 `__muvDashPrev` 用完即删。 |
+| `z` zod | ✅ **本轮** | 只能走 `<script type="module">`：实测 `zod@4.4.3` 的 npm 包**没有 UMD**（`dist/zod.umd.js`/`dist/index.umd.js` 全 404），只有 jsdelivr 现打的 `+esm`（328,955 字节）。`import * as MUVZ` + 三形态兜底 ⇒ `window.z`，**只在缺失时**落位。顺序仍对：module 天然 defer，它在 `<head>`、卡脚本在 `</body>` 前。 |
+| `waitGlobalInitialized` | ✅ **本轮** | 放进 **compat 垫片**（不是库注入）—— 它属"ST 预定义宿主 API"那一族，跟 `toastr`/`getTavernHelperVersion` 同类，不该被"前端库开关"连坐。对已就位的全局立刻 resolve（我们的 `Mvu` 是同步就位 ⇒ 语义正确）；取不到名字**不 reject**。 |
+| `$` / `jQuery` / Vue / Vue-Router / Tailwind / jQuery-UI / FA | 早已有 | §24（CDN + 钉版本） |
+| `SillyTavern` / `TavernHelper` / `Mvu` / `toastr` / 事件总线 / `getTavernHelperVersion` | 早已有 | §30.6 |
+| `EjsTemplate` / `YAML` / `showdown` | ❌ **故意不补** | 卡侧 0 处引用；给空壳会让卡以为"渲染成功了"从而写错数据，**比缺一个全局更坏**。真要用再按 31.2+31.3 的格式取证后补。 |
+| Vue 三个 build flag | ❌ 不补 | `vue.global.prod.js` 已把这三个常量**构建期内联**，运行时设不设都不影响 Vue 本体；无卡侧证据 ⇒ 不加。 |
+| `__TH_IFRAME_ID` / log.js 转发 | ❌ 不做 | 前者是酒馆助手内部身份（我们的错误留痕用自己的 `data-muv-th`）；后者是"把 iframe console 转发到面板"的观测层，与卡能否运行无关。 |
+
+**开关关系**：lodash + zod **共用 `MUV_CARD_LIBS`**、同一注入点（`</head>` 之前）、同样钉版本
+（不追 latest）；`waitGlobalInitialized` 在 compat 垫片里，与库开关无关。
+`MUV_CARD_SCRIPTS`（§30）只管"卡脚本注入"，本轮**一行没动**。
+
+### 31.5 门禁（全绿，数字）
+
+| 门禁 | 结果 | 备注 |
+|---|---|---|
+| `verify-card-libs.mjs` | **37 / 0** | **从两臂扩到四臂** |
+| `verify-card-lodash-bundle.mjs`（新） | **11 / 0** | 真实 bundle 端到端 |
+| `verify-tavernhelper-scripts.mjs` | **35 / 0** | 未受影响 |
+| `test-client-render.mjs` | **308 / 0** | [20] 段 8 库 + 三段顺序 + 2 对照臂；[16] 段垫片清单 |
+| `test-era-vars.mjs` | 全部通过 | 真聊天文件不在 ⇒ SKIP（老规矩） |
+| `verify-card-compat.mjs --old-export` | after **46/0** · before 红 **37** | 对照成立 ⇒ 绿灯（本轮没出时序偶发） |
+
+**四臂设计的因果强度**（为什么值得多起两个 iframe）：
+A 全量 / B 完全不注入 / **C 注入全部但只摘掉 lodash 三段** / **D 注入全部但只摘掉 zod 标签**。
+A 与 B 之间差着十个标签 —— "`_` 是 lodash 带来的"在那两臂之间**证明不了**（§24 差点吃过的亏）。
+实测：C 臂 `typeof _ === "undefined"` 而 zod 全在；D 臂 `z.object` 不可用而 `_` 与 jQuery 都在。
+失败时门禁还会**再做一次 node 侧直连**，把「CDN 不可达」与「注入缺失」分开报。
+
+两个被本轮门禁抓出来的**判据缺陷**（都改进了，记在这里免得后人重犯）：
+1. `extractFunction()` 的提取物**包含函数体内的 `//` 注释**——拿源码断言"不含反引号"会把注释里的
+   `` `_` `` 判成违规（假红）。现在：`</script>` 看**源码**（不许有字面量，收尾标签必须拼接），
+   反引号看**运行时的 `tags`**（那才是"注入进 HTML 的字符串"）。
+2. `tags.slice(iDash)` 从属性名处开始，配正则 `^<script …` 永远不匹配 —— 判据要盯
+   "那个标签是**外链** `src=` 而不是内联"。
+
+### 31.6 端到端实证：剥掉 lodash ⇒ 真 bundle 当场炸
+
+新门禁 `verify-card-lodash-bundle.mjs`：把卡里那行
+`import 'https://testingcf.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate@master/artifact/bundle.js'`
+真的 import 进真沙箱 iframe，复刻 `muvInjectDoc` 的层序（compat → libs → 错误留痕 → 卡脚本）：
+
+| 臂 | `window.__muvScriptErrs` |
+|---|---|
+| **Q（只摘掉 lodash 三段）** | `["（未知脚本） | Uncaught ReferenceError: _ is not defined"]` |
+| **P（库齐全）** | `["（未知脚本） | Script error."]`（**没有** `_ is not defined`） |
+
+★ Q 臂这一条同时是"bundle **真的加载并开始执行了**"的证据 —— 有它，P 臂的"没有那条错"才有意义
+（否则可能只是 bundle 压根没加载）。
+★ **如实记录**：P 臂仍有一条 `Script error.` —— CDN 脚本**跨源**、浏览器屏蔽了细节，
+**不代表失败**；判据要盯的是具名 ReferenceError。真机排障时同理（`docs/04-排错手册.md` §L）。
+
+### 31.7 环境陷阱：本机浏览器门禁**必须走非沙箱**
+
+本轮踩到并已确认：在工具沙箱里跑 `verify-card-libs.mjs` 会报
+`Error: CDP WebSocket 连不上`（`verify-shared.mjs:314`）。实测原因**不是**产品也不是 Edge：
+沙箱里 `node` 被换成 **v26.8.2**（非沙箱是 **v22.22.2**），它的 undici WebSocket 连 Edge CDP
+全部失败（`close=1006`）；非沙箱下同一份代码 `OPEN`。
+⇒ 以后跑任何真浏览器门禁（card-libs / card-lodash-bundle / tavernhelper-scripts / card-compat /
+visual / frame-height …）**都要在非沙箱下跑**；看到那句 `CDP WebSocket 连不上` 先查是不是跑在沙箱里。
+
+### 31.8 只能真机验的部分
+
+1. `lib/client.js` 改动**硬刷新即可**（本轮没动服务端路由 ⇒ **不用重启 DSH**）。
+2. 硬刷新后看：`[muv-engine] client loaded 2026-09-22r`；封面下方那条**棕色 HUD**；
+   有没有 `[muv-engine] 卡脚本报错：…`（或读卡 iframe 的 `window.__muvScriptErrs`）。
+3. 仍不出时按 `04-排错手册.md` §L 排：标记 ≥ `2026-09-22r` → `__muvScriptErrs` 里有没有
+   **具名** ReferenceError（`Script error.` 不算）→ 才是已知缺口那两条（框架启用开关、
+   `_.set(window.parent,…)` 的跨源抛错）。
+4. 真机未验：zod `+esm`（328 KB）在本机网络下的加载耗时（只会推迟卡脚本的**开始**，
+   不会让谁失败）；bundle 那条跨源 `_.set` 是否被它自己的 `Promise.allSettled` 兜住。
+
 
 
 

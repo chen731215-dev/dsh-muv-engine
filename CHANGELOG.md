@@ -1,5 +1,102 @@
 # Changelog
 
+## 未发布（2026-09-23 · 三十一）★★ 卡 iframe 补齐 ST `predefine.js` 的全局：lodash / zod · `2026-09-22r`
+
+### 为什么（上一轮留下的第一顺位）
+§30 让卡脚本真的跑起来了，但魔女卡的棕色 MVU 状态栏（HUD）**还是不出**，并在 §30.8 如实记了
+下一条嫌疑：卡脚本普遍裸引用全局 **`_` (lodash)**，ST 由 `predefine.js` 提供，我们的不透明来源
+拿不到。本轮把这条**做掉了**，而且拿到了直接证据（见下面「端到端实证」）。
+
+### ST 侧取证（只读源码，逐条列，不是类比）
+出处：`SillyTavern/public/scripts/extensions/third-party/JS-Slash-Runner/`
+
+| 注入物 | ST 侧证据（文件:符号） | 我们 |
+|---|---|---|
+| `_` (lodash) | `src/iframe/predefine.js:1` `window._ = window.parent._;`；版本 = `SillyTavern/node_modules/lodash/package.json` 的 `"version": "4.18.1"`；同文件 `:11-19` 整段用 `_.merge/_.pick/_.omit/_.get/_.set` 装配 `TavernHelper`（⇒ 没有 `_` 时 predefine 自己第一步就抛）；`src/iframe/adjust_iframe_height.js:26` `_.throttle(measureAndPost, 500)` | **本轮补** |
+| `z` (zod) | `src/iframe/predefine.js:12` `_.pick(window.parent, ['EjsTemplate','TavernHelper','YAML','showdown','toastr','z'])`；版本 = `JS-Slash-Runner/package.json:89` `"zod": "^4.4.3"` | **本轮补** |
+| `$` / `jQuery` | `src/iframe/parent_jquery.js:1-2`（`_1` 那个 blob URL） | 已有（CDN jQuery 3.7.1） |
+| Tailwind / jQuery-UI / Vue / Vue-Router / FontAwesome | `b1()` 的 `${v1}`（`dist/index.js` ~853393） | 已有（§24） |
+| `SillyTavern` / `TavernHelper` / `Mvu` / `toastr` / 事件总线 / `getTavernHelperVersion` | `predefine.js:11-44` + `dist/index.js` 的 `_bind` 表 | 已有（§30） |
+| `waitGlobalInitialized` | `dist/index.js` 的 `_bind` 表里是 `_waitGlobalInitialized`，`predefine.js:14-18` 用 `key.replace('_','')` 去掉前导下划线后 `bind(window)` | **本轮补** |
+| `EjsTemplate` / `YAML` / `showdown` | 同一条 `predefine.js:12` | **故意不补**（见下） |
+
+### 卡侧取证（2026-09-23，从真卡 PNG tEXt `chara`（base64）里的 `data.extensions.tavern_helper.scripts` 逐条 grep）
+| 全局 | 卡里裸引用 | 出处 |
+|---|---|---|
+| `_` | **151 处** | 星辉MVU核心 74 · 状态栏/NPC控制台各 1 · …（§30 记的"110 处"是另一种统计口径） |
+| `z` | **143 处** | 单条脚本「8.2·星辉zod·等级能力一致性与比例数值」，且它 `import { registerMvuSchema }` 却**从不 import `z`** |
+| `waitGlobalInitialized` | 8 处（**探测式**：`typeof … === 'function'` 自带兜底） | 星辉MVU核心 3 · 事件推进器 2 · … |
+| `EjsTemplate` / `YAML` / `showdown` | **0 处** | —— |
+
+### 改了什么
+- **`lib/client.js` · `muvCardLibTags()`**：
+  - **lodash 4.18.1 三段**（经典 `script src`）：`dash-save`（把已存在的 `_` 存进 `__muvDashPrev`）
+    → `lodash@4.18.1/lodash.min.js` → `dash-keep`（当初存过就**还原**，用完即删标记）。
+    ★ 为什么不能只写一个 `<script src>`：lodash 的 UMD 收尾是**无条件** `root._ = lodash`，
+    而需求是"**只在缺失时补**"。三段是纯 HTML 层实现该语义的唯一办法；卡在 `<body>` 里的
+    赋值天然晚于注入点，所以卡的写法照旧赢。
+  - **zod 4.4.3 走 `<script type="module">`**：实测 zod 的 npm 包里**没有 UMD/IIFE 构建**
+    （`dist/zod.umd.js`、`dist/index.umd.js` 全 404），只有 jsdelivr 现打的 `+esm`（328,955 字节）。
+    用 `import * as` + 三形态兜底挂 `window.z`，且**只在缺失时**落位。
+    顺序仍成立：module 天然 defer，而它在 `<head>` 里、卡脚本在 `</body>` 之前。
+  - 两条都**共用 `MUV_CARD_LIBS` 这一个开关**、同一个注入点（`</head>` 之前）、同样钉版本。
+- **`lib/client.js` · `muvCardCompatScript()`**：补 `waitGlobalInitialized`（对已就位的全局
+  **立刻 resolve** —— 我们的 `Mvu` 是同步就位，所以这是语义正确而不是假装；取不到名字时
+  **不 reject**，最多轮询 2 秒后 resolve undefined，卡的 `.then` 不该因我们掉进 catch）。
+- **`MUV_BUILD` → `2026-09-22r`**（卡 iframe 的库注入变了，构建标记必须能区分）。
+- **没动**：变量管线语义、高度逻辑、装饰器守卫、`MUV_CARD_SCRIPTS` 注入逻辑本身。
+
+### 刻意**不补**的三个（写在这里，免得后来人"顺手加上"）
+`EjsTemplate` / `YAML` / `showdown` —— ST 的 `predefine.js:12` 确实注入了它们，但**卡侧实测
+0 处引用**。它们分别是要宿主配合才跑得起来的 EJS 渲染 / yaml 解析 / markdown 渲染；
+给个空壳会让卡以为"渲染成功了"从而写错数据，**比缺一个全局更坏**。真遇到依赖它们的卡再照
+ST 补 —— 补之前先按上面的格式取证（ST 证据 + 卡侧证据，两条腿都要有）。
+
+### 端到端实证（新 `verify-card-lodash-bundle.mjs`，真 bundle）
+把卡里那行 `import 'https://testingcf.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate@master/artifact/bundle.js'`
+真的 import 进真沙箱 iframe，两臂对照：
+- **Q 臂（只摘掉 lodash 三段）**：`window.__muvScriptErrs` = `["（未知脚本） | Uncaught ReferenceError: _ is not defined"]`
+  ⇒ **§30.8 的第一顺位嫌疑被证实**：缺 `_` 就是 bundle 当场炸的直接原因。
+- **P 臂（库齐全）**：`_` 是 function、`z` 可用、`Mvu/TavernHelper/getTavernHelperVersion/waitGlobalInitialized`
+  全在，错误列表里**没有** `_ is not defined`。
+  ★ 如实记录：P 臂仍会留一条 `（未知脚本） | Script error.` —— 那是 CDN 脚本**跨源**、
+  浏览器屏蔽了细节，**不代表失败**；判据盯的是具名 ReferenceError。
+
+### 门禁（全绿，数字）
+| 门禁 | 结果 |
+|---|---|
+| `verify-card-libs.mjs`（**扩到四臂**） | **37 / 0** |
+| `verify-card-lodash-bundle.mjs`（新，真 bundle 端到端） | **11 / 0** |
+| `verify-tavernhelper-scripts.mjs` | **35 / 0** |
+| `test-client-render.mjs` | **308 / 0**（[20] 段扩到 8 个库 + 三段顺序 + 两个对照臂；[16] 段加垫片清单） |
+| `test-era-vars.mjs` | 全部通过（真聊天文件不在 ⇒ SKIP） |
+| `verify-card-compat.mjs --old-export` | after **46 / 0** · before 红 **37**（对照成立 ⇒ 绿灯） |
+
+`verify-card-libs.mjs` 的四臂是这轮新增的对照设计：**A** 全量 / **B** 完全不注入 /
+**C** 注入全部但**只摘掉 lodash 三段** / **D** 注入全部但**只摘掉 zod 那一标签**。
+没有 C/D 时，A 与 B 之间差着**十个标签**，"`_` 是 lodash 带来的"就证明不了（§24 差点吃过的亏）。
+实测：C 臂 `typeof _ === "undefined"` 而 zod 全在；D 臂 `z.object` 不可用而 `_` 在。
+另：失败时会**再做一次 node 侧直连**把「网络不可达」与「注入缺失」分开报。
+
+两条被这轮门禁抓出来的**判据缺陷**（都已修，写下来备忘）：
+- `extractFunction` 的提取物**包含函数体内的 `//` 注释** ⇒ 拿源码断言"不含反引号"会把注释里的
+  `` `_` `` 判成违规。现在：`</script>` 看**源码**（不许有字面量），反引号看**运行时产物**。
+- 自己写的正则 `^<script data-muv-libs="lodash" src="` 配 `tags.slice(iDash)` 永远不匹配
+  （`iDash` 落在属性名处、不在 `<script` 处）—— 判据要盯"那个 URL 是外链而不是内联"。
+
+### 只能真机验的部分（重要）
+1. **`lib/client.js` 改动硬刷新即可生效**（不需要重启 DSH 服务端 —— 本轮没动服务端路由）。
+2. 硬刷新后看三件事：
+   - 控制台 `[muv-engine] client loaded 2026-09-22r`（构建标记对不对）；
+   - 封面下面那条**棕色 HUD** 出没出；
+   - 有没有 `[muv-engine] 卡脚本报错：…`，或进卡 iframe 读 `window.__muvScriptErrs`。
+3. **HUD 仍不出时**按 `docs/04-排错手册.md` §L 的顺序排：先确认标记 ≥ `2026-09-22r`，
+   再看 `__muvScriptErrs` 里有没有具名 ReferenceError（`Script error.` 那条**不算**），
+   然后才是"框架启用开关"那条已知缺口。
+4. 真机上**没验过**的：zod 的 `+esm` 在本机网络下的加载耗时（328 KB，module 会推迟卡脚本的
+   **开始**但不会让谁失败）；以及 bundle `_.set(window.parent,'Mvu',…)` 的跨源抛错是否被它自己的
+   `Promise.allSettled` 兜住。
+
 ## 未发布（2026-09-23 · 三十）★★ 卡脚本运行时：把角色卡的 TavernHelper 脚本真的跑起来 · `2026-09-22q`
 
 ### 为什么（用户实测缺口）

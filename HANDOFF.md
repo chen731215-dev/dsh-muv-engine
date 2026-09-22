@@ -1593,6 +1593,41 @@ if (!muvHasTag && !muvShortOk) return text
   （findRegex 是否也认占位符全文）**没验过** —— 若它认的是别的形态，放行已由守卫保证，
   命中与否取决于卡自己的 findRegex。
 
+### 27.7 用户消息桥的发送通道矩阵（send-bridge，2026-09-22o）
+
+**背景**：卡里 `sendUserMessage(msg)` → postMessage → 宿主 `muvDeliverUserText(text,'send')` 代发。
+用户实测「卡里提交后 DSH 没生成下文」。桥路其余段（垫片、postMessage、textarea 查找、原生 setter 填值）
+已验证畅通，失效集中在**最后一步「合成事件能否真触发 DSH 发送」**。
+
+**取证结论（只读 DSH 本体 `@deepseek-ai/dsh` v0.1.5-rc.2 的 web-frontend bundle）**：
+- DSH 聊天界面是 **React 应用**；发送绑定在「发送按钮」（`IconSendOutline` 图标，onClick 与
+  onKeyDown Enter/Space → 发送回调）与「输入框 onKeyDown(Enter)」两处。
+- 全链路**无 `e.isTrusted` 校验**（bundle 里 `isTrusted:0` 是 React SyntheticEvent 默认字段，不是守卫）
+  ⇒ 合成事件可被接受。
+- **无 window 级可编程发送入口**（仅 `window.__ModuleLoader__` 内部加载器）→ 「直接调全局函数」通道不可用。
+- React `getEventKey` 把 `keyCode 13 → "Enter"`；合成 `KeyboardEvent` 的 `keyCode/which` 取构造参数。
+  旧实现只带 `key:'Enter'`（keyCode/which=0）⇒ 处理器若读 keyCode/which 则静默落空 —— **头号嫌疑**。
+
+**发送通道矩阵（按优先级，逐级降级，见 `lib/client.js` 的 `muvUserSendFire`）**：
+
+| 优先级 | 通道 | 触发条件 | 备注 |
+|---|---|---|---|
+| ① | **真实 `click()` 发送按钮** | 从输入框向上爬父链（≤6 层）收集 `button`：优先 aria-label/title/textContent 含 `发送/Send/submit` 者；否则取末位可见且未禁用 button | 直接调发送回调，不吃事件形态，**最稳**；日志显示命中了哪个 button |
+| ② | **完整键盘序列** | 输入框派 `keydown+keypress+keyup`，`key:'Enter'`+`code:'Enter'`+`keyCode:13`+`which:13`（keyCode/which 用 `Object.defineProperty` getter 兜底） | 覆盖读 keyCode/which 的处理器；无按钮场景的兜底 |
+| —— | **绝不清空输入框** | 两通道都试过后仍不清除 `textarea.value` | 宁可字留在框里让用户手动按一下，也不能吞字（旧实现失败即不可见） |
+
+- **填值路径**（原生 setter + input 事件 + focus）已验证工作，**不动**。
+- 每通道 `console.info('[muv-engine] 用户消息桥：…')` 留痕，回报时看日志哪个通道命中。
+- `MUV_BUILD` → `2026-09-22o`。
+
+**门禁**：`verify-user-send.mjs`（真 Edge + 真 DOM + 逐字提取的 `muvDeliverUserText`/`muvUserSendFire`；
+假 DSH 输入框+发送按钮+iframe 调 `sendUserMessage`；场景①有按钮命中通道①、场景②无按钮命中通道②）
+全绿 6/0；`--break=send-channel` **真变红对照臂**（砍发送通道后 B/D 断言必红、exit≠0）。
+`test-client-render.mjs` [16] 断言改为多通道矩阵（275/0）。
+
+**只能真机验的部分**：DSH 真实发送按钮的 aria-label 中/英文与图标类名需真机确认（多通道已兼容）；
+合成 Enter 在真机是否稳定触发「生成下文」取决于 DSH 是否已将输入框标成受控就绪（60ms 延时即为此留）。
+
 ## 28. 第 28 轮：全局正则扩展库 —— ST 全局脚本层补齐（2026-09-22 晚）· `2026-09-22n`
 
 ### 28.1 背景与来源形态

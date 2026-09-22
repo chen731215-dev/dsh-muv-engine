@@ -1,5 +1,46 @@
 # Changelog
 
+## 未发布（2026-09-22 · 十七）★★ 用户消息桥 send 通道加固：多通道 + 真变红门禁 · `2026-09-22o`
+
+### 为什么
+卡里（如「足控天堂2」）`#playerInput`/`#castBtn` 走 `sendUserMessage(msg)` → postMessage → 宿主
+`muvDeliverUserText(text,'send')` 代发。旧实现 send 段只派一个 `keydown{key:'Enter'}`（keyCode/which=0）。
+**用户实测：卡里提交后 DSH 没生成下文**。引擎层桥路已验证畅通（垫片在、postMessage 在、textarea 能找到），
+嫌疑集中在最后一步「合成 Enter 能否真触发 DSH 发送」。
+
+### 取证（只读 DSH 本体 `@deepseek-ai/dsh` v0.1.5-rc.2 的 web-frontend bundle）
+- DSH 聊天界面是 **React 应用**；发送绑定在「发送按钮」（`IconSendOutline` 图标，onClick / onKeyDown
+  Enter·Space → 发送）与「输入框 onKeyDown(Enter)」两处。
+- 全链路**无 `e.isTrusted` 校验**（bundle 里 `isTrusted:0` 是 React SyntheticEvent 默认字段，非守卫）
+  ⇒ 合成事件可被接受。
+- **无 window 级可编程发送入口**（仅 `window.__ModuleLoader__` 内部加载器）。
+- React 的 `getEventKey` 把 `keyCode 13 → "Enter"`；若处理器读 `keyCode`/`which`（常见），只带
+  `key:'Enter'` 的合成事件静默落空 —— 这是旧实现失效的头号嫌疑。
+
+### 加固（`lib/client.js` · `muvDeliverUserText` + 新增 `muvUserSendFire`）
+- **通道①** 真实 `click()` 发送按钮：从输入框向上爬父链（≤6 层）收集 button，优先带 `发送/Send/submit`
+  字样者，否则末位可见且未禁用 button；命中即 `click()` 直接调其发送回调（不吃事件形态，最稳）。
+- **通道②** 完整键盘序列 `keydown+keypress+keyup`，`keyCode:13 / which:13 / code:'Enter' / key:'Enter'`
+  全带上（keyCode/which 用 `Object.defineProperty` getter 兜底），覆盖读 keyCode 的处理器。
+- 每通道 `console.info('[muv-engine] 用户消息桥：…')` 留痕；**绝不清空输入框**（宁可字留在框里让用户手动按）。
+- 填值路径（原生 setter + input 事件 + focus）保持不变（已验证工作）。
+- `MUV_BUILD` → `2026-09-22o`。
+
+### 门禁（全绿）
+- 新 `verify-user-send.mjs` **6/0**：真 Edge + 真 DOM + 从 client.js 逐字提取的 `muvDeliverUserText`
+  /`muvUserSendFire`；假 DSH 输入框（`data-muv-macro-hooked`）+ 发送按钮 + iframe 调 `sendUserMessage`；
+  场景①有按钮命中通道①、场景②无按钮命中通道②；含 `--break=send-channel` **真变红对照臂**（砍掉发送通道后
+  B/D 断言必红、exit≠0）。
+- `test-client-render.mjs` [16] 断言改为「多通道矩阵」（含 `muvUserSendFire` + `.click()` + `keyCode:13`，
+  且断言不清空输入框）→ 275/0。
+- `test-era-vars.mjs` 全通过 · `verify-guard-tag-agnostic.mjs` 78/0 · `test-global-regex.mjs` 50/0。
+
+### 只能真机验的部分
+- DSH 真实聊天框的发送按钮选择器形态（aria-label 是中文「发送」还是英文「Send」、图标类名）需真机确认；
+  多通道设计对两种都兼容，但通道①日志会显示命中了哪个 button。
+- 合成 Enter 在**真机 DSH**是否稳定触发「生成下文」，取决于 DSH 当时是否把输入框标成受控组件已就绪
+  （60ms 延时即为此留）；极端情况仍可能需用户手动按一下（字已填好、未吞）。
+
 ## 未发布（2026-09-22 · 十六）★★ 全局正则扩展库：ST 全局脚本层补齐 · `2026-09-22n`
 
 ### 为什么

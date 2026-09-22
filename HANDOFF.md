@@ -1721,6 +1721,86 @@ apply-regex-card API 层合并（含 statusBarHtml 卡级来源不变）。
 - 全局脚本与真卡的相互作用（全局净化跑在卡级之前会不会吃掉卡正则的锚文本）取决于
   具体的 findRegex 集合，只能用真实卡 + 真实全局脚本实测。
 
+## 29. 第 29 轮：帧高对「媒体延迟加载」塌陷的修复（2026-09-22 深夜）· `2026-09-22p`
+
+### 29.1 症状与三个嫌疑
+
+足控天堂2 的「主页」（大片图片墙 + 2 分钟视频 + 可交互小手机 UI）ST 里完整一大片，
+DSH 里同样的 iframe **被压成细长一条**（用户截图：只显示一条窄图片带）。三个嫌疑：
+上限 12000 不够 / 棘轮只放行扩张不收敛 / 媒体异步加载后高度没跟上。
+
+### 29.2 取证方法与结果（真卡 + 真 Edge + 真 cardHtmlIframe 链路）
+
+1. **真卡时间线**（`.tmp-hfix-forensic.mjs`，CDP 真 OOPIF 会话逐秒读数）：主页卡在
+   300ms 时 `extent()=0`（什么都不报，帧高不动）→ 1063ms 首报 1486 → 2124ms 报 1636
+   （视频 metadata 到位后）→ 稳定 1636。报回 ~10 次、单调上升、宿主每次都采用。
+2. **四档宽度**（640/760/900/1180，真卡 + 真 `cardHtmlIframe` 产物 + 真父页处理器）：
+   全部收敛（窄宽度内容更高：2056 vs 1636），截图目验卡渲染完整。
+3. **RO 判定性实验**（`.tmp-hfix-ro.mjs`）：在 `overflow:hidden!important` 体制下，
+   内容 300→1500→800 变化时 RO(documentElement) 与 RO(body) 都 fire 3 次 ——
+   **RO 对盒子尺寸变化是活的**（与"RO 在 hidden 下死了"的猜测相反）。
+4. **卡的解剖**（`.tmp-hfix-anatomy.mjs`）：2 个 img（**无 width/height 属性**）+ 2 个
+   video，但媒体盒全部被 CSS 预留尺寸（`.polaroid{aspect-ratio:…}` +
+   `img{position:absolute;inset:0}`、`.hero-photo{height:340px}`、`.car-photo{aspect-ratio:1/1}`）；
+   画廊 img 是**卡的 JS 运行时拼装**（`<img loading="lazy" … onload/error 切 display>`）。
+5. 结论：**上限无辜**（实测最大 2056，远未到 12000）；**棘轮扩张方向无辜**（溢出观测到
+   就无条件满足，既有门禁 + 本轮复核）；**单纯"媒体慢"也不足以解释**（本卡媒体盒预留，
+   加载前后包围盒几乎不变）。
+
+### 29.3 确切缺陷（本轮修的）
+
+引导脚本的重测触发器只有：`load` / `DOMContentLoaded` / RO(**documentElement**) /
+700·1600ms / 四次补量（2500+i×2800，**10.9s 止**）。**媒体事件从不触发重测**，而：
+
+- RO 只在**盒子**（边框盒）尺寸变化时 fire。媒体引起的**包围盒**（`extent()` 对绝对定位
+  元素单独取 `rect.top+height`）变化可以完全不改变任何盒子 —— 媒体元素自身
+  `position:absolute` 时，媒体到位只改它自己的盒子，html/body 纹丝不动 ⇒ RO 不 fire，
+  `extent()` 却变大。真卡画廊正是这个形状。
+- 卡 JS 在 load 之后才把 img 插进 DOM（真卡画廊运行时拼装）：10.9s 之后插入的媒体
+  没有任何触发器。
+
+两者叠加「早期测量落在小包围盒 + 晚增长无人上报」⇒ 帧高被锁在小值 = 细长一条。
+（塌陷本身在忠实夹具里未能复现 —— 见 29.5 只能真机验的部分。）
+
+### 29.4 修法（保守小改，只动 `muvFrameBootstrap`）
+
+- img `load`/`error`、video `loadedmetadata`/`loadeddata`/`durationchange` → `s()`
+  （150ms 去抖；**error 也算**——404 的图塌成 0 高，包围盒同样要重量）。
+- 运行时新插入的媒体由 MutationObserver 兜底补挂事件（**只挂事件、不额外测量**）。
+- **铁律核对**：收缩方向滞回（孩子侧 24px×3 次、父侧 8px 死区）、12000 上限、
+  装饰器守卫、变量管线（era/var-tracker）、`MUV_CARD_LIBS` 全部未动。
+- `MUV_BUILD` → `2026-09-22p`。
+
+### 29.5 门禁（全绿，数字）
+
+`verify-frame-height.mjs` 新增第 7 节「媒体延迟加载」，**8 PASS / 0 FAIL**：
+
+- **A 流内臂**：img src 延迟 300ms（子文档侧 setTimeout）→ 报回 824→**1200** 到位。
+- **B 判别臂**：img `position:absolute`（RO 静默）+ src 在 **11.5s**（晚于最后一次补量
+  10.9s+150ms 去抖）→ 1524→**1900**；修复前没有任何触发器能救。
+- **★★★ 变异臂**：把媒体挂接 `mw` 砍成立即返回，B 必须**红**（实测卡在 1524）——
+  判据测的正是媒体重报，不是空气。
+- 其余：`verify-frame-ratchet.mjs` 全部通过 · `test-client-render.mjs` **275/0** ·
+  `verify-decorate-dom.mjs` 全部通过 · `test-era-vars.mjs` **17 PASS/0** ·
+  `verify-guard-tag-agnostic.mjs` **78/0**。
+
+两个夹具教训（下次照抄）：
+1. **父→子 postMessage 在 300ms 时会丢**（srcdoc 文档尚未就绪）：300ms 臂的 src 恒未
+   设置、恒报 824。媒体场景的延迟触发一律放**子文档自己的 setTimeout**（真时间 CDP 下
+   照常走；§6 的"子文档定时器不走"禁令只针对 `--virtual-time-budget` 通道）。
+2. 探针页对 `/height:\d+px/` 的起始高度替换（§16.3.1 的坑）对卡文档文本依然敏感：
+   夹具里所有高度都用运行时 style 设置，`top:1500px`/`width:600px` 不含该字面量，安全。
+
+### 29.6 只能真机验的部分（如实记录）
+
+- **塌陷本身未能在忠实夹具里复现**：真卡在 file:// 夹具 + 真实链路下收敛正常。
+  本轮修的是与症状机制吻合的**确切缺口**（媒体事件重报缺失），最终效果需重启 DSH +
+  硬刷新后真机目验「主页」是否恢复完整高度（构建号须为 `2026-09-22p`）。
+- 若真机仍细长一条，下一步取证方向是 **DSH 宿主容器对 iframe 的外部约束**：
+  本轮按 §22.1 尝试持签名 Cookie 只读挂 127.0.0.1:3080（`.tmp-hfix-live*.mjs`，
+  secret 全程未打印），**鉴权被拒**（四种 authority/HMAC 变体都 401）——
+  cookie 构造口径与 §22.1 记载有出入，下次先核 DSH 端校验代码再试。
+
 
 
 

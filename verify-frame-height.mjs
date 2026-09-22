@@ -414,5 +414,126 @@ if (R_OLD) {
   }
 }
 
+// ═══════════════ 7. 媒体延迟加载：img/video 到位后高度必须最终跟上（2026-09-22p） ═══════════════
+//
+// 取证（HANDOFF §29）：引导脚本的重测触发器原本只有 load / DOMContentLoaded / RO(documentElement)
+// / 700·1600ms / 四次补量（到 10.9s）。媒体事件从不触发重测，而**包围盒**因媒体到位而起的变化
+// 可以完全不改变任何盒子 —— 真卡 `_足控天堂2`「主页」的画廊就是
+// `.polaroid img{position:absolute;inset:0}` + 父盒 aspect-ratio 预留：绝对定位元素的 rect 变了，
+// html/body 的盒子纹丝不动 ⇒ RO 一次都不 fire；固定补量到 10.9s 就停 ⇒ 那次增长**没有任何通道
+// 上报**，帧高被锁在媒体未到位时的小值上（用户实测「压成细长一条」的机制）。
+//
+// 两个场景（都用真时间 CDP，同第 6 节的教训——虚拟时间下子文档定时器不走）：
+//   A. 「src 延迟 300ms」：常规形态（流内 img），load 后包围盒变大。修复前后都应绿
+//      （700/1600ms 定时器本就会兜住）——它是用户点名的回归用例。
+//   B. 「判别臂」：img 为 **position:absolute**（RO 静默）且 src 在 **11.5s** 才设置
+//      （晚于最后一次补量 10.9s+150ms 去抖）⇒ 修复前没有任何触发器，帧高必须卡住；
+//      修复后只有媒体事件能救。变异臂（砍掉媒体挂接）在 B 上**必红** —— 证明判据测的
+//      正是媒体重报，不是空气。
+//
+// 夹具纪律（同第 6 节）：文档文本里**不能出现 `height:<数字>px`**（起始高度替换用
+// `/height:\d+px/` 改 iframe style，卡内的高度声明会抢走第一个匹配）——所有高度都用运行时
+// style 设置；`top:1500px`/`width:600px` 不含该字面量，安全。
+
+const MEDIA_SVG = 'data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22' +
+  '%20width%3D%22600%22%20height%3D%22400%22%3E%3Crect%20width%3D%22600%22%20height%3D%22400%22' +
+  '%20fill%3D%22%23345%22%2F%3E%3C%2Fsvg%3E'
+
+/**
+ * @param {'inflow'|'absolute'} mode  流内（RO 可见） / 绝对定位（RO 静默，只有媒体事件能救）
+ * @param {number} delayMs  src 的设置时刻
+ */
+const mediaPayload = (mode, delayMs) => ({
+  name: '媒体延迟·' + mode + '@' + delayMs,
+  html: '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+    '<style>html,body{margin:0;padding:0}</style></head><body>' +
+    '<div id="sp">SPACER</div>' +
+    // 绝对定位臂：img 无 src 时是 0×0（extent 跳过），load 后 rect = top(1500)+400
+    (mode === 'absolute'
+      ? '<img id="mi" alt="late" style="position:absolute;left:0;top:1500px;width:600px">'
+      : '<img id="mi" alt="late" style="display:block;width:600px">') +
+    '<scr' + 'ipt>(function(){' +
+    // spacer 高度由运行时设置（文本里不许出现 height:NNNpx）
+    'var sp=document.getElementById("sp");sp.style.height="' + (mode === 'absolute' ? 1500 : 800) + 'px";' +
+    // src 由**子文档自己的定时器**延迟设置。不能走父页 postMessage：300ms 时 srcdoc 文档
+    // 可能还没就绪，消息会丢（实测 300ms 臂 src 从未设置、恒报 824）；11.5s 的判别臂虽能
+    // 收到，但两个臂统一用同一条触发路径才可对照。真时间 CDP 下子文档定时器照常走
+    // （第 6 节的禁令只针对 --virtual-time-budget 通道）。
+    'setTimeout(function(){var i=document.getElementById("mi");if(i&&!i.getAttribute("src"))i.src="' + MEDIA_SVG + '";},' + delayMs + ');' +
+    '})();</scr' + 'ipt></body></html>',
+})
+
+/** 父页驱动器：媒体场景里触发全部在子文档侧（见 mediaPayload），父页无需驱动。 */
+const mediaDrive = () => ''
+
+/** 跑一个媒体场景：起始 900px 单档，轮询到位/超时，返回 {final, reports}。 */
+async function runMediaScenario(R2, tag, payload, delayMs, expectPx) {
+  const start = 900
+  const iframe = R2.cardHtmlIframe(payload.html)
+    .replace(/(style="display:block;width:100%;height:)\d+px/, '$1' + start + 'px')
+    .replace('<iframe', '<iframe data-payload="' + payload.name + '" data-start="' + start + '"')
+  const file = path.join(tmpDir, 'media-' + tag + '.html')
+  fs.writeFileSync(file, '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>' + iframe +
+    '<pre id="out"></pre><script>' + scenParentScript(mediaDrive()) + '</scr' + 'ipt></body></html>', 'utf8')
+  const rt = await openPage(EDGE, { url: 'file:///' + file.replace(/\\/g, '/'), outDir: tmpDir, windowSize: '1200,900' })
+  try {
+    // 轮询到「报回值达到期望量级」或超时（判别臂在修复前永远不会达到，跑满 24s）
+    const t0 = Date.now()
+    let out = {}
+    while (Date.now() - t0 < 24000) {
+      await sleep(700)
+      let j
+      try { j = await evalJson(rt.cdp, 'window.__report ? window.__report() : "{}"', rt.pageSession) } catch (_) { continue }
+      try { out = typeof j === 'string' ? JSON.parse(j) : (j || {}) } catch (_) { out = {} }
+      const rows = Object.values(out)
+      const reached = rows.some((v) => (v.reports || []).some((h) => h >= expectPx))
+      if (reached && Date.now() - t0 > delayMs + 1500) break
+    }
+    if (process.env.MUV_FH_DEBUG) console.log('    [dbg ' + tag + '] keys=' + JSON.stringify(Object.keys(out)) +
+      ' rows=' + JSON.stringify(out))
+    return out
+  } finally { rt.close() }
+}
+
+console.log('\n=== 7. 媒体延迟加载：媒体事件必须把帧高带到位 ===')
+// 第 6 节收尾时已把 tmpDir 清掉（CDP profile 句柄释放），这里重建复用同一个目录
+fs.mkdirSync(tmpDir, { recursive: true })
+const MEDIA_EXPECT_ABS = 1800   // 绝对定位臂：1500(spacer) + 400(img) ，留死区余量
+const MEDIA_EXPECT_INFLOW = 1100 // 流内臂：800(spacer) + 400(img)
+const mediaCur = {}
+mediaCur['A-inflow'] = await runMediaScenario(R, 'inflow', mediaPayload('inflow', 300), 300, MEDIA_EXPECT_INFLOW)
+mediaCur['B-absolute'] = await runMediaScenario(R, 'absolute', mediaPayload('absolute', 11500), 11500, MEDIA_EXPECT_ABS)
+// 变异臂：砍掉媒体挂接（mw 改成立即返回）——判别臂必须因此变红，否则这条判据在测空气
+const MW_FROM = 'function mw(el){try{'
+const MW_TO = 'function mw(el){try{throw 0;'
+let mediaMut = {}
+if (clientSource().indexOf(MW_FROM) >= 0) {
+  const mutSrc = clientSource().replace(MW_FROM, () => MW_TO)   // 函数式替换（§18/§21 铁律）
+  const R_MUT2 = loadClientRenderersFrom(mutSrc, undefined, PROBE_WIN)
+  mediaMut['B-absolute'] = await runMediaScenario(R_MUT2, 'mut-absolute', mediaPayload('absolute', 11500), 11500, MEDIA_EXPECT_ABS)
+} else {
+  console.log('  SKIP 找不到媒体挂接变异点 ' + JSON.stringify(MW_FROM) + ' —— 引导脚本换写法了，这条要跟着改')
+}
+const mediaRow = (obj, key) => {
+  const rows = Object.entries(obj).filter(([k]) => k.indexOf(key + '@') === 0).map(([, v]) => v)
+  return rows[0] || { final: NaN, reports: [] }
+}
+{
+  const a = mediaRow(mediaCur['A-inflow'], '媒体延迟·inflow@300')
+  check('「媒体·流内 img src 延迟 300ms」最终高度到位（≥' + MEDIA_EXPECT_INFLOW + '）',
+    a.final >= MEDIA_EXPECT_INFLOW, 'final=' + a.final + '  序列=' + JSON.stringify(a.reports.slice(-4)))
+  const b = mediaRow(mediaCur['B-absolute'], '媒体延迟·absolute@11500')
+  check('★「媒体·绝对定位 img src 在 11.5s（晚于全部补量）」最终高度到位（≥' + MEDIA_EXPECT_ABS + '）——媒体事件重报',
+    b.final >= MEDIA_EXPECT_ABS, 'final=' + b.final + '  序列=' + JSON.stringify(b.reports.slice(-6)))
+  if (Object.keys(mediaMut).length) {
+    const m = mediaRow(mediaMut['B-absolute'], '媒体延迟·absolute@11500')
+    check('★★★ 变异臂（媒体挂接被砍）判别臂必须变红 —— 判据能红的实证',
+      m.final < MEDIA_EXPECT_ABS,
+      '变异体 final=' + m.final + '（≥' + MEDIA_EXPECT_ABS + ' 说明救它的不是媒体事件，判据在测空气）')
+  }
+}
+
+try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch (_) {}
+
 console.log('\n=== 结果: ' + (fail ? fail + ' 项失败' : '全部通过') + ' ===')
 process.exit(fail ? 1 : 0)

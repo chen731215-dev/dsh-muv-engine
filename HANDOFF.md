@@ -1801,6 +1801,160 @@ DSH 里同样的 iframe **被压成细长一条**（用户截图：只显示一�
   secret 全程未打印），**鉴权被拒**（四种 authority/HMAC 变体都 401）——
   cookie 构造口径与 §22.1 记载有出入，下次先核 DSH 端校验代码再试。
 
+## 30. 第 30 轮：卡脚本运行时（TavernHelper / 酒馆助手脚本真正执行）· `2026-09-22q`
+
+### 30.1 症状 → 真因（用户实测）
+
+魔女卡（魔法少女MVU测试）的契约书封面已经在 DSH 渲染出来，但 ST 里封面下面那条
+**棕色状态栏（MVU 的 Status Hud）** 没有。
+
+证据链（都是实测，不是推测）：
+
+1. 卡里那两条消费 `<StatusPlaceHolderImpl/>` 的正则 —— `③ 隐藏状态栏占位符 · 显示` 与
+   `④ 隐藏状态栏占位符 · 提示词` —— **`replaceString` 长度为 0**：它们只负责把占位符**删掉**，
+   不产出任何界面。所以 HUD **不是正则产物**。
+2. 卡的 `data.extensions.tavern_helper.scripts[0]` 内容是一行
+   `import 'https://testingcf.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate@master/artifact/bundle.js'`
+   （该源实测 200，573,299 字节）。ST 里「酒馆助手」会执行卡里 enabled 的脚本 ⇒ bundle 起来
+   ⇒ 由它订阅 `mag_variable_update_ended` 并在运行时画 HUD。
+3. 我们此前**一条卡脚本都不执行** ⇒ bundle 不跑 ⇒ HUD 恒空。
+
+这是与"沙箱 / 正则 / 替换串"那几类**并列**的独立原因，排查时要先分清。
+
+### 30.2 卡脚本的来源结构（2026-09-23 从 PNG tEXt 'chara' 取证）
+
+**字段路径**：`<卡 JSON>.data.extensions.tavern_helper.scripts[]`
+（老式扁平卡退到顶层 `extensions`；`tavern_helper` 旁边还有一个 `variables` 键，与脚本无关）
+
+**元素形状**：`{type:'script', enabled:boolean, name, id, content, info, button, data, export_with}`
+
+| 卡 | 条数 | enabled | 形态 |
+|---|---|---|---|
+| 魔法少女MVU测试 | 8 | **6**（0/1/2/4/6/7；3、5 被关） | 混合：①97 字符纯 import ②`import {registerMvuSchema}` + 逻辑 ③~⑥85–186 KB 的 IIFE |
+| _足控天堂2 | 3 | **3** | 清一色**单行** `import 'https://…'`（含 148 KB 的 ERA 变量框架 1.4.11） |
+
+★ 被关掉的两条都是「**同一脚本的另一版**」，但**名字不可靠**：下标 3 与 2 的名字**逐字相同**
+（都是「8.2·星辉MVU核心·等级能力一致性与比例数值」），下标 5 与 4 只差「无立绘 / 有立绘」
+一个字。所以判据只能看**内容里的独有记号**，不能看名字 —— 门禁里就是按
+`HIDE_INLINE_IMG = true` / `= false` 分的。
+
+复跑取证：
+
+```
+node -e "import('dsh-muv-table/lib/png-card.js').then(m=>{
+  const c=m.readPngCard('C:/MySpecialFolder/SillyTavern/data/default-user/characters/魔法少女MVU测试.png');
+  console.log(c.data.extensions.tavern_helper.scripts.map(s=>[s.name,s.enabled,s.content.length]))})"
+```
+
+### 30.3 实现（三处）
+
+| 项 | 值 |
+|---|---|
+| 开关 | **`var MUV_CARD_SCRIPTS = true`**（`lib/client.js`，默认**开**） |
+| 读取口 | `muvCardScriptsOn()` / `muvCardScriptsNow()`（做成函数的理由同 `muvCardLibsOn`：门禁是逐字提取执行的，闭包变量不在提取物里） |
+| 数据源 | 新 **`GET /api/muv-engine/card-scripts?cardName=…&presetDir=…`** ← 新模块 `lib/card-scripts.js` |
+| 注入器 | `muvCardScriptTags()`（串） + `withCardScripts()`（落点） |
+| 落点 | **最后一个不在 `<script>` 里的 `</body>` 之前** |
+| 链上位置 | `muvInjectDoc` 的**最外层**（compat → reset → libs → 高度引导 → **卡脚本**） |
+| 生效范围 | **只** `muvInjectDoc` 这一条链（= 卡 iframe；DSH 自己的 iframe 不经过） |
+
+★ 为什么要有一个服务端源：`/api/muv-table/tavern-card` 只回变量/zod/initvar 那一层，
+**不含**脚本；本轮只准改 `dsh-muv-engine`，所以按同一套口径自己定位卡文件：
+`<预设>/muv-tables/card.json` → 预设内 PNG → 外部卡库（`DSH_MUV_CARD_DIRS` + ST 的
+`data/<user>/characters` + `~/Downloads` + `~/Desktop`）。
+与 muv-table 唯一的差别（有意）：外部目录先按**文件名**预判，不中时再按内容限量读 20 张 ——
+避免每次渲染都把下载目录里几十 MB 的 PNG 逐个读完。
+
+★ 为什么用 `<script type="module">`：卡里普遍是 ESM（`import '…'`），而 **module 天然 defer**
+⇒ 不管落在文档的哪个位置，执行都排在所有经典脚本（compat 垫片 / reset / 前端库 / 高度引导）
+**之后**。这是"垫片之后"这条要求的**结构性**满足，不依赖注入点顺序。
+每条独立一个标签 ⇒ 一条 import 挂掉只死那一条。
+
+### 30.4 错误留痕（module 的失败是抓不到的）
+
+`import 'https://…'` 挂掉时：没有 try 能接到、不会冒泡到宿主的 `window.onerror`、只会
+在不透明来源的 srcdoc 里自己炸一声 —— 用户看到的永远只是"界面缺一块"。所以注入了一段
+**捕获阶段**的 `window.addEventListener('error', h, true)`（元素上那个 error **不冒泡**，
+只在捕获阶段收得到）：
+
+- `e.target` 是那个 `<script>` ⇒ 从 `data-muv-th` 读回脚本名；
+- `e` 是 ErrorEvent（运行时报错）⇒ 名字只能报「（未知脚本）」（about:srcdoc 下所有 module
+  共用一个 filename），但 message 有；
+- **`unhandledrejection`**（`e.reason`）⇒ 报「（promise 未处理）」。★ 这一条不能省：
+  module 的**顶层 await 被拒**不走 `error` 事件（MVU bundle 入口第一行就是
+  `await checkVersion(...)`）—— 少了它，"整个框架没起来"完全无声。三个入口共用同一个
+  计数器（合计上限 20 条）。
+
+除 `console.warn('[muv-engine] 卡脚本报错：' + name, msg)` 外，还攒进 **`window.__muvScriptErrs`**
+（≤20 条）—— 控制台要开 devtools 才看得到，这个数组能被门禁（CDP 求值）与真机排障直接读。
+
+### 30.5 安全口径（写清，别让它看起来像任意代码执行）
+
+1. 执行的脚本来自**用户自己导入的卡**，与 ST 同一信任级别（ST 也是无条件执行卡脚本）；
+2. iframe 沙箱**仍是 `allow-scripts`**（没有 allow-same-origin，见 §9 事故）：摸不到 DSH 页面
+   DOM、`localStorage` 是垫片给的内存实现、打 `/api/*` 也不带宿主凭据；
+3. 内容里带 script 收尾标记（含 JS 字符串里写的那份）的条目**一律跳过** —— 内联会当场截断
+   srcdoc（与 §18 的 `$'`、§21 的 `$&` 同类）。跳过时 `console.warn` 报名字；
+4. 条数（20）与单条体积（2 MB）在服务端封顶；查询参数（`cardName` / `presetDir`）先消毒，
+   不许带路径分隔符与 `..`。
+
+### 30.6 与垫片 API 的关系（本轮核定的事件桥）
+
+- **宿主 → 卡**：`era:queryResult` / `era:writeDone` / `mag_variable_update_ended` 早就有了
+  （`muvEraPushNow`、`muvMvuReply`、`muvEraDeliver`），MVU 的刷新钩子挂的就是这些 —— **无需新增**。
+- **卡 → 宿主**（`__muvEventOut`）：只认 ≤64 字符的名字，`muvEraAnswer` 对**非 ERA 名字直接
+  return**（不回值）。这不是"丢弃"：卡内 `emit()` 已经先 `fire()` 派发过，**卡内监听者照旧收到**，
+  父页只是不作答（父页也不知道该答什么）。MVU 上无害。
+- 补的两处**真实**缺口：
+  1. `Mvu.events` 的名字改成 MVU 真 bundle 的常量表 —— 原先 `BEFORE_MESSAGE_UPDATE` 是
+     `mag_variable_update_before`，一个**谁都不会发射**的值（真名 `mag_before_message_update`），
+     且缺 `VARIABLE_UPDATE_STARTED` / `COMMAND_PARSED` / `SINGLE_VARIABLE_UPDATED`。
+  2. 新增 `getTavernHelperVersion()`（`→ '3.4.17'`）与 `toastr`（控制台版）。
+     ★ `getTavernHelperVersion` 是**关键**：MVU bundle 入口第一行就是
+     `await checkVersion('3.4.17', …)`，而这个函数在 bundle 里**没有定义**（属于酒馆助手）⇒
+     缺了就 `ReferenceError` ⇒ 那个顶层 await 所在的 async IIFE 当场拒 ⇒ **后面一行都跑不到**。
+     返回 3.4.17 而不是我们 `TH.version` 的 3.0.0：低了只会弹一条"请升级酒馆助手"的报错，
+     而 DSH 里没有可升级的酒馆助手 —— 那是**误导**。真实覆盖范围写在 §25 与本文件里。
+
+### 30.7 门禁（全绿，数字）
+
+| 门禁 | 结果 |
+|---|---|
+| `verify-tavernhelper-scripts.mjs`（新） | **35 通过 / 0 失败** |
+| `test-client-render.mjs` | **293 / 0**（新增 [23] 段：注入形态 / 开关 / 留痕三入口） |
+| `verify-guard-tag-agnostic.mjs` | **78 / 0** |
+| `test-era-vars.mjs` | 全部通过（真聊天文件不在 ⇒ SKIP） |
+| `verify-card-compat.mjs --old-export` | after **46/0** · before 红 37（对照成立 ⇒ 绿灯） |
+| `verify-frame-height.mjs` | 全部通过 |
+
+`verify-tavernhelper-scripts.mjs` 的三节（都带对照臂，判据不是空转）：
+
+- **[1] 服务端读真卡**：魔女 8 条里只出 6 条；同名的旧版那张按 `enabled` 被剔除（不是按条数
+  截断）；足控天堂2 的三条全是单行 import；`enabled=false` 单元两档。
+- **[2] 注入串**：一条一个 `<script type="module">`、顺序 = 卡里数组顺序、`import` 的绝对 URL
+  原样保留、幂等、开关关掉与空清单都**逐字不动**、内容带收尾标记的条目被跳过但仍注入其余。
+- **[3] 真浏览器三臂**（真 `allow-scripts` srcdoc + 真 OOPIF）：
+  A 注入 ⇒ `window.__probeA === 1`、坏掉那条 `__probeB` 为 undefined（**一条挂了不拖垮其他**）、
+  `__muvScriptErrs` 里有一条且**说到脚本名**；B 不注入、C 开关关 ⇒ `__probeA` 恒为 undefined。
+
+### 30.8 只能真机验的部分（如实记录）
+
+1. **新路由要重启 DSH**（`lib/index.js` 引了新模块 + 注册新路由，Node 模块缓存）。
+2. 重启 + 硬刷新后看三件事：
+   - 控制台 `[muv] 卡脚本「魔法少女MVU测试」：注入 6 条 / 卡里共 8 条（来源 library · 魔法少女MVU测试.png）`；
+   - 封面下面那条棕色 HUD 出没出；
+   - 有没有 `[muv-engine] 卡脚本报错：…`（或进卡 iframe 读 `window.__muvScriptErrs`）。
+3. **HUD 仍不出时最可能的原因（下一轮第一顺位）**：卡脚本普遍用全局 **`_` (lodash)**
+   —— 星辉 MVU 核心 110 处、有立绘状态栏 26 处、NPC 控制台 23 处。ST 由 `predefine.js` 的
+   `window._ = window.parent._` 提供，我们的**不透明来源拿不到父页对象**。本轮按
+   「不许动 `MUV_CARD_LIBS` 行为」的硬约束没有往库注入里加 lodash —— 保守选择，如实记录。
+4. 另外两条已知缺口（不伪造，留给后面）：
+   - MVU 框架本体的 `should_enable` 来自酒馆助手的**脚本启用态**
+     （`getScriptId()` / `listenPreferenceState()`），我们没有等价物；伪造它等于凭空打开一个
+     我们接不住的更新管线，所以**没有做**。卡脚本自己画的那些 UI 不受此限。
+   - bundle 会 `_.set(window.parent, 'Mvu', …)` —— 跨源写父页属性在 strict 模式下会抛；
+     这条要靠真机观察它是否被上层 `Promise.allSettled` 兜住。
+
 
 
 

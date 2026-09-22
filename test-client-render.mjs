@@ -1186,5 +1186,67 @@ console.log('\n[22] 守卫短文本放行：占位符 greeting')
     decideOld('【主页】') === false && decideOld('星盟契约开场白') === false)
 }
 
+// ── 23. 卡脚本运行时（TavernHelper / 酒馆助手脚本注入）─────────────────────
+//
+// ST 里这类脚本由「酒馆助手」插件执行；MVU 的状态栏 HUD、各类运行时浮窗 UI 都是它们
+// 画的 —— 真卡实测：`魔法少女MVU测试` 那两条消费 `<StatusPlaceHolderImpl/>` 的正则
+// replaceString 是**空串**，HUD 全靠 `data.extensions.tavern_helper.scripts[0]` 那行
+// `import '…/MagVarUpdate@master/artifact/bundle.js'` 拉起来。我们不执行 ⇒ bundle 不跑
+// ⇒ HUD 恒空（用户实测缺口）。真浏览器那一半断言在 `verify-tavernhelper-scripts.mjs`。
+console.log('\n[23] 卡脚本运行时：注入形态与开关')
+{
+  const literal = (/(?:^|\n)\s*var MUV_CARD_SCRIPTS\s*=\s*(true|false)\s*$/m.exec(SRC) || [])[1]
+  check('★ 存在显式开关 MUV_CARD_SCRIPTS', !!literal, String(literal))
+  check('★ 默认开启（ST 酒馆助手会执行卡脚本；关掉 = 状态栏/HUD 类功能全失效）',
+    literal === 'true', String(literal))
+
+  const tagSrc = extractFunction(SRC, 'muvCardScriptTags')
+  // 报错收集器是**另一段**函数（它跟脚本串一起注入，但不参与拼标签）
+  const probeSrc = extractFunction(SRC, 'muvCardScriptErrProbe')
+  check('★ 注入器与收集器源码都不含反引号（与 muvFrameBootstrap 同一约束）',
+    !tagSrc.includes('`') && !probeSrc.includes('`'), tagSrc.slice(0, 60))
+  check('★ 注入器与收集器源码都不含裸的 script 收尾标记（否则会截断宿主的 script 标签）',
+    !/<\/script>/.test(tagSrc) && !/<\/script>/.test(probeSrc), tagSrc.slice(0, 60))
+  check('★ 用 `<script type="module">`（卡里普遍是 ESM；module 天然 defer ⇒ 跑在垫片之后）',
+    tagSrc.includes('type="module"'))
+  check('★ 每条脚本单独一个标签（一条 import 挂掉不拖垮其他）',
+    /out \+= '<script type="module"/.test(tagSrc))
+  check('★ 错误留痕：在捕获阶段监听 error（元素上那个不冒泡的加载失败才收得到）',
+    probeSrc.includes('addEventListener("error",h,true)'))
+  check('★ 留痕也收 unhandledrejection（module 顶层 await 被拒**不走**上面那条 error）',
+    probeSrc.includes('unhandledrejection'))
+  check('★ 留痕进 `__muvScriptErrs`（除控制台外还能被门禁/排障读出来）',
+    probeSrc.includes('__muvScriptErrs'))
+  check('★ 留痕上限 20 条（循环报错的卡不许把控制台刷爆）', /n>=20/.test(probeSrc))
+  check('★ 内容带脚本收尾标记的条目跳过（内联会截断 srcdoc）', /<\\\/script\/i\.test\(c\)/.test(tagSrc))
+
+  const withCardScriptsOn = buildFrom(['withCardScripts'], { MUV_CARD_SCRIPTS: true }, 'withCardScripts')
+  const withCardScriptsOff = buildFrom(['withCardScripts'], { MUV_CARD_SCRIPTS: false }, 'withCardScripts')
+  const listAll = [
+    { name: '甲·写变量', content: "window.__probeA = 1;" },
+    { name: '乙·纯 import', content: "import 'https://example.invalid/x.js';" }
+  ]
+  const docAll = '<!DOCTYPE html>\n<html>\n<head><title>t</title></head>\n<body><p>hi</p></body>\n</html>'
+  const outAll = withCardScriptsOn(docAll, listAll)
+  check('★★ 开关关闭 ⇒ 逐字不动（一个字符都不加）', withCardScriptsOff(docAll, listAll) === docAll)
+  check('★★ 空清单 ⇒ 逐字不动', withCardScriptsOn(docAll, []) === docAll)
+  check('★★ 注入了个 `<script type="module">`，每条一个',
+    (outAll.match(/<script type="module"/g) || []).length === 2,
+    String((outAll.match(/<script type="module"/g) || []).length))
+  check('★★ 顺序 = 卡里数组的顺序（甲在乙之前）',
+    outAll.indexOf('__probeA') < outAll.indexOf('example.invalid'))
+  check('★★ 幂等：同一个文档注入两次 ⇒ 第二次逐字不变', withCardScriptsOn(outAll, listAll) === outAll)
+  check('★ 内容带脚本收尾标记的条目跳过，其余照常注入',
+    withCardScriptsOn(docAll, [
+      { name: '坏', content: 'var s = "' + String.fromCharCode(60) + '/script>";' },
+      { name: '好', content: 'window.__probeOk = 1;' }
+    ]).indexOf('__probeOk') > -1)
+  // 依赖必须能自动发现到脚本读取口：cardHtmlIframe 被逐字提取执行时会引用它
+  // （提取器不认闭包变量，所以那一层写成了 `muvCardScriptsNow()` 这种读取函数）。
+  const chain = buildFrom(['cardHtmlIframe'], { MUV_CARD_SCRIPTS: true }, 'cardHtmlIframe')
+  check('★★ 提取 cardHtmlIframe 时依赖链能自足（含新增的脚本读取口）',
+    typeof chain === 'function', String(typeof chain))
+}
+
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)
 process.exit(fail ? 1 : 0)

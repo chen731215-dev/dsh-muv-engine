@@ -1,5 +1,30 @@
 # Changelog
 
+## 未发布（2026-09-22 · 十四）★★ 按楼快照/时间旅行 + ★★ git 对象库事故与恢复（`41c21d8`）
+
+### 按楼快照（时间旅行的数据底座）
+- `var-tracker.js`：`applyVariableMessage` 在**带键消息应用后**取样 —— `recordSnapshot` 存完整变量树
+  （每会话 **200** 条上限，按键内毫秒时间戳 `era_mk_<epochms>_<rand>` 淘汰最旧；单条超 **200KB** 只存占位
+  `{key, at, data:null}`，复用单消息口径）。树经 JSON 往返成**独立副本**，杜绝与账本/状态树别名共享。
+- `stateAsOfEpoch` **定向重放**：快照取"键序 ≤ 该楼"的树 —— 乱序晚到的消息不会把"未来"数值掺进旧楼快照
+  （比"到达即取样"更精确；unkeyed op 无楼层归属，不参与楼层快照）。
+- `GET /api/muv-engine/state` 扩两个口径（**无参形状不变**）：
+  - `?snapshots=1` → `{ ok, snapshots:[{key, at, data|null}] }`（按取样时间正序）；
+  - `?messageKey=era_mk_…` → 与普通 GET 完全同形状（`state.data`=该楼树），键不存在 → 404 `{ok:false, error:'snapshot-not-found'}`。
+- ⚠ 快照是**会话级内存态**：随会话 LRU 淘汰、重启即失（与状态容器同一命运，未引入新存储）。
+- 测试：`test-snapshots.mjs` **28 项全过**；门禁 era-vars / client-render / regex-engine / era-bridge(after) /
+  no-redouble / audio-fallback 全绿；`verify-card-compat` 偶发失败经 3 次重跑 + HEAD 对照确认与本次改动无关
+  （失败数 1/0/3 波动，全落在 iframe 垫片域，时序敏感）。
+
+### ⚠ git 对象库事故与恢复
+- 9-22 晚 `git stash` 被环境 SIGTERM 打断，`.git/objects` 几乎全灭（剩 1 个 blob + 无 `.pack` 本体的 idx），
+  `refs/` 整个目录消失 —— v0.3.9 之后的所有提交对象（`26d87c0` 卡库注入、`f3dadd0` 源码块隐藏、
+  `2d3d82a` 变量内核、`167d55e` 文档等）**不可找回**。
+- 从 `muv-release3` 发布副本（9-20 11:15，v0.3.9）恢复对象库与历史；其上以一个提交
+  （`41c21d8`）收编 9-20~9-22 的全部工作区成果 —— **代码零丢失**，丢的只是中间提交粒度。
+- 教训：本环境 git 写操作可能被 SIGTERM 打断并连带吞掉 objects/refs；重要提交尽快 push，
+  发版副本（Temp/muv-release*）是最后的救命稻草 —— **不要清 Temp 里的 muv-release\***。
+
 ## 未发布（2026-09-22 · 十三）★★ 变量内核四项打通：命令式 `_.set`/`_.add`、`stat_data` 归一、`TavernHelper`/`Mvu` 垫片、新值回推在线帧
 
 ### 为什么（症状）

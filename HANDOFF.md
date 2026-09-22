@@ -1494,4 +1494,27 @@ before 臂上整组 ⑩ 全红 ⇒ 判据不是空转。
 `MUV_BUILD` → `2026-09-22l`。
 **未动**：`lib/regex-engine.js`、`_decorateOne` 的三条守卫、`<VariableEdit>` 现有解析、另一仓库 `C:\dsh-tavern-v2`。
 
+## 26. 第 26 轮：按楼快照/时间旅行 + git 对象库事故（2026-09-22 晚）· `41c21d8`
+
+### 26.1 按楼快照（时间旅行）
+- `applyVariableMessage` 应用完带键消息后取样：`recordSnapshot`（每会话 200 条、按
+  `era_mk_<epochms>` 淘汰最旧、超 200KB 存 `data:null` 占位、JSON 往返独立副本防别名）。
+- `stateAsOfEpoch` **定向重放**：快照 = "键序 ≤ 该楼"的树，乱序晚到不污染旧楼（unkeyed op 不参与）。
+- `GET /api/muv-engine/state`：`?snapshots=1`（清单，时间正序）/ `?messageKey=`（单楼，形状同普通
+  GET；键不存在 404 `{ok:false,error:'snapshot-not-found'}`）。**无参形状不变**。
+- 快照为**会话级内存态**（LRU 淘汰/重启即失），未引入新存储。
+- 面板侧「⏱ 按楼回看」在 dsh-tavern-v2（`5dadf42`，探测式，回看只读、拒绝写回）。
+- 测试：`test-snapshots.mjs` 28 项；card-compat 偶发失败经 3 次重跑 + HEAD 对照归因为环境时序，
+  与本轮改动无关。
+
+### 26.2 ⚠ git 事故：objects 全灭 + 副本救回
+- `git stash` 被环境 SIGTERM 打断 ⇒ `.git/objects` 只剩 1 blob + 无 `.pack` 的 idx、`refs/` 消失。
+  v0.3.9 后的提交对象（`26d87c0`/`f3dadd0`/`2d3d82a`/`167d55e`）不可找回。
+- 从 `muv-release3` 发布副本（9-20，v0.3.9）恢复对象库与历史，其上一个提交（`41c21d8`）
+  收编两天全部工作区成果 —— **代码零丢失**，只丢中间提交粒度。
+- **规矩**：① 重要提交尽快 push；② **不要清 `Temp/muv-release*`**（最后救命稻草）；
+  ③ 本环境 `git stash` 等会改写 objects/refs 的操作被 SIGNAL 打断可能造成上述损坏 ——
+  恢复手法：拷副本 objects + refs、`mkdir refs/heads/wip`、直写分支 ref、`rm .git/index` 重建。
+
+
 

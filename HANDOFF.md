@@ -2307,6 +2307,123 @@ C/D/E 臂做法再加一条"只把落位换成命名空间"的臂）；② 用�
    以及"包壳后的 try/catch 会不会把某条脚本本该冒泡的错误吃掉"（按设计不会：
    `__muvThErr` 立刻把它记进 `__muvScriptErrs` 并 `console.warn`）。
 
+---
+
+## 33. 第 33 轮：「空白渲染」专项取证（现象 1/2/3）· **无代码改动**（`2026-09-22t` 原样）
+
+### 33.1 本轮口径
+
+用户实测 3 个现象，要求"**先取证、再决定改什么；不要凭猜动手**"，并允许
+"若指向已随构建 t 解决或卡自身的页面设计，就**不改代码**、把证据写进文档"。
+本轮**没改任何代码**：三现象全部落到「卡正则 × 模型输出结构」或「卡设计」或「已随 t 解决」。
+`MUV_BUILD` 仍是 `2026-09-22t`（客户端一行未动）。
+
+取证都在**真机**（cookie 进 `127.0.0.1:3080`，点侧边栏足控天堂2「开始」会话）+
+**离线复现**（真卡正则经 `applyCardScripts`）两路做，数字如下。
+
+### 33.2 现象 1「ERA 状态栏主体一片紫色空白」——**不复现**
+
+真机 `楼1`（2 条已装饰消息里的第 2 条）逐帧读数：
+
+| 帧 | srcdoc | 高度 | textLen | 主体填充 |
+|---|---|---|---|---|
+| 主页封面 | 226 KB | 2058 | 362 | 正常（「进入事务所」按钮在） |
+| **ERA 状态栏** | 226 KB | 1021 | **775** | **全填**：`res-val 9/9`、`res-chip 9/9`、`choice-text 3/3`（真实选项文字）、`choice-meta 3/3`、`sense-label 5/5`、`pv-cell 3/3`、`home-title 3/3`；关键词 `地图/选项/画廊/CG` 全在 |
+| **正文美化** | 183 KB | 1108 | **41** | **空**（只有标题条） |
+| ERA 状态栏 | 226 KB | 1021 | 775 | 全填（同上） |
+
+- **ERA 状态栏（那条 210 KB 深紫整页）在 DSH 上是画满的**：页签（世界/主角/公司/因特网/道具/
+  事件/角色/CG画廊/地图）+ 因特网流水 + 世界信息（`2026年8月26日…·临江市·公司办公室`）+
+  五官感受（嗅觉/味觉/触觉/视觉/听觉）+ 三个选项（选项一/二/三）**都在**（截图为证）。
+  故"ERA 状态栏主体空白"**无法复现** —— 与 §32 的口径一致：补完 `YAML`/`zod` 后卡脚本能跑，
+  数据就填上了（**已随构建 t 解决**）。
+- **唯一真正空白的那一页是「正文美化」**（标题 `♪ 足控天堂 Ⅱ · FOOT HEAVEN` + `A−`/`A+` +
+  一个橙色圆钮，下方整片深紫空）—— 正是用户描述的"**仅顶部标题与三个圆钮在**"。
+
+**正文美化空白的真因（卡正则 × 模型输出结构，我们侧无缺陷）**：
+
+- 卡 `[正文美化（带音乐）]` 的 `findRegex` 是**非贪婪 + 首个闭合标签**：
+  `/<(?:content|TXT|正文|response|gametext|geme|maincontent|now_plot)>([\s\S]*?)<\/(?:…同前…)>/is`
+  ⇒ `$1` 只截到**第一个** `</…>` 之前。
+- 真机阅读页的 `#readingContent` 实测 = `\n<now_plot> <audio>日常</audio>\n`（**不含故事**），
+  故事文本本身仍渲染在消息正文里（父页 innerText 头就是 `周三上午十点。老城区幸福里…`）。
+- **离线复现逐字命中**：拿真卡正则跑
+  `<content> <now_plot> <audio>日常</audio> </now_plot> ## 【主页】 <img>…</img> STORY </content>`
+  ⇒ `readingContent` 头 = `"<now_plot> <audio>日常</audio>"`（与真机**一字不差**），
+  故事在阅读页之外。
+- **对照组**：把故事放进捕获块内（`<content>…STORY…</content>`）⇒ `readingContent` **27799 字**，
+  完整填入 ⇒ **引擎忠实执行卡正则，没有丢内容**。
+- ⇒ 判定：模型把 `<now_plot>` **提前闭合**、故事落在捕获块外，卡正则只截到 `<now_plot><audio>` 前缀。
+  **不是 DSH 渲染缺陷**。
+
+### 33.3 现象 2「封面/状态栏反复出现」——卡设计 + 渲染介质差异
+
+- 真机 `楼0`：2 个 `.muv-statusbar-wrap`（2058 / 1021 px）；`楼1`：4 个（1110 / 2058 / 1021 / 1021 px）。
+- 机制：`withStatusPlaceholder`（`lib/client.js:4036`）按设计**给每条 AI 消息尾部**补
+  `<StatusPlaceHolderImpl/>`；卡的 `[ERA 状态栏]` `findRegex = /<StatusPlaceHolderImpl\/>/gsi`
+  （`g` 全局）把**每个**占位符换成一整页 226 KB 文档 ⇒ 每条消息各自渲染一份，**每份 1021 px**。
+- ST 同样每楼一份（`withStatusPlaceholder` 的语义就是对齐 ST），只是 ST 紧凑。
+  ⇒ 判定：**卡设计如此**（每楼一份）+ 我们以整页 iframe 承载 ⇒ 占屏大。非缺陷。
+
+### 33.4 现象 3「插图上下大片空白」——卡设计（`width=50%` + 居中）
+
+- 真机插图 `img`：`client 384×384` / `natural 1536×1536`（**方图，aspect 保持，无变形**）；
+  另一张 `384×24` 是装饰条。
+- 卡 `[CG插图]` 的 repl：`<img … style="display:block; margin:0 auto; max-width:3…">`；
+  另一卡 `[6]插图DLC` 的 repl：`<center><img src=https://files.catbox.moe/$1 width=50% /></center>`。
+- 苍玄界 `[16]插图` 实测 **`disabled=true`**（**根本不跑**）。
+  ⇒ 判定：`width=50%` + 居中 + 容器留白 = **卡自身的页面设计**；图片本体加载正常。非缺陷。
+
+### 33.5 顺带取证到的**真实缺口**：`tavern_events` / `errorCatched`（本轮**不改**）
+
+真机**每一个**卡 iframe 都抛：
+
+```
+Uncaught ReferenceError: tavern_events is not defined   at about:srcdoc:4847:54992
+Uncaught ReferenceError: errorCatched is not defined    at …/StageDog/tavern_resource…
+```
+
+- **卡侧证据**：`_足控天堂2` 的脚本 `[0]ERA变量框架1.4.11` 引用 `tavern_events` **×18**、
+  `SillyTavern` ×5（顶层就用 `tavern_events.APP_READY` 组事件名数组）。
+- **ST 侧证据**（只读源码）：`function/index.ts:478 globalThis.TavernHelper = getTavernHelper()`，
+  而该对象**含** `tavern_events`（event 段）；`iframe/predefine.js:13`
+  `result.merge(_.omit(window.parent.TavernHelper,'_bind'))` ⇒ 把 `tavern_events` **merge 进卡 window**；
+  同文件 `14–18` 行把 `_bind._errorCatched` 去掉前导 `_` ⇒ 暴露成全局 **`errorCatched`**。
+- **我们的现状**：**已有**事件总线 `eventOn/eventEmit/eventOnce/eventClearAll`（`client.js:2333`）
+  与 `TavernHelper` 垫片（`client.js:2554`），但**缺** `tavern_events` 常量表与 `errorCatched`。
+- **关键结论**：**它没有阻断本轮任何一个现象** —— 恰恰是引用它的那张卡的 ERA 状态栏，
+  在 DSH 上把主体**填满了**。故本轮按"有取证支撑才动语义"的口径**不动** `MUV_CARD_LIBS`。
+- 列为**下一轮第一顺位候选**：补 `tavern_events` 需要把 ST 的事件名映射到我们的 `eventOn` 事件面
+  （属事件/管线语义），要单独取证，不能顺手加个空对象（会静默吞掉"监听没生效"）。
+
+### 33.6 门禁（全绿，数字；**本轮无代码改动，仍全跑一遍作为回归**）
+
+- `test-client-render.mjs` **320 / 0**
+- `verify-frame-height.mjs` **全部通过**（含"媒体事件重报"变异臂）
+- `verify-frame-ratchet.mjs` **全部通过**
+- `verify-tavernhelper-scripts.mjs` **54 / 0**
+- `verify-card-libs.mjs` **48 / 0**
+- `verify-card-compat.mjs --old-export` after **46 / 0** · before 红 **9 / 37**（连跑 3 次一致；
+  本轮**没出** §32.6 记的 `44/2` 时序偶发，故未走三步归因）
+- 环境口径：**必须非沙箱**（照 §31.7）；`MUV_EDGE` 要 **Windows 风格正斜杠路径**
+  （`C:/Program Files (x86)/…/msedge.exe`）—— 用 POSIX `/c/…` 会 `existsSync` 判否、门禁报
+  `找不到浏览器`。
+
+### 33.7 结论与「用户该看什么」
+
+1. **现象 1（ERA 状态栏空白）**：**已随构建 t 解决**（脚本跑起来→数据填上）。
+   硬刷后开足控天堂2，ERA 状态栏应完整显示页签 + 因特网 + 世界信息 + 五官感受 + 三个选项。
+   若仍空：看控制台有没有 `YAML is not defined`（有=没吃到 `2026-09-22t`）。
+2. **现象 1 里那条真正的深紫空白是「正文美化」页**：真因是**模型把 `<now_plot>` 提前闭合**、
+   故事落在卡正则的捕获块之外（`$1` 只截到 `<now_plot><audio>`）。**我们侧无缺陷**。
+   用户侧可做：让模型把 `<content>…故事…</content>` 写全、且**故事包在 `<now_plot>` 内**；
+   或请卡作者把该正则的"首个闭合"改成"最后一个闭合"。
+3. **现象 2（反复出现）**：卡设计（每楼一份，ST 亦同）。想少占屏得改卡，或另立口径关掉
+   `withStatusPlaceholder`（本轮不动，属装饰器守卫语义）。
+4. **现象 3（插图上下空）**：卡设计（`width=50%` 居中 + 容器留白）；图片本体正常、不变形。
+   苍玄界 `[16]插图` 是 `disabled=true`，**根本不跑**，别拿它当复现样本。
+5. 想让 era 的**事件驱动更新**更稳，**下一轮**再谈 `tavern_events`/`errorCatched`（见 §33.5）。
+
 
 
 

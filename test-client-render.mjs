@@ -871,8 +871,12 @@ check('★ 宿主处理器认 __muvUserSend 且有每帧节流',
 const deliverSrc = extractFunction(SRC, 'muvDeliverUserText')
 check('★ 落地函数用原生 setter 写输入框（受控组件）',
   deliverSrc.includes('getOwnPropertyDescriptor') && deliverSrc.includes('dispatchEvent(new Event(\'input\''))
-check('★ send 模式走 Enter 键代发（与选项委托同一口径）',
-  deliverSrc.includes("key: 'Enter'"))
+const sendFireSrc = extractFunction(SRC, 'muvUserSendFire')
+check('★ send 通道矩阵：多通道（按钮 click + 完整 Enter 键盘序列），绝不清空输入框',
+  SRC.includes('muvUserSendFire') && deliverSrc.includes('muvUserSendFire') &&
+  sendFireSrc.includes('.click()') &&
+  sendFireSrc.includes("keyCode: 13") && sendFireSrc.includes("which: 13") && sendFireSrc.includes("code: 'Enter'") &&
+  !sendFireSrc.includes('ta.value = \'\'') && !sendFireSrc.includes('.value = \'\''))
 check('★ 装饰管线挂了变量回灌（_decorateOne → muvFeedVariables）',
   /muvPushChatLog\(raw\)[\s\S]{0,400}muvFeedVariables\(/.test(SRC))
 // ★ 喂的必须是 innerHTML：DSH 把消息渲染成元素时，`<VariableEdit>` 的**标签名不在 innerText 里**

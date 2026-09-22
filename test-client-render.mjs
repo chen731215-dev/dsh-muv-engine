@@ -211,6 +211,7 @@ for (const [name, input, wantIframe] of docCases) {
 const codeCases = [
   ['```js 代码块不动', '```js\nconst a = 1;\n```'],
   ['```python 不动', '```python\nprint(1)\n```'],
+  ['```html 普通代码示例不动（围栏体不是整页文档）', '```html\n<div class="demo">hi</div>\n```'],
   ['无语言标记的普通代码块不动', '```\njust text\n```'],
   ['纯正文不动', '他推开门，风灌了进来。'],
   ['未闭合围栏不动', '```\n<!DOCTYPE html><html>'],
@@ -1141,6 +1142,44 @@ console.log('\n[21] 隐藏与 iframe 重复的整页源码块')
       new Function('muvIsPageSourceText', 'return (' + mutantSrc + ')')(isPage)(mkBody([p]))
       return p._ops.length === 0
     })())
+}
+
+// ── 22. 守卫的"短文本放行"分支：占位符 greeting（纯文本 first_mes）─────────
+//
+// 第三次漏（2026-09-22 实锤）：社区卡的 first_mes 常是「【主页】」「星盟契约开场白」
+// 这类**纯短文本**占位符，靠卡的 markdownOnly 显示层正则换成 ```html 包裹的整页 HTML
+// （ST 首楼因此渲染出完整卡界面）。旧守卫只认 HTML 标签 ⇒ greeting 楼整楼在取卡之前
+// 被跳过 ⇒ 首楼没有卡界面。修法：不含标签但去空白后 ≤ 300 字符的文本也放行去取卡。
+// 真链路（真 Edge + 真卡 + 真正文的 before/after）在 verify-guard-tag-agnostic.mjs
+// 的 B7（G 用例）；这里钉**源码形状 + 判据行为**。
+console.log('\n[22] 守卫短文本放行：占位符 greeting')
+{
+  const bm = extractFunction(SRC, 'beautifyMuv')
+  check('★ 守卫块在（标签判据 muvHasTag）', /var muvHasTag = \//.test(bm), bm.slice(0, 120))
+  const tm = /muvTrimmedLen > (\d+) && muvTrimmedLen <= (\d+)/.exec(bm)
+  check('★ 含短文本放行分支（上界 = 300）', !!tm && Number(tm[2]) === 300 && Number(tm[1]) === 0,
+    tm ? tm[0] : '（没找到 muvTrimmedLen 判据）')
+  check('★ 守卫行合成两个判据（不许退化成"只看标签"或"全放行"）',
+    /if \(!muvHasTag && !muvShortOk\) return text/.test(bm))
+  // 行为：从源码里抠出判据字面量与阈值，重建与实现同形状的决策函数。
+  // 阈值不写死在这里 —— 从提取结果读，实现改阈值时本测试自动跟随上界断言之外的部分。
+  const tagLit = /var muvHasTag = (\/[\s\S]*?\/[a-z]*)\.test\(text\)/.exec(bm)
+  const tagRe = tagLit ? new Function('return ' + tagLit[1])() : null
+  const decide = (t) => tagRe.test(t) || (() => {
+    const n = String(t).trim().length
+    return n > Number(tm[1]) && n <= Number(tm[2])
+  })()
+  check('占位符 greeting「【主页】」放行（能走到取卡）', decide('【主页】') === true)
+  check('占位符 greeting「星盟契约开场白」（7 字）放行', decide('星盟契约开场白') === true)
+  check('长散文（301 字、无标签）不取卡（防守卫退化成全放行）', decide('深'.repeat(301)) === false)
+  check('纯空白不取卡', decide('   \n  ') === false)
+  check('含标签的正文照旧由标签判据放行', decide('他推开门。\n<video src="x.mp4"></video>') === true)
+  check('阈值上界本身（恰 300 字、无标签）放行', decide('深'.repeat(300)) === true)
+  // ★ 对照臂（能红）：把短文本分支摘掉（模拟旧判据）⇒ 占位符 greeting 被拦 ⇒
+  //   证明上面的"放行"结论确实由这个分支承担，不是恒真。
+  const decideOld = (t) => tagRe.test(t)
+  check('★ 对照臂：旧判据（只看标签）对「【主页】」确实不放行（判据不是空转）',
+    decideOld('【主页】') === false && decideOld('星盟契约开场白') === false)
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)

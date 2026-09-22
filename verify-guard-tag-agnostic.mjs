@@ -38,11 +38,15 @@
 //   E 引擎臂：真卡 + 真正文 —— C 用例只带 `<video>`/`<img>`（无信封）时确实被映射成真 URL
 //   B 浏览器臂（before/after 两跑）：
 //     B1 C 用例：AFTER 出真 `<video>`/`<img>` 元素、BEFORE 不出（= 本轮的收益，带数字）
-//     B2 A 用例：AFTER 会去取卡、BEFORE 不会；且**两臂 DOM 完全相同**、
-//        裸 `<audio>` 都还在 —— 这是"守卫修好也不美化这一轮"的**如实边界**
-//     B3 D 用例（真实纯散文）：两臂都不取卡、DOM 不变（反向用例：不许过度放宽）
+//     B2 A 用例（真实裸 <audio> 那一轮）：AFTER 取卡 + 占位符补齐后卡 [2] 命中出 ERA
+//        iframe（2026-09-22 判据更新，旧"DOM 不变"判据已随占位符补齐失效，见 B2 注释）；
+//        BEFORE 仍整楼跳过（对照臂）。
+//     B3 D 用例（真实纯散文，1300+ 字）：两臂都不取卡、DOM 不变（反向用例：不许过度放宽）
 //     B4 E 用例（`3 < 5` / `a <= b` / `1 <2` / `x <y`）：两臂都不取卡（判据不误命中）
 //     B5 前置：真卡 10 条脚本进了页面；C 用例的产物 URL 与引擎臂逐字一致
+//     B7 G 用例（「【主页】」，2026-09-22 新增）：AFTER 为它取卡、卡 [0] 命中（applied>=1）、
+//        产出 iframe（``` 包裹的整页文档 → renderFencedHtml）；BEFORE 三项全 0（对照臂）。
+//        —— 第三次漏（占位符 greeting）的修复证明；静态侧对应"决策臂"。
 //
 // ── 能红的证据（3 种破坏法，任一都必须让本门禁红） ─────────────────────────
 //   ① 把守卫改回旧枚举      ⇒ --break=guard-enum
@@ -52,8 +56,8 @@
 //       node verify-guard-tag-agnostic.mjs --break=guard-enum    （期望红）
 //       node verify-guard-tag-agnostic.mjs --break=guard-never   （期望红）
 //
-// 对照臂：BEFORE = 把**当前源码**的守卫行换回旧枚举（只动那一行），
-//         所以它隔离的正是"本轮改动"这一个变量，不是"某个旧版本"。
+// 对照臂：BEFORE = 把**当前源码**的守卫**块**（标签判据 + 短文本放行）换回旧枚举单行，
+//         所以它隔离的正是"本轮守卫语义"这一个变量，不是"某个旧版本"。
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -93,29 +97,48 @@ function check(name, cond, detail) {
 }
 const note = (s) => console.log('  NOTE ' + s)
 
-// ── 源码变换：守卫行 ────────────────────────────────────────────────────────
-const GUARD_LINE_RE = /^\s*if \(!\/.*\.test\(text\)\) return text\s*$/
+// ── 源码变换：守卫块 ────────────────────────────────────────────────────────
+// 守卫现在是**一个小块**（2026-09-22 起）：标签判据（`muvHasTag`）+ 短文本放行
+// （`muvShortOk`，占位符 greeting「【主页】」那一档）+ 合成守卫行。三个提取函数都按块工作。
+const GUARD_LINE_RE = /^\s*if \(!muvHasTag && !muvShortOk\) return text\s*$/
 
 function guardLineIndex(src) {
   const lines = src.split('\n')
   const i = lines.findIndex((l) => GUARD_LINE_RE.test(l))
-  if (i < 0) throw new Error('在源码里找不到守卫行（形如 `if (!/<…>/.test(text)) return text`）')
+  if (i < 0) throw new Error('在源码里找不到守卫行（形如 `if (!muvHasTag && !muvShortOk) return text`）')
   return i
 }
 
-/** 取出守卫判据的**字面量原文**（`/…/i` 那种），用于静态臂求值。 */
+function tagdefLineIndex(src) {
+  const lines = src.split('\n')
+  const i = lines.findIndex((l) => /^\s*var muvHasTag = \//.test(l))
+  if (i < 0) throw new Error('找不到 muvHasTag 定义行')
+  return i
+}
+
+/** 取出标签判据的**字面量原文**（`/…/` 那种），用于静态臂求值。 */
 function guardLiteralOf(src) {
-  const line = src.split('\n')[guardLineIndex(src)]
-  const m = /if \(!(\/[\s\S]*?\/[a-z]*)\.test\(text\)\)/.exec(line)
+  const line = src.split('\n')[tagdefLineIndex(src)]
+  const m = /var muvHasTag = (\/[\s\S]*?\/[a-z]*)\.test\(text\)/.exec(line)
   if (!m) throw new Error('取不出守卫正则字面量：' + line.trim())
   return m[1]
 }
 
-/** BEFORE 臂：只把守卫那一行换回旧枚举，其余一个字节都不动。 */
+/** 短文本放行的阈值**从源码里读**，不写死 —— 门禁判据不许复制实现里的数字。 */
+function shortBoundsOf(src) {
+  const m = /muvTrimmedLen > (\d+) && muvTrimmedLen <= (\d+)/.exec(src)
+  if (!m) throw new Error('取不出短文本放行阈值（muvTrimmedLen > n && <= m）')
+  return { min: Number(m[1]), max: Number(m[2]) }
+}
+
+/** BEFORE 臂：把守卫**块**（muvHasTag 定义行 → 守卫行，含短文本分支）整体换回旧枚举单行，
+ *  其余一个字节都不动 —— 它隔离的正是"本轮守卫语义"这一个变量。 */
 function revertGuard(src) {
   const lines = src.split('\n')
   const i = guardLineIndex(src)
-  lines[i] = '      if (!' + OLD_GUARD_SRC + '.test(text)) return text'
+  const j = tagdefLineIndex(src)
+  if (j > i) throw new Error('守卫块行序异常：muvHasTag 定义行不在守卫行之前')
+  lines.splice(j, i - j + 1, '      if (!' + OLD_GUARD_SRC + '.test(text)) return text')
   return lines.join('\n')
 }
 
@@ -170,6 +193,10 @@ const CASES = [
   //    A 与 F 唯一的差别就是 sanitize 有没有机会跑，用来把"用户为什么看到裸标签"钉成事实：
   //    引擎侧**是有** `<audio>` → 🎵 这条路的（muvRenderMediaTags），只是流式那一轮没走到。
   { id: 'F_audio_fresh', full: innerText(SAMPLES.audioOnly), noRestage: true },
+  // G：**占位符 greeting**（第三次漏的本体）。first_mes 只是「【主页】」这样的纯短文本，
+  //    靠卡 [0]「主页」的显示层正则换成 ``` 包裹的整页 HTML（ST 的首楼就是完整卡界面）。
+  //    守卫不放行它 ⇒ 首楼永远只有占位符原文、没有卡界面。
+  { id: 'G_home_greeting', full: '【主页】' },
 ]
 // F 那一档**不切片**：它模拟的是"消息一次性完整渲染"（没有流式阶段），
 // 所以一开始就是完整正文，sanitize pass 有机会在元素未被打标时看到裸 `<audio>`。
@@ -185,8 +212,17 @@ const CARD_JSON = { ok: true, found: true, name: path.basename(CARD_PNG, '.png')
 if (!SCRIPTS.length) { console.log('\n真卡里没有正则脚本，门禁测的是空气'); process.exit(2) }
 
 // ── ② 静态臂：守卫判据的命中面 ─────────────────────────────────────────────
-console.log('\n=== ② 静态臂：守卫判据 = ' + guardLiteralOf(SRC) + ' ===')
+console.log('\n=== ② 静态臂：标签判据 = ' + guardLiteralOf(SRC) + ' ===')
 const guardRe = new Function('return ' + guardLiteralOf(SRC))()
+// 完整守卫决策（与 lib/client.js 守卫块同形状）：有 HTML 标签 → 放行；
+// 无标签但去首尾空白后落在短文本区间 → 也放行（占位符 greeting 那一档）。
+// 阈值从源码里提取（shortBoundsOf），不在门禁里复制数字。
+const SHORTS = shortBoundsOf(SRC)
+console.log('  短文本放行区间: (去空白后) > ' + SHORTS.min + ' 且 <= ' + SHORTS.max)
+const guardPass = (t) => guardRe.test(t) || (() => {
+  const n = String(t).trim().length
+  return n > SHORTS.min && n <= SHORTS.max
+})()
 const POSITIVE = [
   ['卡 [6] 视频（路径形态）', '<video>SFW/超天酱/初次登场1</video>'],
   ['卡 [9] 插图（路径形态）', '<img>地图/公司办公室</img>'],
@@ -220,11 +256,37 @@ const NEGATIVE = [
   ['真实散文 + 小于号冒充的比较', innerText(SAMPLES.proseOnly) + '\n账上 3 < 5 而 <= 是真的。'],
 ]
 for (const [label, t] of POSITIVE) {
-  check('放行：' + label, guardRe.test(t) === true, JSON.stringify(t.slice(0, 60)))
+  check('标签判据放行：' + label, guardRe.test(t) === true, JSON.stringify(t.slice(0, 60)))
 }
 for (const [label, t] of NEGATIVE) {
-  check('不放行（不误命中）：' + label, guardRe.test(t) === false, JSON.stringify(t.slice(0, 60)))
+  // 这里只钉**标签判据本身**不误命中；完整决策另见下面的决策臂
+  //（短散文现在会被"短文本放行"分支放行，那是有意的新语义，不是误命中）。
+  check('标签判据不命中：' + label, guardRe.test(t) === false, JSON.stringify(t.slice(0, 60)))
 }
+// ── ②b 决策臂：完整守卫决策（标签 ∨ 短文本）──
+// 第三次漏的本体：占位符 greeting（first_mes 只是「【主页】」这类纯短文本，
+// 靠卡 [0]「主页」的显示层正则换成 ``` 包裹的整页 HTML）。标签判据不认它，
+// 只有"短文本放行"分支能救 —— 下面两条决策放行 + 两条决策不放行 + 对照臂。
+console.log('  ── ②b 决策臂：完整守卫决策（标签 ∨ 短文本）──')
+const DEC_POSITIVE = [
+  ['占位符 greeting「【主页】」（纯文本、无标签）', '【主页】'],
+  ['占位符 greeting「星盟契约开场白」（7 字）', '星盟契约开场白'],
+  ['短正文（无标签的普通短消息）', '他推开门，风灌了进来。'],
+]
+const DEC_NEGATIVE = [
+  ['长散文（301 字、无标签）—— 长散文不取卡，防守卫退化成全放行', '深'.repeat(301)],
+  ['纯空白（没有任何可装饰的东西，不值得一次取卡）', '   \n  '],
+]
+for (const [label, t] of DEC_POSITIVE) {
+  check('决策放行：' + label, guardPass(t) === true, JSON.stringify(t.slice(0, 40)))
+}
+for (const [label, t] of DEC_NEGATIVE) {
+  check('决策不放行：' + label, guardPass(t) === false, JSON.stringify(t.slice(0, 40)))
+}
+// ★ 对照臂（能红）：同样的占位符 greeting，**只看标签**的旧决策必须拦住 ——
+//   否则说明"短文本放行"分支没有承担任何工作，这条修法是空转。
+check('★ 对照臂：占位符 greeting 在旧决策（只看标签）下确实被拦（判据不是空转）',
+  guardRe.test('【主页】') === false && guardRe.test('星盟契约开场白') === false)
 // 如实记录的残余（不是漏，是**已知不覆盖**；写在这里是为了它不能悄悄变化）
 console.log('  ── 已知不覆盖（如实记录，不作断言的地方会打印出来）──')
 note('`【主页】` 这类**非标签**形态的卡标记不在判据里；命中的 `guardRe.test("【主页】")` = ' + guardRe.test('【主页】'))
@@ -463,12 +525,24 @@ if (BEFORE && !BEFORE.error && AFTER && !AFTER.error) {
   const bD = pick(BEFORE, 'D_prose_real'), aD = pick(AFTER, 'D_prose_real')
   const bE = pick(BEFORE, 'E_lt_notag'), aE = pick(AFTER, 'E_lt_notag')
   const bF = pick(BEFORE, 'F_audio_fresh'), aF = pick(AFTER, 'F_audio_fresh')
-  // ★ 归属按**字数**判，不按开头切片：C/D/E 三条都源自同一段真实散文，开头是完全一样的，
-  //   拿前 12 字去认会互相误领（本轮第一版就是这么把 C 的调用算到了 D 头上）。
-  //   三条用例的字数相差 ≥ 28（1318 / 1346 / 1369），而 innerText 与近似值只差几个字，
-  //   所以用 ±6 的容差判归属是可靠的。
+  // ★ 归属按「期望长度最近邻」判，不再按字数 ±6：
+  //   withStatusPlaceholder（占位符补齐）会把送进 apply 的正文加长一个固定尾巴（实测 +25），
+  //   normalizeStatusHeader 又会把带表头的正文折短（B 实测 −151）—— 旧的字数容差已死
+  //   （C 的 regText 1394 与其 full 1369 差 25 > 6，A 同理；D/E 与 C 前 1300 字完全相同，
+  //   归属只能靠总长）。每条 apply 分给「|len − (full+25)| 最小」的用例，差值 ≥100 不归属：
+  //   A(2403,差0)→A、C(1394,差0)→C；B(2783,对谁差都≥176)→不归属（B 的断言全走 DOM，不用 hits）；
+  //   D/E 的 apply 不存在 ⇒ 恒 0（对照臂仍然有效）。A 与 F 同文，长度无法区分
+  //   （F 在两臂都不取卡，见 B6）—— A 的断言不受影响。
+  const PH_LEN = 25
   const lenOf = (id) => CASES.find((c) => c.id === id).full.length
-  const hits = (R, id, tol = 6) => (R.apply || []).filter((x) => Math.abs(x.len - lenOf(id)) <= tol)
+  const hits = (R, id) => (R.apply || []).filter((x) => {
+    let best = null
+    for (const c of CASES) {
+      const d = Math.abs(x.len - (c.full.length + PH_LEN))
+      if (!best || d < best.d) best = { id: c.id, d }
+    }
+    return !!best && best.id === id && best.d < 100
+  })
   const hitText = (R, id) => JSON.stringify(hits(R, id).map((x) => ({ len: x.len, applied: x.applied })))
 
   console.log('\n  ── B5 前置 ──')
@@ -506,20 +580,24 @@ if (BEFORE && !BEFORE.error && AFTER && !AFTER.error) {
   note('markdown 代价（如实报告，不作断言）：C 用例 AFTER 的 <strong>=' + aC.strong + ' BEFORE=' + bC.strong +
     '；<p>=' + aC.p + '/' + bC.p + '（媒体那一轮走 applyDecoratedHtml 的最后手段，正文被整条写回）')
 
-  console.log('\n  ── B2 如实边界：用户截图那一轮（裸 <audio>）──')
-  check('守卫已放行 A 用例（AFTER 对它取过卡）',
+  console.log('\n  ── B2 A 用例（真实裸 <audio> 那一轮）：放行之后的真实命运 ──')
+  // ★ 2026-09-22 判据更新（漂移归因：HEAD 上旧断言已红，62 通过 5 失败里占 4 条）：
+  //   withStatusPlaceholder（占位符补齐，晚于本门禁最后一次全绿加入）改变了 A 的命运 ——
+  //   守卫放行 → 取卡 → 正文被补上 <StatusPlaceHolderImpl/> → 卡 [2]「ERA 状态栏」命中
+  //   → A 楼也装饰出 ERA 整页 iframe。（引擎臂的 applied=0 是**不带占位符**的口径，不矛盾。）
+  //   旧判据「A 的 DOM 与 BEFORE 完全相同 / 裸 <audio> 仍是裸文本」描述的是补齐加入之前
+  //   的行为，已过时；按当前真实行为重写，对照臂（BEFORE 仍整楼跳过）保持。
+  check('A 用例：AFTER 为它取了卡（守卫放行）',
     hits(AFTER, 'A_audio_real').length >= 1,
     'before 取卡=' + BEFORE.requests.length + ' after 取卡=' + AFTER.requests.length +
     ' after 里指向 A 的 apply=' + hitText(AFTER, 'A_audio_real'))
-  check('BEFORE：A 用例被整轮跳过（没有为它取卡）',
-    hits(BEFORE, 'A_audio_real').length === 0, hitText(BEFORE, 'A_audio_real'))
-  check('★ A 用例：AFTER 的 DOM 与 BEFORE **完全相同**（守卫放行本身不改这一轮）',
-    bA.htmlLen === aA.htmlLen && bA.videoEls === aA.videoEls && bA.imgEls === aA.imgEls && bA.audioEls === aA.audioEls,
-    JSON.stringify({ before: { len: bA.htmlLen, v: bA.videoEls, i: bA.imgEls, a: bA.audioEls }, after: { len: aA.htmlLen, v: aA.videoEls, i: aA.imgEls, a: aA.audioEls } }))
-  check('★ 如实边界：裸 <audio> 在 AFTER 里**仍然**是裸文本（卡里没有 <audio> 脚本，真卡 0 命中）',
-    aA.rawAudio === true && aA.audioEls === 0 && aA.audioPh === 0,
-    JSON.stringify({ rawAudio: aA.rawAudio, audioEls: aA.audioEls, audioPh: aA.audioPh }))
-  note('⇒ 用户截图那一轮：守卫修好**也不会**被美化（applied=0）。要修它得给卡加 <audio> 脚本，或让引擎自己认这个标记 —— 不在本轮范围。')
+  check('A 用例：AFTER 跑到了卡脚本（占位符补齐后卡 [2] 命中，applied>=1）',
+    hits(AFTER, 'A_audio_real').some((x) => x.applied >= 1), hitText(AFTER, 'A_audio_real'))
+  check('A 用例：AFTER 产出 ERA 整页 iframe（占位符被卡 [2] 消费）',
+    aA.iframes >= 1, 'before.iframe=' + bA.iframes + ' after.iframe=' + aA.iframes)
+  check('★ 对照臂：BEFORE 不为它取卡（旧守卫整楼跳过）、DOM 里没有 iframe',
+    hits(BEFORE, 'A_audio_real').length === 0 && bA.iframes === 0,
+    hitText(BEFORE, 'A_audio_real') + ' iframe=' + bA.iframes)
 
   console.log('\n  ── B6 对照臂 F：同一段 <audio> 正文、sanitize 有机会跑时会长成什么样 ──')
   check('F 用例：两臂都打出了 🎵 占位块（引擎侧**确实有** 裸 <audio> → muv-audio 这条路）',
@@ -532,9 +610,12 @@ if (BEFORE && !BEFORE.error && AFTER && !AFTER.error) {
   check('F 用例：两臂 DOM 逐字相同（🎵 占位块在两臂里一模一样）',
     bF.htmlLen === aF.htmlLen && bF.audioPh === aF.audioPh && bF.htmlLen > 0,
     JSON.stringify({ bLen: bF.htmlLen, aLen: aF.htmlLen, bPh: bF.audioPh, aPh: aF.audioPh }))
-  check('★ A vs F 的差别只有"sanitize 有没有机会跑"：A 两臂都留着裸标签、F 两臂都变占位块',
-    aA.rawAudio === true && aF.rawAudio === false && aA.audioPh === 0 && aF.audioPh >= 1,
-    JSON.stringify({ A: { raw: aA.rawAudio, ph: aA.audioPh, sanMarked: aA.sanMarked }, F: { raw: aF.rawAudio, ph: aF.audioPh, sanMarked: aF.sanMarked } }))
+  // ★ 2026-09-22：旧的「A vs F 差别只有 sanitize 有没有机会跑」对比断言已随占位符补齐失效
+  //   （A 现在走字符串管线被装饰出 ERA iframe；F 的 <audio> 在装饰前就被 sanitize 换成
+  //   🎵 占位块，装饰链读到的文本无标签且超长 ⇒ 两臂都不取卡）。如实记录，不再断言。
+  note('⇒ A vs F：A 走字符串管线（占位符补齐 → 卡 [2] → ERA iframe）；F 的 <audio> 被 sanitize')
+  note('   提前换成 🎵 占位块 ⇒ 装饰链读到的正文无标签且超长 ⇒ 两臂都不取卡、DOM 逐字相同。')
+  note('   裸 <audio> 用户可见的机制（sanitize 对已打标元素不重跑 + 守卫整楼跳过）见 §23/§15.4。')
   check('A 与 F 都被打过 data-muv-sanitized（A 是"先打标、后补全"，F 是"一次到位"）',
     aA.sanMarked === true && aF.sanMarked === true,
     JSON.stringify({ A: aA.sanMarked, F: aF.sanMarked }))
@@ -553,6 +634,22 @@ if (BEFORE && !BEFORE.error && AFTER && !AFTER.error) {
     hits(BEFORE, 'E_lt_notag').length === 0 && hits(AFTER, 'E_lt_notag').length === 0,
     'before=' + hitText(BEFORE, 'E_lt_notag') + ' after=' + hitText(AFTER, 'E_lt_notag'))
   check('E 用例：两臂 DOM 相同', bE.htmlLen === aE.htmlLen, JSON.stringify({ bLen: bE.htmlLen, aLen: aE.htmlLen }))
+
+  console.log('\n  ── B7 ★ 占位符 greeting（第三次漏的本体：first_mes =「【主页】」）──')
+  const bG = pick(BEFORE, 'G_home_greeting'), aG = pick(AFTER, 'G_home_greeting')
+  check('G 用例：AFTER 为它取了卡（守卫的短文本放行分支生效）',
+    hits(AFTER, 'G_home_greeting').length >= 1,
+    'after 里指向 G 的 apply=' + hitText(AFTER, 'G_home_greeting'))
+  check('G 用例：AFTER 真的跑到了卡脚本（applied>=1，卡 [0]「主页」命中占位符）',
+    hits(AFTER, 'G_home_greeting').some((x) => x.applied >= 1), hitText(AFTER, 'G_home_greeting'))
+  check('★ G 用例：AFTER 产出 iframe（替换产物是 ``` 包裹的整页文档 → renderFencedHtml → 卡 iframe）',
+    aG.iframes >= 1, 'before.iframe=' + bG.iframes + ' after.iframe=' + aG.iframes)
+  check('★ 对照臂：BEFORE（旧守卫）不为它取卡（该楼在取卡之前被整楼跳过）',
+    hits(BEFORE, 'G_home_greeting').length === 0, hitText(BEFORE, 'G_home_greeting'))
+  check('★ 对照臂：BEFORE 的 DOM 里没有 iframe（首楼没有卡界面 = 用户报的症状）',
+    bG.iframes === 0, 'before.iframe=' + bG.iframes)
+  note('⇒ 这就是"魔女卡在 DSH 首楼只有正文+插图、没有契约书界面"的机制：first_mes 是纯短文本，')
+  note('   旧守卫只认 HTML 标签 ⇒ greeting 楼整楼跳过 ⇒ markdownOnly 正则从未被消费。')
 
   console.log('\n  ── 参照组 B：含 <content> 的那一轮，两臂都该美化 ──')
   check('B 用例两臂都出了 iframe（整页文档走 renderFencedHtml）', bB.iframes >= 1 && aB.iframes >= 1,

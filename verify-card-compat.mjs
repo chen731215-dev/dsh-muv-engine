@@ -49,7 +49,10 @@ const CARD_FILE = process.env.MUV_CARD_FILE || '_足控天堂2.png'
 /** ★ 必须带 CG/era/localStorage 代码的那一份。按「主页」跑量到的全是 undefined。 */
 const CARD_SCRIPT = process.env.MUV_CARD_SCRIPT || 'ERA 状态栏'
 const CARD_SCRIPT_LEN = 210219
-const OLD_REV = '324b751'
+// ★ 对照臂用的"旧版 client.js"提交。原值 324b751 已随 2026-09-22 的 git 对象库事故丢失
+//   （HANDOFF §26.2），现取对象库里现存最老的 v0.3.9 发布提交（无垫片，before 臂应大面积红）。
+//   可用 MUV_OLD_REV 覆盖。
+const OLD_REV = process.env.MUV_OLD_REV || '7623ffa'
 
 // ─────────────── 真卡 + 期望键（模块求值期就要有：BOOTSTRAP / runArm 都读它） ───────────────
 

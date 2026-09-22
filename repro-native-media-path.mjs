@@ -83,12 +83,14 @@ console.log('\n=== ② beautifyMuv 的入口闸门放不放媒体标签过去 ==
 //   下面这批断言因此**反向**：媒体输入必须被放行；同时补一组"仍然拦住"的反向用例
 //   （纯散文 / `2 < 3` / 没闭合的尖括号）—— 那两条一起才说明判据既修好了、又没放过宽。
 //   真机（真卡 + 真实助手正文 + 真 DOM）的 before/after 在 verify-guard-tag-agnostic.mjs。
-const GUARD_LINE_RE = /^\s*if \(!\/.*\.test\(text\)\) return text\s*$/
+const GUARD_LINE_RE = /^\s*if \(!muvHasTag && !muvShortOk\) return text\s*$/
 const gateLine = SRC.split(/\r?\n/).find(l => GUARD_LINE_RE.test(l))
-check('找到 beautifyMuv 的入口闸门', !!gateLine, gateLine ? '' : '（源码里没有形如 if (!/<…>/.test(text)) return text 的行）')
+check('找到 beautifyMuv 的入口闸门', !!gateLine, gateLine ? '' : '（源码里没有形如 if (!muvHasTag && !muvShortOk) return text 的行）')
 check('闸门不匹配时直接 return 原文', /return text/.test(gateLine || ''))
-const gateLit = gateLine ? /if \(!(\/[\s\S]*?\/[a-z]*)\.test\(text\)\)/.exec(gateLine) : null
-check('能取出闸门正则字面量', !!gateLit, gateLine ? gateLine.trim() : '')
+// 标签判据字面量在 muvHasTag 定义行上（守卫块的第一行），不在守卫行上。
+const tagLine = SRC.split(/\r?\n/).find(l => /^\s*var muvHasTag = \//.test(l))
+const gateLit = tagLine ? /var muvHasTag = (\/[\s\S]*?\/[a-z]*)\.test\(text\)/.exec(tagLine) : null
+check('能取出闸门正则字面量', !!gateLit, tagLine ? tagLine.trim() : '')
 const gate = gateLit ? new Function('return ' + gateLit[1])() : null
 const MEDIA_INPUTS = [
   ['带 src 的 video', '<video src="x.mp4"></video>'],
@@ -104,14 +106,17 @@ for (const [label, input] of MEDIA_INPUTS) {
 // 对照：闸门认识的那些标记确实会被放行（证明闸门本身在工作，不是我取错了）
 check('对照：带 <Status_block> 的消息会被闸门放行', gate && gate.test('<Status_block>x</Status_block>') === true)
 check('对照：带 <choices> 的消息会被闸门放行', gate && gate.test('<choices>\nA. 甲\n</choices>') === true)
-// ★ 反向用例：放开媒体名字不等于"什么文本都放行"。这些必须仍然被拦住 ——
-//   否则每条普通消息都要多取一次卡，纯散文那一档的早退就没了。
+// ★ 反向用例：放开媒体名字不等于"什么文本都放行"。这些必须仍然被标签判据拦住 ——
+//   注意 2026-09-22 起守卫多了一条**短文本放行**分支（占位符 greeting 那一档）：
+//   短纯散文会被完整决策放行去取卡（有意的新语义），但**标签判据本身**仍然不命中它们；
+//   长散文（>300 字、无标签）则整条被拦，早退还在 —— 下面的长散文用例钉这一条。
 const PROSE_INPUTS = [
   ['纯散文（一个标签都没有）', '他推开门，风灌了进来。他说了一句"今天真冷"，然后把窗关上。'],
   ['算术：2 < 3', '他看到 2 < 3 就想反驳。'],
   ['比较：a <= b', '条件写成 a <= b 才算对。'],
   ['后面没有收尾的 `>`', '这行是 x <y 没有收尾。'],
   ['数字紧跟尖括号：1 <2', '他还说了一句 1 <2。'],
+  ['长散文（301 字、无标签）—— 完整守卫对它整条拦下', '深'.repeat(301)],
 ]
 for (const [label, input] of PROSE_INPUTS) {
   check('★ 闸门仍然拦住（不误命中）：' + label, gate && gate.test(input) === false,

@@ -1516,5 +1516,82 @@ before 臂上整组 ⑩ 全红 ⇒ 判据不是空转。
   ③ 本环境 `git stash` 等会改写 objects/refs 的操作被 SIGNAL 打断可能造成上述损坏 ——
   恢复手法：拷副本 objects + refs、`mkdir refs/heads/wip`、直写分支 ref、`rm .git/index` 重建。
 
+## 27. 第 27 轮：守卫第三次漏 —— 占位符 greeting（2026-09-22 晚）
+
+### 27.1 机制图：first_mes 占位 → 显示层正则 → ```html 整页 → iframe
+
+```
+角色卡 JSON
+ ├─ first_mes: "【主页】"                ← 7 字占位符，纯文本、无任何 HTML 标签
+ ├─ alternate_greetings: ["星盟契约开场白"] ← 魔女卡同款
+ └─ data.extensions.regex_scripts[0]「主页」
+      findRegex: "【主页】"   markdownOnly: true
+      replaceString: "```\n<!DOCTYPE html>…整页界面…</html>\n```"
+
+SillyTavern：首楼文本 = first_mes → 显示层跑 markdownOnly 正则 → 整页 HTML → 渲染卡 UI ✓
+我们（修前）：beautifyMuv 守卫 `if (!/<标签>/.test(text)) return text`
+             ⇒ "【主页】" 无标签 ⇒ **整楼在取卡之前被跳过** ⇒ 正则从未消费 ⇒ 首楼只有 4 个字
+我们（修后）：守卫多一条"短文本放行" ⇒ 取卡 → apply-regex-card 命中 [0]
+             → 产物是 ``` 包裹的整页文档 → renderFencedHtml → 卡 iframe ✓（与 ST 平价）
+```
+
+### 27.2 守卫的第三次漏与修法
+
+前两次漏（`<content>`/`<now_plot>`、`<video>`/`<img>`）都靠"标签无关形状判据"解决；
+第三次漏的根本不同：**这次连标签都没有**。形状判据再怎么扩也认不出「【主页】」，
+所以修法换了维度 —— **长度**：
+
+```js
+var muvHasTag = /<[!\/]?[a-zA-Z_\u4e00-\u9fa5][^<>]*>/.test(text)
+var muvTrimmedLen = String(text).trim().length
+var muvShortOk = muvTrimmedLen > 0 && muvTrimmedLen <= 300
+if (!muvHasTag && !muvShortOk) return text
+```
+
+- **为什么 ≤ 300**：长散文（模型正文主力）不该多付一次取卡成本；greeting 占位符都是几个字。
+  阈值写进门禁时**从源码提取**（`shortBoundsOf`），不复制数字。
+- **为什么无副作用**：脚本全落空时 `normalized === text ⇒ 原样交回`（§23 兜底不变）。
+- **为什么空白不放行**：没有任何可装饰的东西。
+- 原 §3488 注释里"仍然不在判据里的：`【主页】`，实测没有只带它的一轮"—— **赌输了**，
+  占位符 greeting 楼恰恰就是。已改写注释（过时注释会主动误导人，§15.7 教训第三次兑现）。
+
+### 27.3 ```html 围栏剥壳：已支持，别重复造
+
+`renderFencedHtml` 的围栏配对本来就认 ```` ```html ````/``` + `<!DOCTYPE`/`<html` 开头的
+围栏体（`info` 合法信息串 + 文档头判定）→ `cardHtmlIframe`。真卡「主页」（```）与
+「正文美化」（```html）都在这条路上。普通 ```` ```html ```` **代码示例**（围栏体不是文档）
+原样不动 —— 判据是"围栏体是不是整页文档"，不是"有没有 html 信息串"。
+
+### 27.4 门禁与两处判据更新（都带对照臂）
+
+- `verify-guard-tag-agnostic.mjs`：②b 决策臂（greeting 放行 / 301 字不放行 / 空白不放行 /
+  旧决策对照臂必须拦）+ **B7**（真 Edge：G 用例「【主页】」AFTER 取卡+命中+iframe，BEFORE 全 0）。
+  78 通过 / 0 失败；`--break=guard-enum` / `--break=guard-never` 仍期望红。
+- **判据漂移归因（本轮顺手修，先对照 HEAD 再动手）**：B1/B2/B6 五条在 HEAD 上就是红的
+  （HEAD 版门禁 + HEAD 版源码 = 62/5，同一集合）—— `withStatusPlaceholder` 占位符补齐加入后，
+  A 楼放行会被卡 [2] 消费出 ERA iframe，旧的「A 的 DOM 不变 / 裸 <audio> 还在」判据过时；
+  apply 归属的字数 ±6 容差也被打死（占位符 +25、表头折叠 −151）。已按当前真实行为重写
+  （归属改**期望长度最近邻**，阈值 100；A/F 同文不可分 —— F 两臂都不取卡，不影响）。
+- `verify-card-compat.mjs`：`OLD_REV = 324b751` 已随 git 事故丢失（§26.2），改 `7623ffa`
+  （现存最老 v0.3.9，无垫片；可 `MUV_OLD_REV` 覆盖）。before 臂 9/37 红（对照有效 ✓）。
+  after 臂 2~4 条波动失败，**HEAD 源码对照同样红** ⇒ 按 §26.1 口径归因环境时序偶发，不修。
+
+### 27.5 本轮改动文件
+
+`lib/client.js`（守卫块 + 注释改写 + `MUV_BUILD` → `2026-09-22m`）/
+`verify-guard-tag-agnostic.mjs`（提取器按块 + 决策臂 + G/B7 + B1/B2/B6 重写）/
+`test-client-render.mjs`（[22] 守卫短文本段 + 围栏两例）/
+`verify-decorate-session-isolation.mjs` / `repro-native-media-path.mjs`（守卫行提取同步）/
+`verify-card-compat.mjs`（OLD_REV）；文档：`CHANGELOG.md`、本节、
+`C:\deepseek harness\docs\04-排错手册.md`（I 条）与 `INDEX.md`。
+
+### 27.6 只能真机验的部分
+
+- 魔女卡 / `_足控天堂2` 的**真实首楼**要重启 DSH + 硬刷新后目验：首楼应出现完整卡界面 iframe
+  （构建标记须为 `2026-09-22m`）。
+- 门禁 G 用例用的是 `_足控天堂2` 的「主页」正则；魔女卡的「星盟契约开场白」正则形状
+  （findRegex 是否也认占位符全文）**没验过** —— 若它认的是别的形态，放行已由守卫保证，
+  命中与否取决于卡自己的 findRegex。
+
 
 

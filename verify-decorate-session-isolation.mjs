@@ -45,23 +45,33 @@ const OUT = path.join(os.tmpdir(), 'muv-deco-isolation')
 mkdirSync(OUT, { recursive: true })
 
 // ── 守卫行的破坏法（BEFORE 臂 / --break）──────────────────────────────────
-// 守卫那一行现在是标签无关的形状判据（见 lib/client.js 里 `beautifyMuv` 开头的 ★★）。
-// 两种破坏法都必须让本门禁红。
+// 守卫现在是**一个小块**（标签判据 muvHasTag + 短文本放行 muvShortOk，见 lib/client.js
+// `beautifyMuv` 开头的 ★★）。两种破坏法都必须让本门禁红。
 const BREAK = (() => {
   const a = process.argv.find((x) => x.startsWith('--break='))
   return a ? a.slice('--break='.length) : ''
 })()
-const GUARD_LINE_RE = /^\s*if \(!\/.*\.test\(text\)\) return text\s*$/
+const GUARD_LINE_RE = /^\s*if \(!muvHasTag && !muvShortOk\) return text\s*$/
 const OLD_GUARD_SRC = '/<StatusPlaceHolder|<\\/?now_plot\\b|<\\/?content\\b|<UpdateVariable|<Prism|<Status_?Block|<状况|<maintext|<choices?\\b|<Variable(?:Edit|Insert|Think)\\b|<Abstract\\b/i'
 function guardLineIndex(src) {
   const lines = src.split('\n')
   const i = lines.findIndex((l) => GUARD_LINE_RE.test(l))
-  if (i < 0) throw new Error('找不到守卫行（形如 `if (!/<…>/.test(text)) return text`）')
+  if (i < 0) throw new Error('找不到守卫行（形如 `if (!muvHasTag && !muvShortOk) return text`）')
+  return i
+}
+function tagdefLineIndex(src) {
+  const lines = src.split('\n')
+  const i = lines.findIndex((l) => /^\s*var muvHasTag = \//.test(l))
+  if (i < 0) throw new Error('找不到 muvHasTag 定义行')
   return i
 }
 function revertGuard(src) {
+  // 把守卫**块**（muvHasTag 定义行 → 守卫行，含短文本分支）整体换回旧枚举单行。
   const lines = src.split('\n')
-  lines[guardLineIndex(src)] = '      if (!' + OLD_GUARD_SRC + '.test(text)) return text'
+  const i = guardLineIndex(src)
+  const j = tagdefLineIndex(src)
+  if (j > i) throw new Error('守卫块行序异常')
+  lines.splice(j, i - j + 1, '      if (!' + OLD_GUARD_SRC + '.test(text)) return text')
   return lines.join('\n')
 }
 function neverGuard(src) {

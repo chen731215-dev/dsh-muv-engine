@@ -182,5 +182,21 @@ check('⑨c 卡无脚本时全局照常生效', r.body.text === 'B', eq(r))
 // 收尾：删测试数据目录（global-regex.json 不留在工作区，data/ 也已进 .gitignore）
 fs.rmSync(DATA, { recursive: true, force: true })
 
+console.log('\n=== ⑩ set-disabled（面板启停开关的引擎侧）===\n')
+// 重建一条：导入 → 关 → 再开。对照臂：id 不存在必须 404（判断据没有空转成永真）。
+fs.mkdirSync(DATA, { recursive: true })
+importGlobalScripts([mk('启停目标', '停我', '好的')])
+const sid = loadGlobalScripts()[0].id
+r = await call(gr, 'POST', '/api/muv-engine/global-regex', { action: 'set-disabled', id: sid, disabled: true })
+check('⑩a set-disabled true → 200 且落盘', r.status === 200 && r.body.disabled === true, eq(r))
+check('⑩b 落盘后重读 disabled=true', loadGlobalScripts()[0].disabled === true)
+r = await call(gr, 'POST', '/api/muv-engine/global-regex', { action: 'set-disabled', id: sid, disabled: false })
+check('⑩c set-disabled false → 重读为 false', r.status === 200 && loadGlobalScripts()[0].disabled === false, eq(r))
+r = await call(gr, 'POST', '/api/muv-engine/global-regex', { action: 'set-disabled', id: 'gr_nope', disabled: true })
+check('⑩d id 不存在 → 404（对照臂）', r.status === 404, eq(r))
+r = await call(gr, 'POST', '/api/muv-engine/global-regex', { action: 'set-disabled' })
+check('⑩e 缺 id → 400', r.status === 400, eq(r))
+fs.rmSync(DATA, { recursive: true, force: true })
+
 console.log(`\n=== 结果：${pass} 通过 / ${fail} 失败 ===`)
 process.exit(fail ? 1 : 0)

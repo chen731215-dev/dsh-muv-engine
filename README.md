@@ -110,7 +110,8 @@ dsh plugin --profile web add dsh-muv-engine
 | `/api/muv-engine/expand-macros` | POST | 服务端展开宏（random/pick/roll） |
 | `/api/muv-engine/reroll-pick` | POST | 清除 pick 缓存 |
 | `/api/muv-engine/apply-regex` | POST | 对文本执行正则脚本 |
-| `/api/muv-engine/apply-regex-card` | POST | 从卡片 JSON 执行正则 |
+| `/api/muv-engine/apply-regex-card` | POST | 从卡片 JSON 执行正则（生效脚本集 = 全局先 + 卡级后） |
+| `/api/muv-engine/global-regex` | GET/POST/DELETE | 全局正则脚本库：列出 / 导入（ST 导出件宽容解析）/ 删除 |
 | `/api/muv-engine/state` | GET/POST | 获取/更新变量状态 |
 | `/api/muv-engine/extract` | POST | 提取 `<initvar>` 并生成 MUV 块 |
 | `/api/muv-engine/generate` | POST | 编辑后生成 MUV 块 |

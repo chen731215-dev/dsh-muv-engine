@@ -1,5 +1,43 @@
 # Changelog
 
+## 未发布（2026-09-22 · 十六）★★ 全局正则扩展库：ST 全局脚本层补齐 · `2026-09-22n`
+
+### 为什么
+引擎的正则管道已是 ST 形态（findRegex/replaceString、placement、markdownOnly/promptOnly、depth），
+但此前**只吃卡级脚本**（`card.data.extensions.regex_scripts`）。ST 生态还有一层**全局正则扩展**
+——用户装的、独立于卡的美化/净化脚本（"去星号注释"、全局排版美化等）——我们没有这一层，
+用户装过的全局脚本全部失效。
+
+### 新增（`lib/global-regex.js` + `lib/index.js` 三路由）
+- **存储**：引擎第一个落盘数据。`<引擎包根>/data/global-regex.json`（可 `MUV_ENGINE_DATA_DIR`
+  覆盖；`data/` 已进 .gitignore），格式 `{ version:1, savedAt, scripts:[…] }`，临时文件 + rename 原子写；
+  损坏按空库处理但 stderr 喊出声。
+- **API**（口径详见路由注释与 HANDOFF §28）：
+  - `GET  /api/muv-engine/global-regex` → `{ ok, scripts:[…] }`
+  - `POST /api/muv-engine/global-regex` → 导入。body 宽容解析**四种**形态（裸数组 /
+    `{scripts}` / `{data.extensions.regex_scripts}` / 外包 `{compatibility}`）；
+    按 `scriptName+findRegex` 逐字去重：默认 upsert 覆盖为新版（原位原 id），
+    `?mode=append` 同名跳过；返回 `{ ok, added, replaced, skipped, invalid, total, reasons }`。
+  - `DELETE /api/muv-engine/global-regex?id=…` 或 `POST {action:'delete', id}`（等价）。
+- **校验纪律**：findRegex 必须 `new RegExp()` 可编译（`/…/flags` 壳或裸模式，与
+  `applyRegexScript` 同口径），坏条目**跳过并计数**（invalid + reasons），不抛、不整批失败。
+- **容量纪律**：库上限 200 条——将超限时**整批拒绝**（400 capacity-exceeded）；
+  单条 findRegex/replaceString 各 256KB，超限条目跳过计数。
+- **合并进管道**：`apply-regex-card` 生效脚本集 = **全局（先）+ 卡级（后）**，顺序即优先级
+  （卡级更具体，后跑作用在全局产出上）。全局脚本走同一条 `applyAllRegexScripts` 管道，
+  disabled / placement / depth 过滤**全部复用**（`matchesMode`），未改其签名与行为。
+  `statusBarHtml` 仍只从**卡级**提取（`<StatusPlaceHolderImpl/>` 是卡的契约，保守选择）。
+- `id` 确定性：`gr_` + sha1(scriptName+findRegex) 前 12 位，重导/重装 id 稳定。
+
+### 门禁（全绿）
+- 新 `test-global-regex.mjs` **35 通过 / 0 失败**：四种导入形态 / 去重统计（upsert+append）/
+  非法 findRegex 跳过计数 / **合并顺序含真变红对照臂**（链式用例 全局'A'→'B' + 卡级'B'→'C'：
+  合并序 'C'，颠倒序 'B'，两序可分）/ disabled 不跑 / promptOnly·minDepth 过滤复用 /
+  API 形状（GET·POST·DELETE·405·404·400）/ 容量两档（256KB 跳过计数、201 条整批拒）/
+  apply-regex-card API 层合并。
+- `test-regex-engine.mjs` 26/0 · `test-client-render.mjs` 275/0 · `test-era-vars.mjs` 18 PASS/0 ·
+  `test-snapshots.mjs` 14 PASS/0 · `verify-guard-tag-agnostic.mjs` 78/0 · `verify-no-redouble.mjs` 4/0。
+
 ## 未发布（2026-09-22 · 十五）★★ 守卫第三次漏：占位符 greeting（纯文本 first_mes）放行 · `2026-09-22m`
 
 ### 为什么（症状与机制）

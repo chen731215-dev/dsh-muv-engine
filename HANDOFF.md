@@ -1593,5 +1593,99 @@ if (!muvHasTag && !muvShortOk) return text
   （findRegex 是否也认占位符全文）**没验过** —— 若它认的是别的形态，放行已由守卫保证，
   命中与否取决于卡自己的 findRegex。
 
+## 28. 第 28 轮：全局正则扩展库 —— ST 全局脚本层补齐（2026-09-22 晚）· `2026-09-22n`
+
+### 28.1 背景与来源形态
+
+正则管道已是 ST 形态（`applyRegexScript` 函数式替换、`placementAllows`、`depthAllows`、
+`matchesMode`），但只吃卡级脚本。ST 生态的**全局正则扩展**（用户装的、独立于卡的美化/净化
+脚本）此前没有任何承接 —— 用户装过的全局脚本全部失效。
+
+ST 全局正则导出 JSON 的真实形态不止一种，导入端**宽容解析四种**（`extractGlobalScripts`）：
+
+```
+① 裸数组  [ {scriptName, findRegex, replaceString, placement:[…], disabled,
+             markdownOnly, promptOnly, runOnEdit, substituteRegex, minDepth, maxDepth} ]
+② { scripts: […] }                                  ← 最常见
+③ { data: { extensions: { regex_scripts: […] } } }   ← 与卡级同构
+④ ②/③ 外再包一层 { compatibility: … }               ← 部分导出工具的包装（递归进里层）
+```
+
+认不出 → 空数组 → API 层给 `400 no-scripts-found`。ST 的 `placement` 数字数组**只保留不解释**
+（本引擎的 placement 语义是 markdownOnly/promptOnly，见 `regex-engine.js` 注释）。
+
+### 28.2 存储与合并顺序
+
+- **落盘路径**：`<引擎包根>/data/global-regex.json`（开发机 `C:\dsh-muv-engine\data\global-regex.json`；
+  可用 `MUV_ENGINE_DATA_DIR` 覆盖，测试就是这么隔离的）。这是引擎**第一个落盘数据**——
+  此前的状态/快照全是内存态（var-tracker 注释里有明说），没有可跟随的持久化先例。
+  格式 `{ version:1, savedAt, scripts:[…] }`，临时文件 + rename 原子写；损坏按空库处理但 stderr 喊出声。
+- **合并顺序 = 全局（先）+ 卡级（后），顺序即优先级**。卡级脚本是卡作者针对这张卡调的，
+  比用户装的全局宽泛替换更具体；后跑的作用在先跑的产出上。合并发生在
+  `/api/muv-engine/apply-regex-card` 外层（`[...loadGlobalScripts(), ...cardScripts]`），
+  **没有改** `applyAllRegexScripts` 的签名与行为；全局脚本走同一条管道，disabled /
+  placement / depth 过滤全部复用 `matchesMode`。
+- **`statusBarHtml` 仍只从卡级提取**（保守选择）：`<StatusPlaceHolderImpl/>` 是卡的契约，
+  卡级皮肤不该被用户的全局脚本抢走。
+- ⚠ 顺序语义是**顺序作用在同一份演进文本上**（与 ST 相同）：全局 'A'→'B' + 卡级 'B'→'C'，
+  合并序 ⇒ 'C'，颠倒 ⇒ 'B'。卡级的 findRegex 若匹配不到全局的**产出**，它不会"压过"全局——
+  这不是 bug，是顺序作用的本义。门禁对照臂用的就是这对可分序用例。
+
+### 28.3 API 口径（示例）
+
+```
+GET  /api/muv-engine/global-regex
+  → 200 { ok:true, scripts:[ { id:"gr_09111b…", scriptName, findRegex, … } ] }   （落库原序）
+
+POST /api/muv-engine/global-regex            （body 即 ST 导出件本身；四种形态都认）
+  ?mode=append                                （同名同式跳过；缺省 upsert=覆盖为新版）
+  → 200 { ok:true, added, replaced, skipped, invalid, total, reasons }
+  → 400 { ok:false, error:"capacity-exceeded: …" }   库将超 200 条，整批拒绝
+  → 400 { ok:false, error:"no-scripts-found" }       四种形态都没认出来
+
+DELETE /api/muv-engine/global-regex?id=gr_…   （或 POST {action:'delete', id}，等价）
+  → 200 { ok:true, deleted:"gr_…" }  /  404 { ok:false, error:"not-found" }
+```
+
+- 去重键 = `scriptName + findRegex` **逐字相等**；upsert 覆盖保留原位置与原 id。
+- `id` 确定性：`gr_` + sha1(scriptName+findRegex) 前 12 位 —— 重导/重装 id 稳定。
+- 编译校验与 `applyRegexScript` 同口径（`/…/flags` 壳或裸模式）；坏条目跳过并计数
+  （invalid + reasons），不抛、不整批失败 —— var-tracker bad 计数同纪律。
+
+### 28.4 容量纪律
+
+| 项 | 值 | 超限行为 |
+|---|---|---|
+| 库总量 | 200 条 | **整批拒绝**（400 capacity-exceeded；不做部分导入——半批入库会让"再导一次补齐"变成盲目猜） |
+| 单条 findRegex | 256 KB | 该条跳过，计入 skipped + reasons，其余照常入库 |
+| 单条 replaceString | 256 KB | 同上 |
+
+### 28.5 门禁（全绿，数字）
+
+新 `test-global-regex.mjs` **35 通过 / 0 失败**，覆盖：四种导入形态 / 去重统计（upsert+append）/
+非法 findRegex 跳过计数 / **合并顺序含真变红对照臂**（链式用例 全局'A'→'B' + 卡级'B'→'C'：
+合并序 'C'，颠倒序 'B'——顺序若颠倒，④a 断言必红）/ disabled 不跑 / promptOnly·minDepth
+过滤复用 / API 形状（GET·POST·DELETE·405·404·400 no-scripts-found）/ 容量两档 /
+apply-regex-card API 层合并（含 statusBarHtml 卡级来源不变）。
+
+其余门禁：`test-regex-engine.mjs` 26/0 · `test-client-render.mjs` 275/0 ·
+`test-era-vars.mjs` 18 PASS/0 · `test-snapshots.mjs` 14 PASS/0 ·
+`verify-guard-tag-agnostic.mjs` 78/0 · `verify-no-redouble.mjs` 4/0。
+
+### 28.6 本轮改动文件
+
+`lib/global-regex.js`（新）/ `lib/index.js`（三路由 + apply-regex-card 合并）/ `lib/client.js`
+（仅 `MUV_BUILD` → `2026-09-22n`）/ `test-global-regex.mjs`（新）/ `.gitignore`（`data/`）/
+`README.md`（API 表）/ 文档：`CHANGELOG.md`、本节、`C:\deepseek harness\docs\03-取精华-小白X与酒馆助手.md`、`INDEX.md`。
+
+### 28.7 只能真机/实测确认的部分
+
+- 服务端路由生效需要**重启 DSH**（Node 模块缓存；客户端无改动，硬刷新只为读新构建号）。
+- 真实 ST 导出件（用户手里的全局脚本 JSON）只验过形态假设 + 单元探针；**真机导入一次**
+  看去重统计与渲染效果是最终确认。
+- 全局脚本与真卡的相互作用（全局净化跑在卡级之前会不会吃掉卡正则的锚文本）取决于
+  具体的 findRegex 集合，只能用真实卡 + 真实全局脚本实测。
+
+
 
 

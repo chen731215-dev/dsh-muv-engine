@@ -28,3 +28,6 @@ _commit-msg.txt
 # 调试残留（历次 .tmp-xxx 探针脚本，用完即弃）
 .tmp-*
 muv-agentlog.mjs
+
+# 用户数据（全局正则脚本库 global-regex.json 等，不入库）
+data/

@@ -915,8 +915,15 @@ check('★ waitGlobalInitialized 对**已经就位**的全局立刻 resolve（�
   compatSrc.includes('return Promise.resolve(v)'))
 check('★ waitGlobalInitialized 取不到那个名字时**不 reject**（卡的 .then 不该因为我们掉进 catch）',
   compatSrc.includes('clearInterval(t);res(undefined)'))
+// ★ `SillyTavern` 落位用的是 `defGet` 而不是 `def`（第 36 轮改的，判据放宽成两者之一）：
+//   ST 的 `iframe/predefine.js:26-34` 是 `Object.defineProperty(window,'SillyTavern',{get:()=>({...SillyTavern.getContext(), getContext})})`
+//   —— **每次取值都重算**。它的 `chat` 因此永远是当前那个数组。我们的 `hostChat` 会被宿主
+//   用 `__muvChat` 整条替换，用 `def` 钉成一个快照会让 `SillyTavern.chat` 永远停在初始的
+//   空数组上（静默的假数据，比 undefined 更坏）。行为判据在
+//   `verify-card-compat.mjs` 的 ⑪（"同引用 + 逐次重算"）与 `verify-card-libs.mjs` 的 F 臂上。
 check('★ 垫片已有的 ST predefine 全局仍在：SillyTavern / TavernHelper / Mvu / toastr / eventClearAll',
-  compatSrc.includes('def("SillyTavern"') && compatSrc.includes('def("TavernHelper"') &&
+  (compatSrc.includes('def("SillyTavern"') || compatSrc.includes('defGet("SillyTavern"')) &&
+  compatSrc.includes('def("TavernHelper"') &&
   compatSrc.includes('def("Mvu"') && compatSrc.includes('def("toastr"') &&
   compatSrc.includes('def("eventClearAll"'))
 check('★ 故意**不补**的三个（卡侧实测 0 处引用；给空壳会让卡以为渲染成功而写错数据）',

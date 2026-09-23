@@ -2727,3 +2727,199 @@ guardLiteralOf(SRC) / shortBoundsOf(SRC)   ← 从**被破坏臂改写过的**�
 - 关掉开关后确实是裸文本（客户端常量 + 页面重载，不需要重启 DSH）。
 - 如果某张卡的前缀**超过 600 字**、或键不在词表里 ⇒ 本轮**故意不认**（判据宁可漏）。遇到就把
   那张卡的原文贴出来放宽词表/上限，不要关开关。
+
+## 36. 第 36 轮：卡脚本报错双修 —— `errorCatched`/`tavern_events` + 垫片补 `SillyTavern.saveChat` · `2026-09-22w`
+
+本轮的输入就是用户真机控制台（构建 `2026-09-22v`，卡 **异世界农场**）的六行，四条有效
+（两条图床 `ERR_CONNECTION_RESET` 是用户侧网络，不在本项目范围内）：
+
+```
+[muv-engine] 卡脚本报错：（未知脚本）Uncaught ReferenceError: errorCatched is not defined   ← 反复出现，阻断卡脚本
+lodash.min.js:84 Uncaught TypeError: Expected a function
+[muv-engine] 卡脚本报错：（未知脚本） Script error.                                        ← 跨源脚本错误（无细节）
+mvu_zod.ts:201 变量结构注册成功                                                          ← 部分脚本是跑起来的
+```
+
+第 4 行是关键旁证：`变量结构注册成功` 就是 `mvu_zod.js` 的 `console.info`（用户控制台里那条），
+它证明**卡脚本确实跑起来了** —— 所以本轮的病不是"卡脚本没注入"（§30/§31 修好的那条路是通的），
+而是**垫片少了两个 ST 会给的全局** + **垫片的 `SillyTavern` 少一个方法**。
+
+### 36.1 `errorCatched`（ST 真语义，逐条照抄）
+
+出处（只读源码 `JS-Slash-Runner`）：
+
+| ST 位置 | 内容 |
+| --- | --- |
+| `src/function/util.ts:17` | `export function errorCatched(fn)` —— 纯函数版 |
+| `src/function/util.ts:43` | `export function _errorCatched(fn)` —— iframe 绑定版（`this: Window`） |
+| `src/function/index.ts:161/166/261/433` | 两个都导出；`:433` 挂到 `TavernHelper` 上 |
+| `src/iframe/predefine.js:13` | `_.omit(TavernHelper,'_bind')` 整包 merge 进卡 window |
+| `src/iframe/predefine.js:14-18` | `_bind` 表逐项 `[key.replace('_','')]: value.bind(window)` ⇒ 卡 window 上拿到的是**去掉前导下划线的裸全局 `errorCatched`** |
+
+语义（`util.ts:17-42` 逐字读出来的四条）：
+
+1. **入参是函数、返回一个包装函数**（不是就地执行）；
+2. 包装函数被调用时：`fn.apply` 同步抛 ⇒ `onError(error)`，而 `onError` 里
+   `toastr.error('<pre style="white-space: pre-wrap">…</pre>', error.name, {escapeHtml:false})`
+   之后 **`throw error`** —— 即 **rethrow**，不吞；
+3. `fn` 返回 thenable（`isPromise(result)`）⇒ `result.then(undefined, onError)`；
+   因为 `onError` 里 rethrow，**包装结果仍是被拒的 promise**；
+4. 绑定版比纯函数版多两处：标题带 `[${iframe_name}] ` 前缀、并且 `this._th_impl._log(...)`
+   往 iframe 日志面板写一条。我们**没有** iframe 日志面板 ⇒ 等价物是控制台留痕（见 `warnShim`）。
+
+卡侧实证（本机真卡 `异世界农场`）：三条正则（`【美化】完整变量更新` 576 / `角色状态双端` 21,200 /
+`双端` 12,120 字符）里两条状态栏产物**末尾都是 `$(errorCatched(init));`** ——
+jQuery 的 `$(fn)` 是 ready 回调 ⇒ **返回值必须是函数**（这就是上面第 1 条在真卡上的兑现；
+如果实现成"就地执行并返回 fn 的结果"，jQuery 会拿到非函数 ⇒ 另一条报错）。
+
+### 36.2 `tavern_events`（82 条常量表）
+
+出处：`src/function/event.ts:180`（`export const tavern_events = {…}`，文件共 515 行），
+`src/function/index.ts:46/311` 导出并挂 `TavernHelper` ⇒ 经 `predefine.js:13` 同一路 merge 成**裸全局**。
+
+- 表里有一组**同值别名**：`SMOOTH_STREAM_TOKEN_RECEIVED` 与 `STREAM_TOKEN_RECEIVED` **都等于**
+  `'stream_token_received'`。这是 ST 自己留的，**删任何一个**都会让走它的卡拿到 `undefined`，
+  所以逐字照抄（本轮的表就是照抄的，不是"简写版"）。
+- 大小写怪例也照抄：`CHARACTER_DELETED: 'characterDeleted'`、
+  `CHARACTER_MANAGEMENT_DROPDOWN: 'charManagementDropdown'`、
+  `CHAT_CHANGED: 'chat_id_changed'`、`GENERATION_AFTER_COMMANDS: 'GENERATION_AFTER_COMMANDS'`。
+- 卡侧实证：MVU `artifact/bundle.js`（573,299 字节，`异世界农场` 与 `魔法少女MVU测试` 两条卡脚本
+  都 import 它）里 `tavern_events` **×17**，且**顶层**就有（`kt(tavern_events.MESSAGE_DELETED, …)`）
+  ⇒ 缺它整个 bundle 一行都跑不到。
+- 同一份 bundle 里 **`iframe_events` ×0**、本机真卡里也是 0 处 ⇒ **故意不补**
+  （与 §32「卡不用的 API 加了只会让 DSH 比 ST 更宽松」同一口径；真遇到再取证）。
+
+### 36.3 我们怎么补的（`lib/client.js` 的 §8.1.5）
+
+- `errorCatched`：上面四条语义逐条实现（`isP` 判 thenable、`onError` 里 toastr + `throw`）。
+- `tavern_events`：82 条逐字常量表。
+- 两者都挂 `TavernHelper`（ST `index.ts:311/433` 本来就有），并**在卡 window 上以裸全局落位**。
+- **落位判据（只在缺失时补）**：
+  ```js
+  if (typeof window.errorCatched !== 'function') def('errorCatched', errorCatched)
+  if (!window.tavern_events || typeof window.tavern_events !== 'object') def('tavern_events', tavernEvents)
+  ```
+  判据是 `typeof` 而不是真假值 —— 卡自己写了一个同名变量（哪怕 `null`）我们都不动它。
+  门禁 `verify-card-compat.mjs` ⑪ 有一条专门的断言盯这个（预置哨兵函数/对象 ⇒ 跑完必须原封不动）。
+- **语义边界（如实记，别当它是事件系统）**：补的是**常量表与工具函数**，不是事件的**发生源**。
+  卡的 `eventOn(tavern_events.MESSAGE_RECEIVED, …)` 从此能**注册成功**（此前连注册那一步都因
+  ReferenceError 跑不到），但宿主目前只在 ERA / MVU 那几条链路上广播（`__muvEvent`）⇒
+  ST 那批**原生命名事件多数仍然不会响**。"事件名 → 我们的事件面"的映射需要单独取证，本轮不做。
+
+### 36.4 lodash `Expected a function` —— 真因是垫片缺 `SillyTavern.saveChat`
+
+取证（**先取证再改**，没有猜版本）：
+
+| 证据 | 结论 |
+| --- | --- |
+| `lodash@4.18.1/lodash.min.js:84` 的 `if(typeof n!="function")throw new pl(en)`，`pl=TypeError`、`en="Expected a function"`，该行**只此一处** | 抛这句的函数是 **`_.debounce`**（不是 `_.throttle`、不是 `_.memoize`） |
+| 核对了 CDN 那份 = 标准 lodash 4.18.1，与 ST 本体同版本 | **不是 lodash 版本问题**（不升/不换版本） |
+| MVU `bundle.js` 顶层 `_.debounce(SillyTavern.saveChat, 1e3)` | 喂进守卫的是 `SillyTavern.saveChat` |
+| ST `src/iframe/predefine.js:26-34`：`SillyTavern` 是 `defineProperty(get: () => ({...getContext(), getContext}))`，而 ST 的 context **有** `saveChat` | ST 里它是函数 |
+| 我们的垫片原来只给了 `{ getContext }` | ⇒ `undefined` 进守卫 ⇒ TypeError ⇒ **整个 bundle 模块求值中断** |
+
+⇒ **我方垫片缺口**，不是卡侧用法问题、更不是 lodash 的锅。至于卡侧旁证：农场卡自己的
+`变量结构` 脚本（953 字符）只用了 `z` 与 `_`（`_.clamp` 在两处 transform 里），
+**没有**调用任何"首参必须是函数"的 lodash 方法 —— 也就是说这张卡上的 lodash 报错**不是它自己调的**。
+
+修法两处：
+
+1. 补 `SillyTavern.saveChat`（返回**已完成** Promise；DSH 没有等价的落盘动作，
+   首次调用 `warnShim` 留痕说清楚"聊天与变量由 DSH 自己持久化"）；
+2. `SillyTavern` 的落位从 `def`（固定值）改成新加的 **`defGet`**（每次取值都重算的 getter）。
+   为什么必须换：`hostChat` 会被宿主用 `__muvChat` 消息**整条替换**，用 `def` 固定成快照会让
+   `SillyTavern.chat` 永远停在初始的**空数组**上 —— 这是**静默的假数据**，比 `undefined` 更坏。
+   `verify-card-compat.mjs` ⑪ 有一条断言钉"`SillyTavern.chat` 与 `getContext().chat` 是同一个引用"。
+
+### 36.5 ★ 本轮自己踩的坑（值得单独记）：一个 `;` 让整段垫片不执行
+
+给 `tavern_events` 加表时，表尾那条写成了 `'}' +` （应该 `'};' +`）。后果不是"少个分号"这么轻：
+
+- 整条垫片最终拼成**一行**；
+- 自动分号插入（ASI）只在「下一个词元**前面有换行**」或「下一个词元是 `}`」时才补分号；
+- 这里 `}` 后面**同一行**紧跟 `var TH={` ⇒ 两条都不满足 ⇒ `SyntaxError: Unexpected token 'var'`；
+- 而且**从那一句起整段垫片都不执行** —— `TavernHelper`(TH) / `Mvu` / `toastr` /
+  `waitGlobalInitialized` / 收尾的 `mvuReq()` **全丢**，等于垫片废掉一大半。
+
+**怎么发现的**：自检脚本报"产物不可解析"。第一反应是"自检脚本的宿主写法不对"（把 IIFE 当函数体喂
+`new Function`）—— **那是误判**：同一份产物 `node --check` 也报同样的错。改用两组机械定位才钉住：
+① 与 `HEAD` 的产物**差分**（HEAD 可解析、工作区不可解析 ⇒ 确定是自己引入的）；
+② 在产物里做**配对深度二分**（先把语句边界标出来，再二分第一个"加上就解析不了"的语句）。
+定位过程写在这里是因为它比结论更值钱：**"测试写错了"是最容易骗过自己的解释**。
+
+**门禁现在盯住了**：`verify-card-compat.mjs` ⑪ 的第一条就是「垫片产物在 Node 侧可解析」，
+并带一条**变异臂** —— 把产物里 `};var TH=` 的 `;` 摘掉 ⇒ 必须**真的**不可解析（否则那条是永真）。
+
+### 36.6 「暗色主题下发白的 `<html>` 行」取证（**无代码改动**）
+
+用户的嫌疑是"整页 HTML 源码块没被 iframe 化/隐藏"。用真卡 `异世界农场` 的**三条真正则产物**
+（`【美化】完整变量更新` 576 / `角色状态双端` 21,200 / `双端` 12,120 字符，均 `markdownOnly=true`）
+跑**真渲染链**（`renderFencedHtml` → `wrapLoneDocuments` → `muvHidePageSourceBlocks`），三种用例：
+
+| 用例 | 产物 | iframe 容器 | 残留行首围栏 | 残留裸 `<html>`/`<!doctype` 行 |
+| --- | --- | --- | --- | --- |
+| 带占位符 | 52,883 字符 | **1** | **0** | **0** |
+| 只有正文 | 56 字符 | 0 | 0 | 0 |
+| 占位符在开头 | 52,883 字符 | **1** | **0** | **0** |
+
+另跑一条"围栏被剥掉后的形态"（≈ DSH 把它渲染成 `<pre>` 后 `innerText` 拿到的样子）也是
+**0 行裸 `<html>`**。⇒ **没有"我们漏隐藏"的证据** ⇒ 本轮**不改**（有实锤再修）。
+最可能的解释（保守、不臆断）：暗色主题下那个源码观感来自**卡 iframe 区域内**（卡自己把整页源码
+当正文渲染进了页面）或输入侧痕迹；两者都不在本引擎的判据范围内。
+
+> 记这条路的意义：§33 那轮已经立过规矩 —— **判据保守 + 有实锤才修**。这里再次按它办，
+> 没有为了让"用户报的那一行"消失而去放宽 `muvIsPageSourceText`（那会开始误吞正常正文）。
+
+### 36.7 门禁
+
+```
+export MUV_EDGE='C:/Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+node verify-card-libs.mjs             →  54 通过 /  0 失败   （原 49 → 新增 F 臂 5 条）
+node verify-tavernhelper-scripts.mjs  →  54 通过 /  0 失败
+node verify-guard-tag-agnostic.mjs    →  80 通过 /  0 失败   （含浏览器臂）
+node test-client-render.mjs           → 344 通过 /  0 失败   （原 343/1 → 见 36.8）
+node verify-card-compat.mjs --old-export → after 64 / 0 · before 9 / 38 · 结论「绿灯（对照成立）」
+node verify-no-redouble.mjs           →   4 通过 /  0 失败（before 臂 SKIP，见 36.8）
+```
+
+主门禁连跑两次都是「绿灯（before 臂红 38 条）」，本轮**没有**遇到 §34/§35 记的那类时序偶发。
+
+**新增的两条对照臂（都真变红）**：
+
+1. `verify-card-libs.mjs` **F 臂**（`arm-libs-compat` = 库 + 垫片，与 `muvInjectDoc` 同序）：
+   - A 臂（真 lodash、**没有垫片**）⇒ `debounceMVU = "THROW:Expected a function"` —— **真机同款**；
+   - F 臂（真 lodash **+ 垫片**）⇒ 同一行 `"ok"`；两臂只差"垫片"这一个变量；
+   - B 臂（一个库都没有）⇒ 报 `"没有 lodash"` ⇒ 证明这条判据真的在调 `_.debounce`，不是恒真字符串。
+2. `verify-card-compat.mjs` **⑪ 垫片契约**（纯 Node，**在起浏览器之前**跑，18 条）：
+   after 臂全绿；before 臂 **6 条红**（`errorCatched` / `tavern_events` / `TavernHelper` 两成员 /
+   `SillyTavern` 形状 / `saveChat` / `chat` 同引用）；外加**产物变异臂**。
+
+### 36.8 两处如实记录（不是本轮引入的）
+
+- `test-client-render.mjs` 原有 1 条 `★ 垫片已有的 ST predefine 全局仍在` 断言写死了
+  `def("SillyTavern"` 这个**字符串形态**。本轮 `SillyTavern` 必须从 `def` 换成 `defGet`（36.4 的理由），
+  所以把判据放宽成「`def(` 或 `defGet(` 之一」，并把**行为判据**放到 `verify-card-compat.mjs` ⑪
+  （"同引用 + 逐次重算"）与 `verify-card-libs.mjs` F 臂上 —— 行为判据比字符串形态强，不是把断言改弱。
+- `verify-no-redouble.mjs` 的 before 臂 **SKIP**：`a7031dc` 已随 §26.2 那次 git 对象库事故丢失
+  （`git cat-file -t a7031dc` ⇒ `Not a valid object name`）。该脚本本来就写着「取不到就如实报 SKIP，
+  不伪造对照」，所以这是**既存状态**，与本轮改动无关。
+
+### 36.9 环境事实（会咬人的）
+
+- **本环境里 Node 起外部进程会 `EBUSY`**：`verify-card-compat.mjs --old-export` 内部走
+  `spawnSync('git', …)` ⇒ 直接抛 `Error: git show 7623ffa 失败:`（`stderr` 为空、`status===null`，
+  实际是 `spawnSync git EBUSY`，同一个 `node -e "spawnSync('git',…)"` 可复现）。
+  **不伪造对照**：用 bash 侧 `git show 7623ffa:lib/client.js > .tmp-old-client-7623ffa.js`
+  再 `--src=.tmp-old-client-7623ffa.js` —— `buildArms` 里 `--old-export` 与 `--src` 走的是
+  **同一行**（`OPTS.src ? path.resolve(OPTS.src) : exportOldSource()`），所以是字节等价的同一臂。
+  在能正常 spawn 的 shell 里直接 `--old-export` 即可。
+- 沙箱里跑浏览器门禁会失败（起 Edge 被拦），必须**非沙箱**跑。
+
+### 36.10 只能真机验的部分（如实记录）
+
+- 真机上 `errorCatched is not defined` / `Expected a function` **是否真的消失**（本轮只做到：
+  ST 语义逐条对齐 + 真浏览器真 lodash 的 F 臂 + 真卡三条正则产物进渲染链）。
+- `tavern_events` 补上之后，**哪些** ST 原生事件在 DSH 里真的会响 —— 本轮只保证"注册那一步不再抛"
+  （36.3 的语义边界）。要回答"响了没"，得先做事件名映射，再上真机看卡的刷新钩子。
+- 「暗色主题下发白的 `<html>` 行」的真机截图（本轮按判据取证 ⇒ 无实锤 ⇒ 未改，见 36.6）。
+  如果用户再看到，需要的是一张截图 + 那条消息的原文（是不是在 iframe 区域内）。

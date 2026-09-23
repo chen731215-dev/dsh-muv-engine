@@ -1,5 +1,83 @@
 # Changelog
 
+## 未发布（2026-09-23 · 三十六）★ 卡脚本报错双修：补 `errorCatched` / `tavern_events` + 垫片补 `SillyTavern.saveChat` · `2026-09-22w`
+
+真机控制台（构建 `2026-09-22v`，卡 **异世界农场**）：
+
+```
+[muv-engine] 卡脚本报错：（未知脚本）Uncaught ReferenceError: errorCatched is not defined   ← 反复出现
+lodash.min.js:84 Uncaught TypeError: Expected a function
+mvu_zod.ts:201 变量结构注册成功                                                          ← 另一部分脚本是跑起来的
+```
+
+两条**都不是**卡的问题，也都不是 lodash 的问题 —— 是我们垫片缺了 ST 本来会给的东西。
+
+### 1. `errorCatched` / `tavern_events`（按 ST 源码，只在**缺失**时补）
+
+- **`errorCatched`**：ST `src/function/util.ts:17`（纯函数版）+ `:43`（iframe 绑定版 `_errorCatched`），
+  经 `src/iframe/predefine.js:14-18` 的 `key.replace('_','')` 后成为卡 window 上的**裸全局**。
+  语义照抄：**入参函数 → 返回包装函数**；包装函数同步抛 ⇒ `toastr.error` 后 **rethrow**；
+  返回 thenable ⇒ `then(undefined, onError)`。
+  卡侧实证：`异世界农场` 两条状态栏正则产物（`角色状态双端` 21,200 字符 / `双端` 12,120 字符）
+  末尾都是 `$(errorCatched(init));` —— jQuery 的 `$(fn)` 是 ready 回调 ⇒ **返回值必须是函数**。
+- **`tavern_events`**：ST `src/function/event.ts:180-263` 的 **82 条**常量表（含同值别名
+  `SMOOTH_STREAM_TOKEN_RECEIVED` / `STREAM_TOKEN_RECEIVED`），`index.ts:311` 挂在 `TavernHelper` 上、
+  `predefine.js:13` 再 merge 成裸全局。MVU bundle 里 `tavern_events` ×17 且**顶层**就引用 ⇒
+  缺它整个 bundle 一行都跑不到。同份 bundle 里 `iframe_events` ×0 ⇒ 按 §32 口径**故意不补**。
+- 两者同时挂 `TavernHelper`（ST 上本来就有），并在卡 window 上以**裸全局**落位。
+  落位判据是 `typeof !== "function"` / 不是对象 —— 卡自己定义过就**不动它**。
+- **语义边界（如实记）**：补的是常量表与工具函数，不是事件的**发生源**。
+  `eventOn(tavern_events.X, …)` 从此能注册成功，但 ST 那批原生命名事件**多数仍不会响**
+  （宿主目前只在 ERA / MVU 链路上广播）。事件名 → 我们事件面的映射**本轮不做**。
+
+### 2. lodash `Expected a function` —— 真因是垫片缺 `SillyTavern.saveChat`
+
+- 取证：`lodash@4.18.1/lodash.min.js:84` 的 `if(typeof n!="function")throw new pl(en)`
+  在 `pl=TypeError` / `en="Expected a function"`，该行**只此一处**，所在函数是 **`_.debounce`**。
+- 真因链：MVU `artifact/bundle.js` 顶层 `_.debounce(SillyTavern.saveChat, 1e3)`；ST 的
+  `SillyTavern` 是 `{...getContext(), getContext}`，而 ST 的 context **有** `saveChat`，
+  我们的垫片只给了 `getContext` ⇒ `undefined` 进 lodash 守卫 ⇒ TypeError ⇒
+  **整个 bundle 模块求值中断**。
+- 结论：**我方垫片缺口**，不是卡侧用法问题、**不是 lodash 版本问题**（不升/不换版本）。
+- 修：垫片补 `saveChat`（DSH 没有等价落盘动作 ⇒ 返回已完成 Promise，**首次调用留痕**）；
+  并把 `SillyTavern` 的落位从 `def`（固定值）改成新的 `defGet`（**逐次重算**的 getter）——
+  ST `predefine.js:26-34` 就是 `defineProperty` getter。用固定值会把 `chat` 钉成初始空数组
+  （宿主整条替换 `hostChat` 时不同步 ⇒ 静默的假数据，比 undefined 更坏）。
+
+### 3. ★ 本轮自己踩的坑（门禁现在盯住了）
+
+加代码时 `var tavernEvents={…}` 那条末尾漏了 `;`。整条垫片拼出来是**一行**，而 ASI 只在
+「下一个词元前面有换行」或「下一个词元是 `}`」时才补分号 ⇒ `}` 后同一行跟 `var` 不满足任何一条，
+`SyntaxError: Unexpected token 'var'`，而且**从那一句起整段垫片都不执行**（`TH` / `Mvu` /
+`toastr` / 收尾的 `mvuReq()` 全丢）。此后 `verify-card-compat.mjs` 的 ⑪ 第一件事就是
+「垫片产物必须可解析」，并带一条**变异臂**（把那个 `;` 摘掉 ⇒ 必须不可解析）。
+
+### 4. 「暗色主题下发白的 `<html>` 行」取证（**无代码改动**）
+
+用真卡三条正则产物跑真渲染链（`renderFencedHtml` → `wrapLoneDocuments` → `muvHidePageSourceBlocks`）：
+产物里 **0 行**残留裸 `<html>`/`<!doctype`、**0 行**残留行首围栏、iframe **1 个**。
+⇒ 没有"漏隐藏"的证据，本轮**不改**（有实锤再修）。疑点是暗色主题下 iframe **区域内**那段源码的
+高对比观感，或输入侧痕迹；两者都不在本引擎的判据范围内。
+
+### 门禁
+
+```
+verify-card-libs.mjs            54 通过 / 0 失败   （新增 F 臂：库+垫片，真浏览器真 lodash）
+verify-tavernhelper-scripts.mjs 54 通过 / 0 失败
+verify-guard-tag-agnostic.mjs   80 通过 / 0 失败
+test-client-render.mjs         344 通过 / 0 失败
+verify-card-compat.mjs          64 通过 / 0 失败（after）；49 / 7（before，必须红）
+verify-no-redouble.mjs           4 通过 / 0 失败（before 臂 SKIP：a7031dc 随 §26.2 对象库事故丢失）
+```
+
+新增对照臂（都**真变红**）：
+
+- `verify-card-libs.mjs` **F 臂** —— A 臂（真 lodash、无垫片）必须抛 `Expected a function`（真机同款）；
+  F 臂（真 lodash + 垫片）**同一行**必须 `ok`。两臂只差"垫片"这一个变量。
+- `verify-card-compat.mjs` **⑪ 垫片契约** —— after 臂 18 条全绿，before 臂 6 条红
+  （`errorCatched`/`tavern_events`/`TavernHelper` 两成员/`SillyTavern` 形状/`saveChat`/`chat` 同引用），
+  外加一条**产物变异臂**（摘掉 `};` 的 `;` ⇒ 必须不可解析）。
+
 ## 未发布（2026-09-23 · 三十五）★ 文本级状态栏 —— 无占位符的卡也能把元信息渲染成状态栏 · `2026-09-22v`
 
 用户实测（真卡**川上富江**，`regex_scripts: 0`、没有酒馆助手脚本）：正文开头是**裸文本**

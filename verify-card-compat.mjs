@@ -78,6 +78,184 @@ function expectedKeyOf(src, body) {
   return fn(body)
 }
 
+// ───────────────── ⑪ 垫片契约（第 36 轮）：纯 Node 侧，不依赖浏览器 ─────────────────
+//
+// 为什么单开一组**不跑浏览器**的断言：这一组盯的三件事都是"垫片跑完那一瞬间"的形状，
+// 在 Node 里用最小 window 桩跑同一份**逐字提取**的产物就够了，快且确定；浏览器那一侧
+// （真沙箱 + 真 lodash）由 `verify-card-libs.mjs` 的 F 臂负责，两边不重复。
+//
+// 它盯的三件事，全部来自真机控制台（构建 2026-09-22v，**异世界农场**）：
+//   ① `Uncaught ReferenceError: errorCatched is not defined`（偶发 `tavern_events`）
+//      ⇒ 卡里 `$(errorCatched(init));` 这种**顶层裸引用**一抛，整段脚本一行都跑不到。
+//   ② `lodash.min.js:84 Uncaught TypeError: Expected a function`
+//      ⇒ 真因是我们垫片的 `SillyTavern` 缺 `saveChat`：MVU bundle 顶层
+//        `_.debounce(SillyTavern.saveChat, 1e3)` 把 `undefined` 喂给 lodash 的守卫。
+//   ③ ★ 本轮自己踩的坑：给 `errorCatched`/`tavern_events` 加代码时，`var tavernEvents={…}`
+//      那条末尾漏了 `;`。整条垫片拼出来是**一行**，而自动分号插入（ASI）只在「下一个词元
+//      前面有换行」或「下一个词元是 `}`」时才补分号 ⇒ `}` 后同一行跟 `var` 不满足任何一条,
+//      直接 `SyntaxError: Unexpected token 'var'`，而且**从那一句起整段垫片都不执行**
+//      （`TH` / `Mvu` / `toastr` / 收尾的 `mvuReq()` 全丢）。所以下面第一条就是
+//      「产物必须可解析」，并且带一条**变异臂**证明这条判据真能红。
+function shimProductOf(src) {
+  const text = extractFunction(src, 'muvCardCompatScript')
+  return new Function(text + '\nreturn muvCardCompatScript')()()
+}
+
+/** 最小 window 桩：够垫片从第一行走到最后一行（`document.readyState` 决定走不走收件箱那条分支）。 */
+function shimWindow(seed) {
+  const listens = []
+  const logs = []
+  const win = {
+    parent: { postMessage: () => {} },
+    addEventListener: (t) => { listens.push(t) },
+    setTimeout, clearTimeout, setInterval, clearInterval,
+    Promise, JSON, Object, Array, String, Number, Date, Math, Error, RegExp, Boolean,
+    isFinite, parseInt, decodeURIComponent, encodeURIComponent,
+    document: {
+      readyState: 'complete',
+      addEventListener: () => {},
+      documentElement: { style: { setProperty: () => {} }, innerHTML: '' },
+      querySelector: () => null, querySelectorAll: () => [], getElementById: () => null,
+      createElement: () => ({ style: {}, setAttribute: () => {}, appendChild: () => {}, addEventListener: () => {}, classList: { add() {}, remove() {} } }),
+      body: { appendChild: () => {}, style: {} }, head: { appendChild: () => {} },
+    },
+  }
+  win.window = win
+  win.console = {
+    log: (...a) => logs.push(['log', a.join(' ')]),
+    warn: (...a) => logs.push(['warn', a.join(' ')]),
+    error: (...a) => logs.push(['error', a.join(' ')]),
+    debug: () => {}, info: () => {},
+  }
+  if (seed) for (const k of Object.keys(seed)) win[k] = seed[k]
+  return { win, logs }
+}
+
+/** 跑一份产物，返回 `{ threw, win, logs }`（跑不起来**不算** check，由调用方报成 detail）。 */
+function runShim(product, seed) {
+  const { win, logs } = shimWindow(seed)
+  try {
+    new Function('window', 'document', 'localStorage', 'sessionStorage', 'console', product)(
+      win, win.document, undefined, undefined, win.console)
+    return { threw: null, win, logs }
+  } catch (e) {
+    return { threw: String((e && e.message) || e), win, logs }
+  }
+}
+
+/** ST 侧的真值（`src/function/event.ts:180-263` 那张表里的三个锚点 + 一组同值别名）。 */
+const ST_EVENT_ANCHORS = {
+  APP_READY: 'app_ready',
+  MESSAGE_DELETED: 'message_deleted',
+  CHARACTER_DELETED: 'characterDeleted',
+  MEDIA_ATTACHMENT_DELETED: 'media_attachment_deleted',
+}
+
+async function shimContract(src, c) {
+  let product = null
+  let productErr = null
+  try { product = shimProductOf(src) } catch (e) { productErr = String((e && e.message) || e) }
+  // before 臂（旧源码，没有垫片）必然取不到 ⇒ 报成一条红，而不是崩在半路
+  if (product === null) {
+    c.check('★★★ 垫片产物存在且可解析（旧源码没有垫片 ⇒ 这组必然红）', false,
+      'extractFunction/muvCardCompatScript 取不到: ' + productErr)
+    return
+  }
+  let parseErr = null
+  try { new Function(product) } catch (e) { parseErr = String((e && e.message) || e) }
+  c.check('★★★ 垫片产物在 Node 侧可解析（第 36 轮踩过：`};` 少一个分号 ⇒ 从 `var tavernEvents` 起整段垫片不执行）',
+    parseErr === null, parseErr === null ? product.length + ' 字符整段可解析' : 'SyntaxError: ' + parseErr)
+
+  // ★ 变异臂：把那一个 `;` 摘掉，必须**真的**变红 —— 否则上面那条是永真。
+  const mutated = product.replace('};var TH={', '}var TH={')
+  let mutErr = null
+  try { new Function(mutated) } catch (e) { mutErr = String((e && e.message) || e) }
+  c.check('★★ 变异臂：把产物里 `};var TH=` 的 `;` 摘掉 ⇒ 必须不可解析（判据能红）',
+    mutated !== product && mutErr !== null,
+    mutated === product ? '变异没生效（产物里找不到 `};var TH={`）' : ('变异后 ' + (mutErr ? '如预期解析失败: ' + mutErr : '竟然仍可解析')))
+
+  const run = runShim(product)
+  if (run.threw) {
+    c.check('★★★ 垫片产物能跑完（最小 window 桩下不抛）', false, run.threw)
+    return
+  }
+  const w = run.win
+  c.check('★★★ 垫片产物能跑完（最小 window 桩下不抛）', true, '留痕 ' + run.logs.length + ' 条')
+
+  // ── errorCatched：ST `src/function/util.ts:17`（纯函数版）+ `:43`（iframe 绑定版）
+  //    ⇒ `src/iframe/predefine.js:14-18` 去下划线后成为**裸全局**。语义四条见 client.js 注释。
+  c.check('★★★ 裸全局 `errorCatched` 是函数（真机那条 ReferenceError 的判据）',
+    typeof w.errorCatched === 'function', typeof w.errorCatched)
+  if (typeof w.errorCatched === 'function') {
+    const wrapped = w.errorCatched(function (a, b) { return a + b })
+    c.check('★★★ `errorCatched(fn)` **返回包装函数**（卡里是 `$(errorCatched(init))`：jQuery 的 `$(fn)` 是 ready 回调 ⇒ 返回非函数就当场抛）',
+      typeof wrapped === 'function', typeof wrapped)
+    c.check('★★ 包装函数透传返回值与入参', wrapped(1, 2) === 3, String(typeof wrapped === 'function' ? wrapped(1, 2) : 'n/a'))
+    let threwMsg = null
+    try { w.errorCatched(function () { throw new Error('boom-契约') })() } catch (e) { threwMsg = String((e && e.message) || e) }
+    c.check('★★ 同步抛 ⇒ toastr 留痕之后 **rethrow**（不吞掉 —— ST 是 `throw error`，不是 return）',
+      threwMsg === 'boom-契约', JSON.stringify(threwMsg))
+    // 返回的 promise：ST 走 `then(undefined, onError)`，onError 里 toastr 之后 `throw` ⇒
+    // 包装结果必须**仍被拒**（卡里 `await errorCatched(x)()` 才能照常炸出来）。
+    // 微任务要等一拍才落定，所以这里 await 一次 setTimeout(0)（`runArm` 是 async）。
+    let outcome = 'pending'
+    const rejected = w.errorCatched(function () { return Promise.reject(new Error('rej-契约')) })()
+    if (!rejected || typeof rejected.then !== 'function') outcome = '不是 thenable'
+    else rejected.then(() => { outcome = 'resolved' }, () => { outcome = 'rejected' })
+    await new Promise((r) => setTimeout(r, 0))
+    c.check('★★ 返回的 promise 被拒 ⇒ 包装结果**仍是被拒**（不吞、不翻成 resolved）',
+      outcome === 'rejected', outcome)
+  }
+
+  // ── tavern_events：ST `src/function/event.ts:180-263`（82 条），`index.ts:311` 挂在 TavernHelper 上
+  const te = w.tavern_events
+  c.check('★★★ 裸全局 `tavern_events` 是对象', !!te && typeof te === 'object', typeof te)
+  if (te) {
+    const keys = Object.keys(te)
+    c.check('★★★ `tavern_events` 条数与 ST 的常量表一致（82 条）', keys.length === 82, String(keys.length))
+    const wrong = Object.keys(ST_EVENT_ANCHORS).filter((k) => te[k] !== ST_EVENT_ANCHORS[k])
+    c.check('★★★ `tavern_events` 的取值逐字等于 ST（APP_READY/MESSAGE_DELETED/CHARACTER_DELETED/MEDIA_ATTACHMENT_DELETED 四个锚点 + 大小写怪例 `characterDeleted`）',
+      wrong.length === 0, wrong.length ? wrong.map((k) => k + '=' + JSON.stringify(te[k])).join(' ') : '四个锚点全对')
+    c.check('★ 同值别名也照抄（ST 自己留的 `SMOOTH_STREAM_TOKEN_RECEIVED` / `STREAM_TOKEN_RECEIVED` 同值；删任何一个都会让走它的卡拿到 undefined）',
+      te.SMOOTH_STREAM_TOKEN_RECEIVED === 'stream_token_received' && te.STREAM_TOKEN_RECEIVED === 'stream_token_received',
+      JSON.stringify([te.SMOOTH_STREAM_TOKEN_RECEIVED, te.STREAM_TOKEN_RECEIVED]))
+  }
+
+  // ── TavernHelper 上也要有（ST `index.ts:311` / `:433`）
+  const th = w.TavernHelper
+  c.check('★★ `TavernHelper.errorCatched` / `TavernHelper.tavern_events` 同时在（ST 的 TavernHelper 上本来就有）',
+    !!th && typeof th.errorCatched === 'function' && !!th.tavern_events, th ? Object.keys(th).length + ' 个成员' : String(th))
+
+  // ── SillyTavern：`saveChat` 是 lodash `Expected a function` 的**真因**
+  const st = w.SillyTavern
+  c.check('★★★ `SillyTavern` 落位的是 `{...getContext(), getContext}` 形状且**逐次重算**（ST `iframe/predefine.js:26-34` 就是 defineProperty getter）',
+    !!st && typeof st.getContext === 'function' && typeof st.getChatMessages === 'undefined' && Array.isArray(st.chat),
+    st ? 'chat=数组:' + Array.isArray(st.chat) + ' getContext=' + typeof st.getContext : String(st))
+  c.check('★★★ `SillyTavern.saveChat` 是函数（真机 `lodash.min.js:84 Expected a function` 的根因：MVU bundle 顶层 `_.debounce(SillyTavern.saveChat, 1e3)` 拿到 undefined）',
+    !!st && typeof st.saveChat === 'function', st ? typeof st.saveChat : String(st))
+  if (st && typeof st.saveChat === 'function') {
+    let isThenable = false
+    try { const r = st.saveChat(); isThenable = !!r && typeof r.then === 'function' } catch (e) { isThenable = 'throw:' + e.message }
+    c.check('★★ `saveChat()` 返回 thenable（卡的 `await saveChat()` 不能挂；DSH 没有落盘动作 ⇒ 返回已完成 Promise + 首次留痕）',
+      isThenable === true, String(isThenable))
+  }
+  // 卡侧证据链：`hostChat` 是模块级数组，宿主会用 `__muvChat` 消息**整条替换**它。
+  // 所以 `SillyTavern.chat` 不能是快照 —— 这里钉"两次取值拿到同一个引用"，
+  // 用 `def`（固定值）而不是 `defGet`（逐次重算）时这条会红。
+  c.check('★★ `SillyTavern.chat` 与 `getContext().chat` 是**同一个数组**（宿主整条替换 `hostChat` 时两边一起更新，不是钉死的快照）',
+    !!st && Array.isArray(st.chat) && st.getContext().chat === st.chat,
+    st ? '同引用=' + (st.getContext().chat === st.chat) + ' 是数组=' + Array.isArray(st.chat) : String(st))
+
+  // ── 「只在缺失时补」：卡自己定义了就不许动（与 withCardCompat 里所有落位同一口径）
+  const seedFn = function sentinelErrorCatched() { return '卡自己的' }
+  const seedEv = { CARD_OWN: true }
+  const seeded = runShim(product, { errorCatched: seedFn, tavern_events: seedEv })
+  c.check('★★★ 卡自己定义了 `errorCatched` / `tavern_events` ⇒ 垫片**不覆盖**（真机那张卡自己会从 predefine 拿，不许被我们换掉）',
+    seeded.threw === null && seeded.win.errorCatched === seedFn && seeded.win.tavern_events === seedEv,
+    seeded.threw ? '跑不起来: ' + seeded.threw
+      : 'errorCatched 保持=' + (seeded.win.errorCatched === seedFn) + ' tavern_events 保持=' + (seeded.win.tavern_events === seedEv))
+}
+
 // ─────────────────────────── CLI ───────────────────────────
 const argv = process.argv.slice(2)
 const flag = (name, def) => {
@@ -459,6 +637,10 @@ async function runArm(arm) {
   console.log('\n=== 臂: ' + arm.label + '  (' + path.basename(arm.srcPath) + ') ===')
   const c = makeChecks()
   const report = { arm: arm.label, src: arm.srcPath, script: CARD_SCRIPT, scriptLen: arm.scriptLen, sandbox: arm.sandbox, checks: c.rows, frames: {} }
+
+  // ⑪ 垫片契约（第 36 轮）：**在起浏览器之前**先跑。它不需要浏览器，而且 before 臂
+  //    （旧源码、没有垫片）在这里就要红 —— 不让"垫片缺失"伪装成后面的 OOPIF 读不到。
+  await shimContract(arm.source, c)
 
   const { cdp, pageSession, browserVersion, state, close } = await connect()
   try {

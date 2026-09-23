@@ -2597,3 +2597,133 @@ Uncaught ReferenceError: errorCatched is not defined    at …/StageDog/tavern_r
   `doc.replace(/<\/body\s*>/)` 打在不含字面量的转义产物上）—— 它的 `extent / 走的路径 / 内容底边`
   三列一直是 `?`。修它要动既有门禁文件，本轮没顺手改。
 
+
+## 35. 第 35 轮：文本级状态栏 —— 无占位符的卡也能把元信息渲染成状态栏 · `2026-09-22v`
+
+### 35.1 症状（用户实测 + 已取证）
+
+真卡 **川上富江**（`C:/MySpecialFolder/SillyTavern/data/default-user/characters/川上富江.png`，
+实测 `regex_scripts: 0`、无酒馆助手脚本）。用户贴出的正文开头是**裸文本**：
+
+```
+[时间:5月14日|星期三][季节:初夏][天气:夜间大雨][时间段:晚上20:41][地点:暮川市·旧片区·富江的独宅·厨房][环境布置:镜子前的木凳空了…][怪谈女性角色:川上富江(高中水手制服…)]
+她把他从自己腿间推开的时候…
+```
+
+正文里还夹着 `<details><summary>[角色状态]</summary> ```- 😃 川上富江的状态…```</details>`
+（代码块裸露）。用户期望：元信息渲染成**状态栏**、折叠块渲染成**折叠 UI**。
+
+### 35.2 真因：级联的**触发条件**只有一条（占位符）
+
+`lib/status-cascade.js` 的四级识别（card / yaml / free / loose，含 `[角色状态]` section）
+在本仓库里**只从 `STATUS_PH_TEST`（`<StatusPlaceHolderImpl/>`）那条路被调用**：
+
+```
+client.js: if (!sbHtml && STATUS_PH_TEST.test(result)) sbHtml = buildDefaultStatusBar(regText)
+           … result = await cascadeStatusBlock(result, cardJson)   // 也要求 <Status_block>
+```
+
+⇒ 卡里既没有占位符、又没有 `<Status_block>` 时，**级联一次都不会跑**。而 ST 生态里
+「模型把状态写成消息开头一串 `[键:值]`」是一大类常见形态（本仓库历轮取证过的真卡里就出现过
+`[时间:…]`、`[角色状态]`、`- 😃 名字的状态` 这些写法）。这不是级联能力不足，是**入口只有一个**。
+
+### 35.3 判据（保守优先：**宁可漏，不可误伤**）
+
+| 判据 | 值 | 出处 / 为什么这么设 |
+|---|---|---|
+| 位置 | **消息开头**（去首尾空白后 ≤ 16 字「引子」以内，引子不得含换行/方括号） | 正文中段的 `[注:…]` 绝不能被动 |
+| 对数 | **≥ 2 个连续对**（两对之间只许空白） | 单个 `[时间:…]`、`[注:…]`、`[1]` 一律不认；对照臂实测：放宽成 ≥1 对 ⇒ 门禁当场变红 |
+| 键 | 必须**整体**落在词表里（`muvTextStatusProbe` 内，逐条标出处） | 词表＝误伤面的唯一闸门 |
+| 形状 | 每对**不跨行**、值非空、整段 ≤ 600 字 | 折行与长度是把正文吞进来的两个方向 |
+| 折叠块 | summary 文本必须是**状态类**标签（角色状态/NPC状态/人物状态/登场角色/状态栏/状态/角色/人物/NPC/Character Status/Status） | `<details><summary>主页</summary>` 那类是**整页文档**路径的活（`renderFencedHtml`），不能被这里吃掉 |
+
+**词表（可扩展，新增键必须写出处）** —— 四个来源：
+
+1. **用户实测**（川上富江）：`时间 时间段 季节 天气 地点 环境布置 怪谈女性角色`；
+2. **既有级联**（`status-cascade.js` 的 `extractHeaderFields` 与 loose 的 section 名，保持一致
+   才不会出现"卡里有、这里不认"的分叉）：`日期和时间 日期 当前时间 时间点 时段 时刻 位置 场景
+   当前地点 所在地 气候 角色状态 NPC状态 登场角色 在场角色`；
+3. **生态常见**（本仓库历轮取证过的真卡正文/门禁夹具）：`环境 氛围 场景布置 角色 NPC 人物 主角
+   怪谈角色 女性角色 男性角色 行动 心理 内心 衣着 穿搭 状态 情绪 好感度 关系`；
+4. **英文**（loose 已认）：`Status`、`Character Status`。
+
+**故意不收**：`备注` / `说明` / `提示` / `旁白` 这类口语词 —— 它们出现在正文里的概率远高于
+出现在状态前缀里的概率（误伤面 > 漏掉的收益）。
+
+### 35.4 与既有路径的优先级（**没动**）
+
+`muvStatusAlreadyRendered(text, sbHtml)`：下面任一条命中 ⇒ 文本级兜底**一个字符都不动**
+
+1. 消息里还有 `<StatusPlaceHolderImpl/>`（占位符路径的既有语义）；
+2. 产物里已经有 `.muv-statusbar-wrap`（占位符已被消费并替换）；
+3. `d.statusBarHtml` 非空（卡自带状态栏皮肤）—— 卡级联"产出过"就别做文本级推断（保守选择）；
+4. 消息里有 `<Status_block>`（结构化级联）。
+
+开关 `MUV_TEXT_STATUS`（默认**开**）：关掉 ⇒ 无占位符的卡**恢复裸文本**（= 本轮之前的行为）。
+它是客户端常量（`lib/client.js`），改 `true`→`false` 后**页面重载**即可，不需要重启 DSH。
+
+### 35.5 实现要点（三个"看起来能省但省不得"的决定）
+
+1. **落点信息写进产物自己**：状态栏容器带 `data-muv-ts` / `-raw` / `-look`，
+   `applyDecoratedHtml` 新增 `①.5` 分支解析它、把正文里那段原文**逐段换掉**。
+   不靠模块级状态 ⇒ 并发装饰多条消息不会串（与 `extractStatusWrap` 的"生成什么就解析什么"同口径）。
+   `-raw` 由 `innerHTML` 解析还原（`escAttr` 转义过），不手写反转义（`&amp;` 与 `&#38;` 都要对）。
+2. **落点匹配要容忍空白差异**（`muvFlexRegExpSource`）：**`innerText` 是渲染投影** —— 门禁夹具里
+   那段折叠块在 700px 容器里软折了一行，`innerText` 给出的原文就在折行处**多了一个 `\n`**，
+   而 DOM 文本节点里那位置只是一个空格。照原文逐字匹配 ⇒ 失败 ⇒ 退回整条替换 ⇒ **markdown 被
+   抹平**（实测 `strong/h2/pre/li` 全 0，这一条是门禁抓出来的）。所以空白处一律 `\s*`，其余逐字。
+3. **折叠块的内容不自己解析**：`<details>` 那套形状（去围栏/去标签/section/角色块/字段行）在
+   `status-cascade.js` 的 loose 级里已经实现过一整个版本（含一串踩过的坑），重写必然分叉。
+   所以只把**判定过的块体**发给 `/api/muv-engine/render-status` 的新 `body` 入口
+   （显式字段：**不做**"没有 Status_block 就把整条消息当 body" —— 那等于让 yaml/loose 去读任意
+   散文，误伤面不可接受）。服务端不可达时返回空 ⇒ **不动原文**（宁可留着裸块，也不许删内容）。
+
+替换串铁律照旧：两处大段 HTML 拼接全部用**函数式替换**（见 `muvFrameBlock` 的长注释）。
+
+### 35.6 门禁（全绿，数字）与两条**真变红**的对照臂
+
+| 门禁 | 结果 |
+|---|---|
+| `node verify-statusbar-layout.mjs` | **全部通过**（2 阶段实测 PASS；真 CSS 2865 字） |
+| `node verify-statusbar-fence.mjs` | **2 通过, 0 失败** |
+| `node test-client-render.mjs` | **344 通过, 0 失败**（新增 24 条） |
+| `node verify-decorate-dom.mjs` | **全部通过**（10 条用例 + 9 条对照臂/安全断言；第 35 轮新增 `I_textstatus` / `J_notstatus` + 关闸页 6 条） |
+| `node test-era-vars.mjs` | **全部通过**（39 PASS / 1 SKIP＝找不到真聊天文件） |
+| 顺带回归（本轮改到了守卫行） | `verify-guard-tag-agnostic.mjs` **80 通过 0 失败**、`verify-no-redouble.mjs` 4/0、`verify-header-fold.mjs` 全部通过 |
+
+**夹具 = 用户那段真实文本**，四条断言：
+
+| # | 断言 | 实测 |
+|---|---|---|
+| ① | 7 个连续方括号被识别、渲染成状态栏、正文里**不再有**裸方括号/裸围栏 | `tsBars=2 sbDetails=1 rawBrackets=0 nakedFence=0`，且 markdown 存活（`strong/h2/pre/li` 全在） |
+| ② | 对照臂：正常行文里的**单个** `[时间:…]` + `[1]` + `[注:…]` 不被误伤 | `tsBars=0 keepBracket=1 rawBrackets=1` |
+| ③ | 折叠块不再裸 ```，且交出给服务端的块体里带着角色名 | `sbDetails=1 nakedFence=0 tsReqHasName=1` |
+| ④ | 关闸页（`MUV_TEXT_STATUS=false`，同夹具同源码另跑一页）恢复裸文本 | `tsBars=0 rawBrackets=1 nakedFence=1 tsReqHasName=0` |
+
+**对照臂真变红（实测两处）**：
+- 判据从「≥2 对」放宽成「≥1 对」⇒ `J_notstatus` **FAIL**（`tsBars=1`、单个 `[时间:…]` 被吞）；
+- 关闸页 ⇒ `I_textstatus` 的 `tsBars=0 / rawBrackets=1`（要求"状态栏必须出现"的那条随之变红）。
+
+### 35.7 顺带修好的一条**既有**门禁空洞（不是本轮引入的）
+
+`verify-guard-tag-agnostic.mjs` 的 `--break=guard-enum` / `--break=guard-never` 两条破坏臂
+**在本轮之前就已经抛异常**（用 HEAD 的 `lib/client.js` 复现过）：
+
+```
+guardLiteralOf(SRC) / shortBoundsOf(SRC)   ← 从**被破坏臂改写过的**源码里取守卫块
+                                           而破坏臂恰恰把那一块换成了旧枚举单行
+⇒ Error: 找不到 muvHasTag 定义行（提取阶段抛，断言根本没跑到）
+```
+
+这正是 §22.3「门禁自己也有洞」那一类：**报错盖住真正的失败项**。修法：三个提取口改读 `SRC_RAW`
+（未改写原文），BEFORE 臂固定从 `SRC_RAW` 生成。两条破坏臂现在正常变红（**69/11**、**67/13**）。
+同时把守卫行的匹配放宽成「前缀固定 + 任意多个 `&& !名字`」—— 本轮加的第三项判据
+（`!muvTsShaped`）不会再让行匹配失效（下次再加一项也一样）。
+
+### 35.8 只能真机验的部分（如实记录）
+
+- 川上富江那张卡的真模型输出与 DSH 渲染后的 `innerText` 空白差异（夹具按用户原文 + 「标签当文本
+  铺开」的既有事实搭，**没有**真机重放这张卡的会话）。
+- 关掉开关后确实是裸文本（客户端常量 + 页面重载，不需要重启 DSH）。
+- 如果某张卡的前缀**超过 600 字**、或键不在词表里 ⇒ 本轮**故意不认**（判据宁可漏）。遇到就把
+  那张卡的原文贴出来放宽词表/上限，不要关开关。

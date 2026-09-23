@@ -100,12 +100,18 @@ const note = (s) => console.log('  NOTE ' + s)
 // ── 源码变换：守卫块 ────────────────────────────────────────────────────────
 // 守卫现在是**一个小块**（2026-09-22 起）：标签判据（`muvHasTag`）+ 短文本放行
 // （`muvShortOk`，占位符 greeting「【主页】」那一档）+ 合成守卫行。三个提取函数都按块工作。
-const GUARD_LINE_RE = /^\s*if \(!muvHasTag && !muvShortOk\) return text\s*$/
+//
+// ★ 2026-09-23（第 35 轮）合成行多了**第三项** `!muvTsShaped`（文本级状态栏形态：
+//   消息开头的连续裸 `[键:值]` / 状态折叠块）。所以这里的行匹配放宽成
+//   「前缀固定 + 任意多个 `&& !名字`」，**不写死项数** —— 下次再加一项时，
+//   `--break=guard-enum` 的对照臂不会因为"找不到守卫行"而抛异常（抛异常会盖住真正的
+//   失败项，本轮就是这么被发现漏改的）。
+const GUARD_LINE_RE = /^\s*if \(!muvHasTag && !muvShortOk(?:\s*&&\s*![A-Za-z_$][\w$]*)*\) return text\s*$/
 
 function guardLineIndex(src) {
   const lines = src.split('\n')
   const i = lines.findIndex((l) => GUARD_LINE_RE.test(l))
-  if (i < 0) throw new Error('在源码里找不到守卫行（形如 `if (!muvHasTag && !muvShortOk) return text`）')
+  if (i < 0) throw new Error('在源码里找不到守卫行（形如 `if (!muvHasTag && !muvShortOk[ && !…]) return text`）')
   return i
 }
 
@@ -116,17 +122,24 @@ function tagdefLineIndex(src) {
   return i
 }
 
-/** 取出标签判据的**字面量原文**（`/…/` 那种），用于静态臂求值。 */
+/** 取出标签判据的**字面量原文**（`/…/` 那种），用于静态臂求值。
+ *
+ *  ★ 从 `SRC_RAW`（未经 `--break` 改写的原文）里读，**不是**从改写后的 `SRC`：`--break=guard-enum`
+ *    的 `revertGuard` 会把整个守卫块（含 `var muvHasTag = …` 那一行）换成旧枚举单行，
+ *    于是从 `SRC` 里再也取不到它 —— 破坏臂会在**提取阶段**抛异常，而不是让断言变红。
+ *    那正是"门禁自己也有洞"那一类（HANDOFF §22.3）：报错盖住真正的失败项。
+ *    `neverGuard` 只换合成行，两种模式读原文都对。 */
 function guardLiteralOf(src) {
-  const line = src.split('\n')[tagdefLineIndex(src)]
+  const line = SRC_RAW.split('\n')[tagdefLineIndex(SRC_RAW)]
   const m = /var muvHasTag = (\/[\s\S]*?\/[a-z]*)\.test\(text\)/.exec(line)
   if (!m) throw new Error('取不出守卫正则字面量：' + line.trim())
   return m[1]
 }
 
-/** 短文本放行的阈值**从源码里读**，不写死 —— 门禁判据不许复制实现里的数字。 */
-function shortBoundsOf(src) {
-  const m = /muvTrimmedLen > (\d+) && muvTrimmedLen <= (\d+)/.exec(src)
+/** 短文本放行的阈值**从源码里读**，不写死 —— 门禁判据不许复制实现里的数字。
+ *  ★ 同样读 `SRC_RAW`：那两个阈值在 `revertGuard` 换掉的那一块里（原因同上）。 */
+function shortBoundsOf() {
+  const m = /muvTrimmedLen > (\d+) && muvTrimmedLen <= (\d+)/.exec(SRC_RAW)
   if (!m) throw new Error('取不出短文本放行阈值（muvTrimmedLen > n && <= m）')
   return { min: Number(m[1]), max: Number(m[2]) }
 }
@@ -212,12 +225,12 @@ const CARD_JSON = { ok: true, found: true, name: path.basename(CARD_PNG, '.png')
 if (!SCRIPTS.length) { console.log('\n真卡里没有正则脚本，门禁测的是空气'); process.exit(2) }
 
 // ── ② 静态臂：守卫判据的命中面 ─────────────────────────────────────────────
-console.log('\n=== ② 静态臂：标签判据 = ' + guardLiteralOf(SRC) + ' ===')
-const guardRe = new Function('return ' + guardLiteralOf(SRC))()
+console.log('\n=== ② 静态臂：标签判据 = ' + guardLiteralOf(SRC_RAW) + ' ===')
+const guardRe = new Function('return ' + guardLiteralOf(SRC_RAW))()
 // 完整守卫决策（与 lib/client.js 守卫块同形状）：有 HTML 标签 → 放行；
 // 无标签但去首尾空白后落在短文本区间 → 也放行（占位符 greeting 那一档）。
 // 阈值从源码里提取（shortBoundsOf），不在门禁里复制数字。
-const SHORTS = shortBoundsOf(SRC)
+const SHORTS = shortBoundsOf()
 console.log('  短文本放行区间: (去空白后) > ' + SHORTS.min + ' 且 <= ' + SHORTS.max)
 const guardPass = (t) => guardRe.test(t) || (() => {
   const n = String(t).trim().length
@@ -263,11 +276,16 @@ for (const [label, t] of NEGATIVE) {
   //（短散文现在会被"短文本放行"分支放行，那是有意的新语义，不是误命中）。
   check('标签判据不命中：' + label, guardRe.test(t) === false, JSON.stringify(t.slice(0, 60)))
 }
-// ── ②b 决策臂：完整守卫决策（标签 ∨ 短文本）──
+// ── ②b 决策臂：守卫决策的前两项（标签 ∨ 短文本）──
 // 第三次漏的本体：占位符 greeting（first_mes 只是「【主页】」这类纯短文本，
 // 靠卡 [0]「主页」的显示层正则换成 ``` 包裹的整页 HTML）。标签判据不认它，
 // 只有"短文本放行"分支能救 —— 下面两条决策放行 + 两条决策不放行 + 对照臂。
-console.log('  ── ②b 决策臂：完整守卫决策（标签 ∨ 短文本）──')
+//
+// ★ 第 35 轮起合成行还有**第三项**（`!muvTsShaped`，文本级状态栏形态）。这里只重建
+//   前两项（第三项是 client 侧那两个纯函数，逐字提取它们的成本不值当）。所以后面
+//   显式钉一条：**只靠前两项，文本级状态栏形态是过不去的** —— 那份行为由
+//   `test-client-render.mjs`[22]/[24] 与 `verify-decorate-dom.mjs` 的 I/J 承担。
+console.log('  ── ②b 决策臂：守卫决策的前两项（标签 ∨ 短文本）──')
 const DEC_POSITIVE = [
   ['占位符 greeting「【主页】」（纯文本、无标签）', '【主页】'],
   ['占位符 greeting「星盟契约开场白」（7 字）', '星盟契约开场白'],
@@ -287,6 +305,17 @@ for (const [label, t] of DEC_NEGATIVE) {
 //   否则说明"短文本放行"分支没有承担任何工作，这条修法是空转。
 check('★ 对照臂：占位符 greeting 在旧决策（只看标签）下确实被拦（判据不是空转）',
   guardRe.test('【主页】') === false && guardRe.test('星盟契约开场白') === false)
+// ★ 第 35 轮：文本级状态栏形态（消息开头连续裸 `[键:值]` + 长正文，既无标签也 > 300 字）
+//   必须**由第三项**放行 —— 所以"只重建前两项"的这个 decide 应当**不放行**它。
+//   这条同时说明：本臂的重建是**不完整**的（如实记录），第三项的行为在别处钉。
+{
+  const LONG_TS = '[时间:5月14日|星期三][季节:初夏][天气:夜间大雨][时间段:晚上20:41]'
+    + '[地点:暮川市·旧片区·富江的独宅·厨房]\n' + '她把他从自己腿间推开的时候…'.repeat(20)
+  check('★ 对照臂：只靠「标签 ∨ 短文本」两项，文本级状态栏形态**不**放行' +
+    '（第三项 !muvTsShaped 才是承担它的那一条）', guardPass(LONG_TS) === false)
+  check('★ 同时：这段文本也不是纯散文形态（长度 > 300 且无标签 ⇒ 只可能由第三项救）',
+    LONG_TS.indexOf('<') === -1 && LONG_TS.trim().length > 300)
+}
 // 如实记录的残余（不是漏，是**已知不覆盖**；写在这里是为了它不能悄悄变化）
 console.log('  ── 已知不覆盖（如实记录，不作断言的地方会打印出来）──')
 note('`【主页】` 这类**非标签**形态的卡标记不在判据里；命中的 `guardRe.test("【主页】")` = ' + guardRe.test('【主页】'))
@@ -500,7 +529,10 @@ if (!EDGE) {
   console.log('\n=== 结果: ' + pass + ' 通过, ' + fail + ' 失败（浏览器臂未跑）===' + (BREAK ? '  [--break=' + BREAK + ']' : ''))
   process.exit(fail ? 1 : 0)
 }
-const BEFORE = runArm('before', revertGuard(SRC))
+// ★ BEFORE 臂一律从 `SRC_RAW` 生成：它代表的是**旧枚举守卫**这一固定参照。不能传 `SRC`
+//   —— `--break=guard-enum` 下 `SRC` 已是改写后的那版，再 `revertGuard` 会找不到守卫行
+//   而抛异常（破坏臂本来就是这样坏掉的：报错盖住真正的失败项）。
+const BEFORE = runArm('before', revertGuard(SRC_RAW))
 const AFTER = runArm('after', SRC)
 for (const [label, R] of [['BEFORE', BEFORE], ['AFTER', AFTER]]) {
   if (!R || R.error) { console.log('  ' + label + ' 臂跑挂了: ' + (R ? R.error + ' ' + R.domFile : 'null')); continue }

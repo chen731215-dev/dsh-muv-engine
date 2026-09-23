@@ -28,6 +28,11 @@ import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+// ★ 第 35 轮：文本级状态栏的客户端侧只需要「判据 + 落点手术」，**折叠块的内容**仍然
+// 交给服务端既有的 loose 级联渲染。夹具里没有服务端，所以这里用**真模块**在 node 侧
+// 预先算好那份响应，再由页面里的 fetch 桩返回 —— 桩给的是真服务端会给的答案，
+// 不是手写的 HTML（手写就等于把被测对象抄一遍）。
+import { renderStatusFromText } from './lib/status-cascade.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // 可以指向任意一份源码：用来做「修复前 vs 修复后」的对照。
@@ -36,9 +41,6 @@ const SRC_PATH = process.env.MUV_CLIENT_SRC || path.join(__dirname, 'lib', 'clie
 const CLIENT = readFileSync(SRC_PATH, 'utf8')
 const OUT = path.join(os.tmpdir(), 'muv-visual-main')
 mkdirSync(OUT, { recursive: true })
-
-// 内联进 <script> 时必须打断 `</script`，否则会把宿主页面当场截断
-const INLINED = CLIENT.replace(/<\/script/gi, '<\\/script')
 
 const MARKDOWN = `
 <h2>午后 · 遗迹入口</h2>
@@ -100,7 +102,57 @@ B. 先在入口扎营
 <pre><code>const keep = 1  // 普通代码块：一个字符都不许动</code></pre>`,
 }
 
-/** 每条消息「该渲染出来的东西」——**两个方向都要钉**：markdown 不能丢，功能也不能丢。 */
+// ── 第 35 轮：文本级状态栏（无占位符的卡）─────────────────────────────────────
+//
+// 夹具逐字取自用户实测（川上富江，`regex_scripts: 0`）：
+//   ① 消息**开头**的 7 个连续裸方括号键值对（其中 `[时间:5月14日|星期三]` 的值里
+//      还带一个 `|`）；
+//   ② 正文里夹着的 `<details><summary>[角色状态]</summary>```…```</details>`。
+//
+// ⚠ 夹具里这两段必须是**字面文本**（`&lt;details&gt;`），不是真元素 —— 这是本仓库
+// 反复取证过的事实：DSH 把模型写的 HTML 标签当文本铺在消息里（HANDOFF §30 的
+// "标签外泄成裸文本"就是这一类）。`_decorateOne` 读的 `innerText` 因此能看到
+// `<details>` 这些字面量，判据也建立在这一点上。
+const TS_PREFIX = '[时间:5月14日|星期三][季节:初夏][天气:夜间大雨][时间段:晚上20:41]'
+  + '[地点:暮川市·旧片区·富江的独宅·厨房][环境布置:镜子前的木凳空了…]'
+  + '[怪谈女性角色:川上富江(高中水手制服…)]'
+const TS_DETAILS = '<details><summary>[角色状态]</summary> '
+  + '```- 😃 川上富江的状态 - 🏃 当前行动：退开半步```</details>'
+/** 客户端会发给 /render-status 的那段**块体**（summary 之后、`</details>` 之前）。 */
+const TS_DETAILS_BODY = TS_DETAILS.slice(
+  TS_DETAILS.indexOf('</summary>') + '</summary>'.length,
+  TS_DETAILS.lastIndexOf('</details>'))
+const TS_RENDERED = renderStatusFromText(TS_DETAILS_BODY)
+const TS_RESP = TS_RENDERED
+  ? { ok: true, stage: TS_RENDERED.source, html: TS_RENDERED.html }
+  : { ok: true, stage: null, html: null }
+console.log('=== 文本级状态栏夹具（第 35 轮）===')
+console.log('  折叠块体 = ' + JSON.stringify(TS_DETAILS_BODY))
+console.log('  服务端（真模块）渲染 = stage=' + (TS_RENDERED && TS_RENDERED.source) +
+  '  html=' + (TS_RENDERED ? TS_RENDERED.html.length : 0) + ' 字')
+if (!TS_RENDERED || !TS_RENDERED.html) {
+  console.log('  ⚠ 真模块对这个块体都没渲染出东西 —— 夹具不成立（门禁会红）')
+}
+
+/** 把一段字面文本转义成 HTML 文本节点（模拟 DSH 把标签当文本铺出来）。 */
+const escText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+Object.assign(MESSAGES, {
+  // I：用户实测形态（前缀 + 折叠块 + 正常 markdown 正文）
+  I_textstatus: `<p>${TS_PREFIX}</p>
+${MARKDOWN}
+<p>她把他从自己腿间推开的时候，指尖还沾着水。</p>
+<p>${escText(TS_DETAILS)}</p>`,
+  // J：**对照臂** —— 正常行文里的单个 `[时间:…]`（**1 对而已**）+ `[1]` 引用 + `[注:…]`。
+  //    判据只要放宽一点（比如「≥1 对就认」），这条就会长出状态栏、方括号被吞 ⇒ 本臂变红。
+  //    ★ 第一版把这里写成 `[注:…]` 打头 —— 那样只测到"键不在词表"，**测不到"≥2 对"**
+  //      那条判据（把 ≥2 改成 ≥1 时它照样绿）。所以这里必须用**已知键**、且只有 1 对。
+  J_notstatus: `<p>[时间:昨天下午] 他推门进来，屋里只剩[1]一盏灯。[注:这条是译者注]</p>
+${MARKDOWN}
+<p>他叹了口气，没有再说什么。</p>`,
+})
+
+// 每条消息「该渲染出来的东西」——**两个方向都要钉**：markdown 不能丢，功能也不能丢。
 const NEEDS = {
   A_choices: ['choiceBtns'],
   B_header: ['statusBars'],
@@ -111,9 +163,26 @@ const NEEDS = {
   G_gamecard: ['gameCards'],
   // srcHidden = 被藏起来的整页源码块；preVisible = 仍然可见的 <pre>（普通代码块 + markdown 的 pre）
   H_source: ['srcHidden', 'preVisible'],
+  // ★ 第 35 轮：文本级状态栏 + 折叠 UI
+  I_textstatus: ['tsBars', 'sbDetails'],
+  J_notstatus: [],
 }
 
-const page = `<!DOCTYPE html>
+/**
+ * 生成一页夹具（客户端源码 + 消息集 + state 标签）。
+ *
+ * 第 35 轮起要跑**两页**：
+ *   · `after` 页（开关默认开）—— 正常判据；
+ *   · `off`  页（把 `MUV_TEXT_STATUS` 逐字改成 `false`）—— 要求「关掉开关 = 无占位符的卡
+ *     恢复裸文本」的**对照臂**。它必须变红（状态栏不再出现、裸方括号仍在），否则
+ *     「开关可关」这句话就是空话。
+ */
+function buildPage(clientSrc, stateLabel, keys) {
+  // 内联进 <script> 时必须打断 `</script`，否则会把宿主页面当场截断
+  const inlined = String(clientSrc).replace(/<\/script/gi, '<\\/script')
+  // 预置响应里的 `</` 同样要打断（它会被塞进 <script> 里的 JSON 字面量）
+  const tsRespJson = JSON.stringify(TS_RESP).replace(/<\//g, '<\\/')
+  return `<!DOCTYPE html>
 <html lang="zh"><head><meta charset="utf-8"><title>decorate-dom</title>
 <style>
   html,body{margin:0;padding:0;background:#16181d;color:#d7dae0;font:14px/1.7 "Microsoft YaHei",system-ui,sans-serif}
@@ -123,15 +192,18 @@ const page = `<!DOCTYPE html>
 </style></head>
 <body>
 <div class="wrap">
-  <div class="cap">装饰链路门禁：真实模块 + 真实 _decorateOne + 真实 DOM</div>
-${Object.keys(MESSAGES).map((k) => `  <div class="cap">${k}</div>\n  <div class="host"><div id="msg_${k}" class="_markdown_abc123_7">${MESSAGES[k]}</div></div>`).join('\n')}
+  <div class="cap">装饰链路门禁：真实模块 + 真实 _decorateOne + 真实 DOM（state=${stateLabel}）</div>
+${keys.map((k) => `  <div class="cap">${k}</div>\n  <div class="host"><div id="msg_${k}" class="_markdown_abc123_7">${MESSAGES[k]}</div></div>`).join('\n')}
 </div>
 
 <script>window.__ModuleLoader__ = { load: function (m) { window.__mod = m } };</script>
-<script>${INLINED}</script>
+<script>${inlined}</script>
 <script>
 (function () {
-  var KEYS = ${JSON.stringify(Object.keys(MESSAGES))};
+  var KEYS = ${JSON.stringify(keys)};
+  // ★ 第 35 轮：折叠块的内容由**服务端真模块**渲染，夹具里没有服务端 ⇒ 用 node 侧
+  //   预先算好的那份响应（生成夹具时打印过它的 stage/长度，不是手写 HTML）。
+  var TS_RESP = ${tsRespJson};
   var notes = [];
   function msg(k) { return document.getElementById('msg_' + k) }
   function count(k, sel) { var m = msg(k); return m ? m.querySelectorAll(sel).length : -1 }
@@ -143,6 +215,12 @@ ${Object.keys(MESSAGES).map((k) => `  <div class="cap">${k}</div>\n  <div class=
     return n;
   }
   function emit(state) {
+    // 文本级状态栏的落点手术失败原因（有就留痕，方便一眼看出"为什么 markdown 变平了"）
+    for (var j = 0; j < KEYS.length; j++) {
+      var mj = msg(KEYS[j]);
+      var wj = mj && mj.getAttribute && mj.getAttribute('data-muv-ts-fallback');
+      if (wj) notes.push('tsFallback(' + KEYS[j] + ')=' + wj);
+    }
     for (var i = 0; i < KEYS.length; i++) {
       var k = KEYS[i], m = msg(k), txt = m ? m.innerText : '';
       var v = 'VERDICT msg=' + k + ' state=' + state
@@ -159,6 +237,17 @@ ${Object.keys(MESSAGES).map((k) => `  <div class="cap">${k}</div>\n  <div class=
         + ' gameCards=' + count(k, '.muv-game-card') + ' cardFields=' + count(k, '.muv-card-field')
         + ' srcHidden=' + count(k, '[data-muv-src-hidden]')
         + ' preVisible=' + visiblePre(k)
+        // ★ 第 35 轮：文本级状态栏（.muv-statusbar-wrap 上带 data-muv-ts 的那些）、
+        //   折叠 UI、以及"用户到底还看不看得到裸方括号/裸围栏"。
+        //   围栏那三个字符用 String.fromCharCode 拼 —— 这段脚本在模板字符串里，
+        //   直接写反引号会把夹具页面截断（本文件上面有同样的坑记录）。
+        + ' tsBars=' + count(k, '[data-muv-ts]')
+        + ' sbDetails=' + count(k, 'details.muv-sb-details')
+        + ' rawBrackets=' + (txt.indexOf('[时间:') >= 0 ? 1 : 0)
+        + ' keepBracket=' + (txt.indexOf('[注:') >= 0 ? 1 : 0)
+        + ' nakedFence=' + (txt.indexOf(String.fromCharCode(96, 96, 96)) >= 0 ? 1 : 0)
+        + ' tsReqHasName=' + (String(window.__tsReq || '').indexOf('川上富江') >= 0 ? 1 : 0)
+        + ' tsFallback=' + ((m && m.getAttribute && m.getAttribute('data-muv-ts-fallback')) ? 1 : 0)
         + ' srcLeak=' + (txt.indexOf('NAKEDDOC') >= 0 ? 1 : 0)
         // 第三类真正的用户可见症状：**标签外泄成裸文本**（不是丢 markdown）。
         // 用字符串查找而不是正则字面量：这段代码在模板字符串里，正则的转义斜杠会被
@@ -184,7 +273,19 @@ ${Object.keys(MESSAGES).map((k) => `  <div class="cap">${k}</div>\n  <div class=
   window.addEventListener('error', function (e) { notes.push('onerror:' + e.message); });
 
   try {
-    window.fetch = function () { return Promise.reject(new Error('stub: no server in fixture')) };
+    // ★ 只放行文本级状态栏要用的那一个端点（并记下客户端**实际发来的块体**，
+    //   好让门禁核对"判据真的把 summary 之后那段体交出去了"）；其余一律拒绝 ——
+    //   A~H 那批用例走的仍是"没有服务端"的本地路径，行为与本轮之前一致。
+    window.fetch = function (url, opts) {
+      var u = String(url || '');
+      if (u.indexOf('/api/muv-engine/render-status') >= 0) {
+        var req = {};
+        try { req = JSON.parse((opts && opts.body) || '{}') } catch (e) {}
+        window.__tsReq = String((req && req.body) || '');
+        return Promise.resolve({ json: function () { return Promise.resolve(TS_RESP) } });
+      }
+      return Promise.reject(new Error('stub: no server in fixture'));
+    };
     var exports = window.__mod.factory(function () { return {} });
     notes.push('factory=ok');
     if (exports && typeof exports.apply === 'function') { exports.apply(); notes.push('apply=ok') }
@@ -203,18 +304,35 @@ ${Object.keys(MESSAGES).map((k) => `  <div class="cap">${k}</div>\n  <div class=
         } else { notes.push('decorate=MISSING(window.MuvEngine)') }
       } catch (e) { notes.push('decorate(' + k + ')=THROW:' + e.message) }
     }
+    notes.push('tsReq=' + String(window.__tsReq || '').slice(0, 50));
   }, 80);
 
-  setTimeout(function () { emit('after') }, 1400);
+  setTimeout(function () { emit('${stateLabel}') }, 1400);
 })();
 <\/script>
 </body></html>`
+}
 
+const MAIN_KEYS = Object.keys(MESSAGES)
+const page = buildPage(CLIENT, 'after', MAIN_KEYS)
 const file = path.join(OUT, 'decorate-dom.html')
 writeFileSync(file, page, 'utf8')
+
+// ── 关闸页（第 35 轮要求的对照臂）：`var MUV_TEXT_STATUS = true` → `false` ──────
+//
+// 只放两条文本级用例：其余用例与这个开关无关（跑第二遍没有信息量）。
+// 替换**必须**真的发生 —— 没换到就等于两页一样，那样「关得掉」这条断言会以
+// "状态栏还在"的形式变红（所以这个自检是双保险，不是唯一的保护）。
+const OFF_CLIENT = CLIENT.replace(/(\n\s*var MUV_TEXT_STATUS\s*=\s*)true(\s*\n)/, '$1false$2')
+const offChanged = OFF_CLIENT !== CLIENT
+const OFF_KEYS = ['I_textstatus', 'J_notstatus']
+const offFile = path.join(OUT, 'decorate-dom-off.html')
+writeFileSync(offFile, buildPage(OFF_CLIENT, 'off', OFF_KEYS), 'utf8')
+
 console.log('=== fixture 已生成 ===')
 console.log('  源码: ' + SRC_PATH)
 console.log('  ' + file + '（内联了真实 lib/client.js，' + CLIENT.length + ' 字符）')
+console.log('  ' + offFile + '（MUV_TEXT_STATUS 已改写为 false：' + (offChanged ? '是' : '**否（替换没命中！）**') + '）')
 
 const EDGE = process.env.MUV_EDGE
 if (!EDGE) {
@@ -233,6 +351,18 @@ execFileSync(EDGE, [
 
 const dom = readFileSync(domFile, 'utf8')
 const verdicts = [...dom.matchAll(/VERDICT msg=[\w]+ state=after[^<\n]*/g)].map((m) => m[0].trim())
+
+// ── 关闸页（对照臂）：同一份夹具、同一份源码，只把 MUV_TEXT_STATUS 改成 false ──
+const offDomFile = path.join(OUT, 'decorate-dom-off.dom.html')
+const offProfDir = path.join(OUT, 'prof-off-' + Date.now().toString(36))
+execFileSync(EDGE, [
+  '--headless=new', '--disable-gpu', '--disable-extensions', '--no-first-run',
+  '--no-default-browser-check', '--virtual-time-budget=6000',
+  '--user-data-dir=' + offProfDir, '--dump-dom', 'file:///' + offFile.replace(/\\/g, '/'),
+], { stdio: ['ignore', openSync(offDomFile, 'w'), openSync(path.join(OUT, 'decorate-dom-off.err.txt'), 'w')] })
+const offDom = readFileSync(offDomFile, 'utf8')
+const offVerdicts = [...offDom.matchAll(/VERDICT msg=[\w]+ state=off[^<\n]*/g)].map((m) => m[0].trim())
+
 console.log('\n=== 浏览器实测 ===')
 if (!verdicts.length) {
   console.log('  没拿到 VERDICT —— 装饰链路没跑起来（fixture 有问题，不是产品结论）')
@@ -262,18 +392,73 @@ for (const raw of verdicts) {
   // H：源码块藏住了 **且** 普通代码块还在（只钉一面会放过"无差别隐藏"）
   const needsNoSrcLeak = key === 'H_source'
   const srcLeakOk = !needsNoSrcLeak || num('srcLeak') === 0
-  const ok = markdownKept && featureOk && rawTagsOk && srcLeakOk
+  // ★ 第 35 轮：文本级状态栏的两条判据。I 是**正例**（状态栏 + 折叠 UI 都要出现，
+  //   且裸方括号 / 裸围栏必须消失）；J 是**对照臂**（正常行文不许被认成状态栏 ——
+  //   一个状态栏都不能有，方括号必须原样留着）。
+  let tsOk = true, tsWhy = ''
+  if (key === 'I_textstatus') {
+    const parts = [
+      [num('tsBars') >= 2, '文本级状态栏条数=' + num('tsBars') + '（前缀 + 折叠块各 1）'],
+      [num('sbDetails') >= 1, '折叠 UI 数=' + num('sbDetails')],
+      [num('rawBrackets') === 0, '正文里仍有裸方括号（用户最初的抱怨）'],
+      [num('nakedFence') === 0, '正文里仍有裸 ``` 围栏'],
+      [num('tsReqHasName') === 1, '交给服务端的折叠块体里没有角色名（判据抠错了段）'],
+      [num('tsBars') >= 1 && num('statusBars') >= 1, '状态栏容器不是 .muv-statusbar-wrap'],
+    ]
+    const bad0 = parts.filter((x) => !x[0]).map((x) => x[1])
+    if (bad0.length) { tsOk = false; tsWhy = bad0.join(' / ') }
+  } else if (key === 'J_notstatus') {
+    const bad0 = []
+    if (num('tsBars') !== 0) bad0.push('正常行文被误认成状态栏（tsBars=' + num('tsBars') + '）')
+    if (num('keepBracket') !== 1) bad0.push('正文里的 [注:…] 被吞掉了')
+    if (num('rawBrackets') !== 1) bad0.push('正文里的单个 [时间:…] 被吞掉了')
+    if (bad0.length) { tsOk = false; tsWhy = bad0.join(' / ') }
+  }
+  const ok = markdownKept && featureOk && rawTagsOk && srcLeakOk && tsOk
   if (!ok) bad++
   console.log(`\n  [${key}] ${ok ? 'PASS' : 'FAIL'}`)
   console.log('    ' + v)
   console.log('    markdown 存活=' + (markdownKept ? '是' : '**否**') +
     '   ' + needs.map((n) => n + '=' + num(n)).join(' ') +
     (needsNoRawTags ? '   裸标签残留=' + (rawTagsOk ? '无' : '**有**') : '') +
-    (needsNoSrcLeak ? '   裸源码残留=' + (srcLeakOk ? '无' : '**有**') : ''))
+    (needsNoSrcLeak ? '   裸源码残留=' + (srcLeakOk ? '无' : '**有**') : '') +
+    (tsOk ? '' : '   ★ ' + tsWhy))
 }
 // 防空循环：每条消息都必须有结果
 for (const k of Object.keys(MESSAGES)) {
   if (!seen.has(k)) { console.log(`\n  [${k}] FAIL 没有实测结果（fixture 没跑到这条）`); bad++ }
+}
+
+// ── ★ 第 35 轮的两条对照臂 ───────────────────────────────────────────────────
+//
+// ① 关闸臂（同一份夹具、同一份源码，只把 `MUV_TEXT_STATUS` 改成 false）：
+//    I 必须退回**裸文本**（状态栏消失、裸方括号回来）。它变红 = 「关得掉」。② 判据臂：
+//    J 在**开闸**页必须完全没有状态栏 —— 判据一旦放宽（比如"≥1 对就认"），
+//    `[注:…]` 那一对就会命中，J 立刻变红。两条合起来才说明「这个开关管用」+
+//    「这个判据不误伤」，缺一条都只是"跑过了"。
+console.log('\n=== 文本级状态栏的两条对照臂（第 35 轮）===')
+{
+  const offSeen = new Map()
+  for (const raw of offVerdicts) {
+    const v = clean(raw)
+    offSeen.set((/msg=([\w]+)/.exec(v) || [])[1], v)
+  }
+  const offI = offSeen.get('I_textstatus') || ''
+  const offJ = offSeen.get('J_notstatus') || ''
+  const n = (v, k) => Number((new RegExp('\\b' + k + '=(\\d+)').exec(v) || [])[1] || 0)
+  check('关闸页真的跑起来了（拿到 I/J 两条结果）', !!offI && !!offJ,
+    'offI=' + (offI ? '有' : '**无**') + ' offJ=' + (offJ ? '有' : '**无**'))
+  check('关闸页的源码替换真的发生了（否则两页一样，本条会以"状态栏还在"变红）', offChanged)
+  console.log('    off I: ' + offI)
+  check('★ 关闸 ⇒ I 不再有文本级状态栏（tsBars=0）', n(offI, 'tsBars') === 0,
+    'tsBars=' + n(offI, 'tsBars'))
+  check('★ 关闸 ⇒ I 的裸方括号原样留着（rawBrackets=1）—— 「关掉 = 恢复裸文本」',
+    n(offI, 'rawBrackets') === 1, 'rawBrackets=' + n(offI, 'rawBrackets'))
+  check('★ 关闸 ⇒ I 不请求渲染折叠块（tsReqHasName=0）', n(offI, 'tsReqHasName') === 0)
+  check('★ 关闸不影响 markdown（说明"没动"是原样交回，不是把消息改坏）',
+    n(offI, 'strong') >= 1 && n(offI, 'h2') >= 1 && n(offI, 'pre') >= 1 && n(offI, 'li') >= 1)
+  check('★ 关闸页的 J（对照臂）同样没有状态栏、方括号仍在',
+    n(offJ, 'tsBars') === 0 && n(offJ, 'keepBracket') === 1)
 }
 
 // ── 注入安全：独立验证「属性白名单 + 丢弃 on*」这条声明 ─────────────────────

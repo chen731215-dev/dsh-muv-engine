@@ -1239,26 +1239,40 @@ console.log('\n[22] 守卫短文本放行：占位符 greeting')
   check('★ 含短文本放行分支（上界 = 300）', !!tm && Number(tm[2]) === 300 && Number(tm[1]) === 0,
     tm ? tm[0] : '（没找到 muvTrimmedLen 判据）')
   check('★ 守卫行合成两个判据（不许退化成"只看标签"或"全放行"）',
-    /if \(!muvHasTag && !muvShortOk\) return text/.test(bm))
+    /if \(!muvHasTag && !muvShortOk && !muvTsShaped\) return text/.test(bm))
   // 行为：从源码里抠出判据字面量与阈值，重建与实现同形状的决策函数。
   // 阈值不写死在这里 —— 从提取结果读，实现改阈值时本测试自动跟随上界断言之外的部分。
   const tagLit = /var muvHasTag = (\/[\s\S]*?\/[a-z]*)\.test\(text\)/.exec(bm)
   const tagRe = tagLit ? new Function('return ' + tagLit[1])() : null
+  // ★ 第 35 轮加的第三个判据（文本级状态栏形态）—— 从源码里来的**同一个**判据，
+  //   不是这里另写一份：抄一份就会在实现演进后继续通过（等于没有保护）。
+  const tsProbe = buildFrom(['muvTextStatusProbe'], {}, 'muvTextStatusProbe')
+  const tsDetails = buildFrom(['muvTextDetailsOf'], {}, 'muvTextDetailsOf')
+  const tsShaped = (t) => !!(tsProbe(t).prefix || tsDetails(t))
   const decide = (t) => tagRe.test(t) || (() => {
     const n = String(t).trim().length
     return n > Number(tm[1]) && n <= Number(tm[2])
-  })()
+  })() || tsShaped(t)
   check('占位符 greeting「【主页】」放行（能走到取卡）', decide('【主页】') === true)
   check('占位符 greeting「星盟契约开场白」（7 字）放行', decide('星盟契约开场白') === true)
   check('长散文（301 字、无标签）不取卡（防守卫退化成全放行）', decide('深'.repeat(301)) === false)
   check('纯空白不取卡', decide('   \n  ') === false)
   check('含标签的正文照旧由标签判据放行', decide('他推开门。\n<video src="x.mp4"></video>') === true)
   check('阈值上界本身（恰 300 字、无标签）放行', decide('深'.repeat(300)) === true)
+  // ★ 第 35 轮：文本级状态栏形态也必须放行 —— 它可能既无标签、又远超 300 字
+  //   （长状态前缀 + 长正文），两条老判据都拦不住，正是本轮要救的那一类。
+  const LONG_TS = '[时间:5月14日|星期三][季节:初夏][天气:夜间大雨][时间段:晚上20:41]'
+    + '[地点:暮川市·旧片区·富江的独宅·厨房]\n' + '她把他从自己腿间推开的时候…'.repeat(20)
+  check('★ 文本级状态栏形态（无标签且 > 300 字）放行去取卡', decide(LONG_TS) === true)
+  check('★ 顺带：同一段文本若只是长散文，仍然不取卡（第三个判据不是"全放行"）',
+    decide('深'.repeat(400)) === false)
   // ★ 对照臂（能红）：把短文本分支摘掉（模拟旧判据）⇒ 占位符 greeting 被拦 ⇒
   //   证明上面的"放行"结论确实由这个分支承担，不是恒真。
   const decideOld = (t) => tagRe.test(t)
   check('★ 对照臂：旧判据（只看标签）对「【主页】」确实不放行（判据不是空转）',
     decideOld('【主页】') === false && decideOld('星盟契约开场白') === false)
+  check('★ 对照臂：旧判据对文本级状态栏形态也不放行（第三个判据确实在承担它）',
+    decideOld(LONG_TS) === false)
 }
 
 // ── 23. 卡脚本运行时（TavernHelper / 酒馆助手脚本注入）─────────────────────
@@ -1347,6 +1361,114 @@ console.log('\n[23] 卡脚本运行时：注入形态与开关')
   const chain = buildFrom(['cardHtmlIframe'], { MUV_CARD_SCRIPTS: true }, 'cardHtmlIframe')
   check('★★ 提取 cardHtmlIframe 时依赖链能自足（含新增的脚本读取口）',
     typeof chain === 'function', String(typeof chain))
+}
+
+// ── 24. 文本级状态栏：无占位符的卡（第 35 轮） ────────────────────────────────
+//
+// 用户实测（川上富江，`regex_scripts: 0`）：状态被写成消息开头的**裸方括号**，
+// 而四级级联只在有占位符时才跑 ⇒ 元信息原样堆在正文里。本轮在装饰链加兜底。
+// 这一节钉的是**判据的保守性**（宁可漏、不可误伤）与**渲染形态**（复用 .muv-sb）。
+console.log('\n[24] 文本级状态栏：判据（裸方括号前缀 / 状态折叠块）+ 渲染')
+{
+  const probe = buildFrom(['muvTextStatusProbe'], {}, 'muvTextStatusProbe')
+  const detailsOf = buildFrom(['muvTextDetailsOf'], {}, 'muvTextDetailsOf')
+  const prefixHtml = buildFrom(['muvTextStatusPrefixHtml'], {}, 'muvTextStatusPrefixHtml')
+  const wrap = buildFrom(['muvTextStatusWrap'], { escAttr }, 'muvTextStatusWrap')
+
+  // 用户真卡正文逐字夹具（前缀 7 对 + 正文）。`|` 是同一个字段的两段。
+  const BRACKETS = '[时间:5月14日|星期三][季节:初夏][天气:夜间大雨][时间段:晚上20:41]'
+    + '[地点:暮川市·旧片区·富江的独宅·厨房][环境布置:镜子前的木凳空了…]'
+    + '[怪谈女性角色:川上富江(高中水手制服…)]'
+  const USER = BRACKETS + '\n她把他从自己腿间推开的时候…'
+  const DETAILS = '<details><summary>[角色状态]</summary> ```' +
+    '- 😃 川上富江的状态 - 🏃 当前行动：退开半步' +
+    '```</details>'
+
+  const h1 = probe(USER)
+  check('★ 开头 7 个连续方括号对全部识别（用户实测文本）',
+    !!h1.prefix && h1.prefix.fields.length === 7, JSON.stringify(h1.prefix && h1.prefix.fields.length))
+  check('★ 命中的整段与原文逐字相同（要拿去从正文里删掉）',
+    !!h1.prefix && USER.indexOf(h1.prefix.raw) === 0 && h1.prefix.raw === BRACKETS,
+    h1.prefix && h1.prefix.raw.slice(0, 40))
+  check('★ 值里的 `|` 不被当成字段边界（`[时间:5月14日|星期三]` 是一个字段）',
+    !!h1.prefix && h1.prefix.fields[0].key === '时间' && h1.prefix.fields[0].value === '5月14日|星期三',
+    h1.prefix && JSON.stringify(h1.prefix.fields[0]))
+
+  const html1 = h1.prefix ? prefixHtml(h1.prefix) : ''
+  check('★ 渲染成状态栏卡片（复用既有 .muv-sb* 容器）',
+    html1.indexOf('<div class="muv-sb">') === 0 && html1.indexOf('muv-sb-hd') > 0, html1.slice(0, 60))
+  check('★ 表头按既有口径带图标：📅 日期时间 / 🕐 时段 / 🍃 季节 / 🌤 天气 / 📍 地点',
+    html1.indexOf('📅 5月14日 星期三') > 0 && html1.indexOf('🕐 晚上20:41') > 0 &&
+    html1.indexOf('🍃 初夏') > 0 && html1.indexOf('🌤 夜间大雨') > 0 &&
+    html1.indexOf('📍 暮川市·旧片区·富江的独宅·厨房') > 0)
+  check('★ 非表头字段逐行渲染（环境布置 / 怪谈女性角色）',
+    html1.indexOf('<b>环境布置</b>') > 0 && html1.indexOf('<b>怪谈女性角色</b>') > 0)
+  check('★ 值里的 HTML 被转义（渲染产物不许带裸标签）',
+    prefixHtml({ fields: [{ key: '环境', value: '<img src=x onerror=1>', bucket: 'line' }] })
+      .indexOf('<img') === -1)
+
+  // ── 对照臂：正常行文里的单个方括号**不许**被误伤 ──────────────────────────
+  const NEG = [
+    ['单个 [注:…]（1 对）', '这是正文。[注:这条是译者注]'],
+    ['单个 [时间:…]（1 对）', '[时间:昨天下午]\n他推门进来。'],
+    ['[1] 这种引用标记', '正文 [1] 引用与 [2] 引用。'],
+    ['不在消息开头', '他说：\n[时间:昨天][地点:门口]\n然后走了。'],
+    ['未知键（不在词表）', '[注:一][备:二]\n正文。'],
+    ['已知键 + 未知键混排（只 1 对合格）', '[时间:昨天][备注:随意]\n正文。'],
+    ['两对之间夹了文字', '[时间:昨天] 天气不错 [地点:门口]\n正文。'],
+    ['键值跨行', '[时间:昨天\n天气:晴]\n正文。'],
+    ['空值', '[时间:][地点:门口]\n正文。'],
+    ['emoji 字段行（那是 loose 的活，不是这里）', '- 😃 川上富江的状态\n- 🏃 当前行动：坐着'],
+  ]
+  let negOk = true, negBad = ''
+  for (const [name, text] of NEG) {
+    const r = probe(text)
+    if (r.prefix) { negOk = false; negBad = name; break }
+  }
+  check('★★ 对照臂：10 类正常行文/伪形态一个都不认（判据是保守的，不是"看到方括号就上"）',
+    negOk, negBad ? ('误伤: ' + negBad) : '')
+
+  // ── 状态折叠块 ────────────────────────────────────────────────────────────
+  const d1 = detailsOf(DETAILS)
+  check('★ 状态折叠块被识别（summary 标签 = 角色状态）', !!d1 && d1.label === '角色状态',
+    d1 && d1.label)
+  check('★ 命中的整段逐字相同（含 `<details>`/围栏，要从正文里删掉）',
+    !!d1 && d1.raw === DETAILS, d1 && d1.raw.slice(0, 40))
+  check('★ 块体送服务端时保留原样（围栏由 loose 自己剥，它已经处理过这个形状）',
+    !!d1 && d1.body.indexOf('```') > 0, d1 && d1.body.slice(0, 40))
+  check('★ 落点探针从**去过围栏**的文本取（DOM 里围栏早被吃掉）',
+    !!d1 && d1.look.indexOf('😃 川上富江') === 0 && d1.look.indexOf('`') === -1, d1 && d1.look)
+  const NEG_D = [
+    ['非状态标签（主页）', '<details><summary>主页</summary>```html\n<!DOCTYPE html>\n```</details>'],
+    ['没有 summary', '<details>```- 😃 甲```</details>'],
+    ['空块', '<details><summary>[角色状态]</summary>```\n```</details>'],
+  ]
+  let negDOk = true, negDBad = ''
+  for (const [name, text] of NEG_D) {
+    if (detailsOf(text)) { negDOk = false; negDBad = name; break }
+  }
+  check('★★ 对照臂：非状态折叠块（主页 / 无 summary / 空块）一个都不认', negDOk, negDBad)
+
+  // ── 落点属性（DOM 手术靠它，不靠模块态）──────────────────────────────────
+  const w = wrap('prefix', BRACKETS, '', '<div class="muv-sb">x</div>')
+  check('★ 产物自带落点属性 data-muv-ts / data-muv-ts-raw',
+    w.indexOf('data-muv-ts="prefix"') > 0 && w.indexOf('data-muv-ts-raw=') > 0)
+  check('★ 容器类名仍是 `muv-statusbar-wrap`（applyDecoratedHtml 的 extractStatusWrap 认它）',
+    w.indexOf('<div class="muv-statusbar-wrap"') === 0)
+  check('★ 落点属性里的原文被转义（含 `&`/`"` 也不截断属性）',
+    wrap('prefix', 'a&b"c<d>', '', 'x').indexOf('"a&amp;b&quot;c&lt;d&gt;"') > 0)
+
+  // ── 开关 ──────────────────────────────────────────────────────────────────
+  const literal = (/(?:^|\n)\s*var MUV_TEXT_STATUS\s*=\s*(true|false)\s*$/m.exec(SRC) || [])[1]
+  check('★ 存在显式开关 MUV_TEXT_STATUS', !!literal, String(literal))
+  check('★ 默认开启（关掉 = 无占位符的卡恢复裸文本）', literal === 'true', String(literal))
+  const onBody = extractFunction(SRC, 'muvTextStatusOn')
+  check('★ 开关读取口：显式 false ⇒ false（关得掉）',
+    new Function('MUV_TEXT_STATUS', onBody + '; return muvTextStatusOn()')(false) === false)
+  check('★ 开关读取口：显式 true ⇒ true',
+    new Function('MUV_TEXT_STATUS', onBody + '; return muvTextStatusOn()')(true) === true)
+  check('★ 开关读取口：闭包缺失时退回**默认开**（门禁逐字提取场景）',
+    new Function(onBody + '; return muvTextStatusOn()')() === true)
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)

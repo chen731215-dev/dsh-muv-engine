@@ -1,5 +1,55 @@
 # Changelog
 
+## 未发布（2026-09-24 · 三十七）★ MVU JSONPatch：第四种变量格式解析 + 元素形态显示泄漏修复 · `2026-09-22y`
+
+真机实锤（DSH 会话 `session-7347d5f7`，ST 角色卡）：模型**正式输出**里出现了 MVU 标准的
+第四种变量写入格式 —— `<UpdateVariable>` 内含 `<Analysis>`（给模型的思考痕迹）+ `<JSONPatch>`
+（JSON Patch 数组）。此前不认它，两个用户可见后果：**变量全部没生效**、`<Analysis>` 英文行与
+JSON 数组**裸文本糊在正文里**。
+
+### 1. 服务端：`var-tracker.js` 解析 ④ JSONPatch
+
+- `parseVariableOps` 新增第四来源：`<UpdateVariable>` 内的 `<JSONPatch>`（或 Analysis 之后
+  直接跟的 JSON 数组，宽容双认）。ops 映射：insert/add/replace → 设键（对象路径覆盖、
+  目标/父层是数组或 `/-` 结尾 = 追加末尾、replace 缺失按保守策略也落为设值并计
+  `byOp.replace`）；remove → 删键（缺失无操作，重放幂等）；move → 搬移（值深拷贝）；
+  delta → 数值增量（缺失从 0 起算、非数字路径跳过）。
+- JSON Pointer（RFC 6901）转义：`~1`→`/`、`~0`→`~`；路径按**精确键**导航（键里带 `.` 不被劈开）。
+- `<Analysis>` 先整块剔掉再找补丁体（绝不进变量）；`<initvar>` 形态不碰（① 的地盘，不误计 bad）。
+- 已消费的 UV 块从 ②③ 的扫描源里**等长空白化**剔除（位置不偏移），块内嵌套的
+  `<VariableEdit>` / `_.set` 不被重复解析；坏块/坏 op 跳过并计数（`bad` + `jsonPatch.bad`），
+  不抛、不整批失败。
+- 顺序语义与既有三来源一致：带 `era_data` 消息键按键序重放，拿不到按到达顺序。
+- 响应包新增 `jsonPatch: {blocks, ops, bad, byOp}` 可观测口径。
+
+### 2. 客户端：`client.js` 元素形态显示泄漏（原生 DOM 路径）
+
+- **泄漏机制实锤**（`tools/_probe-leak.mjs`，真 Edge + 真模块）：DSH 把标签渲染成**真元素**时
+  （§20.4 实测两种形态之一），字面标签文本不在任何文本节点里，折叠正则永远打不中 ——
+  实测 HEAD 上 `varedit=0 / analysisLeak=1 / patchLeak=1`；转义文本形态则不泄漏。
+- 修法：`muvRenderVariableBlocks` 新增**元素形态 pass**（先跑）：`querySelectorAll` 认
+  小写元素 `updatevariable/variableedit/variableinsert` → 整块折叠卡、`variablethink` → 推演卡、
+  `jsonpatch` → 补丁卡、`analysis` → 删除（与酒馆路径 `_tavernRenderTags` 集合对齐，
+  内容一律 textContent）。文本形态 pass 原样保留。
+- `muvFeedVariables` 的收集正则**没动**（收集先于折叠，innerHTML 两种形态都吃）。
+
+### 3. 门禁（全绿，数字）
+
+- `test-era-vars.mjs`：+[8] 节 20 条（真实块夹具 / insert×3 / delta / Pointer 转义 / 追加 /
+  move / remove 幂等 / 坏块跳过 / Analysis 不进变量 / 混合不重复解析 / 键序重放乱序一致 /
+  结构对照臂）—— 全部通过（含既有 7 节）。
+- `test-client-render.mjs`：347 通过 / 0 失败（+3 条元素形态源码断言）。
+- `test-regex-engine.mjs`：26 通过 / 0 失败；`test-snapshots.mjs`：全部通过；
+  `test-client-source.mjs`：exit 0。
+- `verify-decorate-dom.mjs`：12 用例全 PASS（新增 K=转义多行真实块 / L=元素形态真实块，
+  `jpLeak=0` + 折叠卡成型；`--break` 双向钉住 markdown 存活）。
+- `verify-guard-tag-agnostic.mjs`：80 通过 / 0 失败（浏览器臂含）。
+- `verify-era-bridge.mjs`：after 臂 21 通过 / 0 失败（连跑 3 次全绿；首轮曾现 17/4 时序波动，
+  HEAD 对照同红同绿，按 §26.1 归因环境时序）。顺带修：`OLD_REV` 324b751 已随 §26.2 事故
+  丢失，改 `7623ffa`（与 verify-card-compat §27.4 同一处置，可 `MUV_OLD_REV` 覆盖）+
+  旧源码导出文件存在时直接复用（WorkBuddy 宿主 `spawnSync('git')` 一律 EBUSY 的容错）。
+- `verify-varblocks-dom.mjs`：全部通过。构建号 `2026-09-22x` → `2026-09-22y`。
+
 ## 未发布（2026-09-23 · 三十六）★ 卡脚本报错双修：补 `errorCatched` / `tavern_events` + 垫片补 `SillyTavern.saveChat` · `2026-09-22w`
 
 真机控制台（构建 `2026-09-22v`，卡 **异世界农场**）：

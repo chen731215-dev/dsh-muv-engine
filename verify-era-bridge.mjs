@@ -47,7 +47,8 @@ const CARD_FILE = process.env.MUV_CARD_FILE || '_足控天堂2.png'
 /** ★ 必须带 CG/era/eventEmit/data-era 的那一份。按《主页》跑量到的全是 undefined。 */
 const CARD_SCRIPT = process.env.MUV_CARD_SCRIPT || 'ERA 状态栏'
 const CARD_SCRIPT_LEN = 210219
-const OLD_REV = '324b751'
+/** ★ 对照臂基准：`324b751` 已随 §26.2 git 事故丢失 —— 与 verify-card-compat（§27.4）同一处置，改 `7623ffa`（现存最老 v0.3.9，无垫片），可 `MUV_OLD_REV` 覆盖。 */
+const OLD_REV = process.env.MUV_OLD_REV || '7623ffa'
 const DSH_API = process.env.MUV_DSH_API || 'http://127.0.0.1:3080'
 /** 夹具用的假会话 id：`currentSessionId()` 的第三条分支（`data-dsh-current-session`）会读它。 */
 const FAKE_SESSION = 'session-fixture'
@@ -417,8 +418,16 @@ async function fetchRealPayload() {
 
 function exportOldSource() {
   const dest = path.join(__dirname, '.tmp-era-old-client-' + OLD_REV + '.js')
+  // ★ 环境容错（2026-09-24）：WorkBuddy 宿主的 node shim 里 `spawnSync('git')` 一律
+  //   EBUSY（连 cmd.exe 都是）—— git 本身没问题（bash 里 `git show` 正常）。
+  //   遇到这种宿主时，事先手工 `git show <rev>:lib/client.js > <dest>` 导出**同一份文件**
+  //   （内容一致，可 md5 核对），脚本直接复用；正常环境仍走 git show，行为不变。
+  if (existsSync(dest)) return dest
   const r = spawnSync('git', ['show', OLD_REV + ':lib/client.js'], { cwd: __dirname, maxBuffer: 1 << 27, encoding: 'utf8' })
-  if (r.status !== 0 || !r.stdout) throw new Error('git show ' + OLD_REV + ' 失败: ' + (r.stderr || '').slice(0, 300))
+  if (r.status !== 0 || !r.stdout) {
+    throw new Error('git show ' + OLD_REV + ' 失败（宿主 EBUSY 时可手工导出到 ' + dest + '）: '
+      + (r.stderr || '').slice(0, 300) + (r.error ? ' err=' + r.error.code : ''))
+  }
   writeFileSync(dest, r.stdout, 'utf8')
   return dest
 }

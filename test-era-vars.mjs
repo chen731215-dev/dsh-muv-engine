@@ -227,5 +227,122 @@ if (!fs.existsSync(CHAT)) {
     JSON.stringify(pick(st, '主播档案.超天酱.数值.好感度')))
 }
 
+// ───────────────────────── 8. ④ MVU JSONPatch（<UpdateVariable> 内的 <JSONPatch>） ─────────────────────────
+console.log('\n[8] ④ MVU JSONPatch（真实块夹具，session-7347d5f7 实锤）')
+const TRACKER_SRC = fs.readFileSync(new URL('./lib/var-tracker.js', import.meta.url), 'utf8')
+{
+  // ★ 对照臂（结构）：识别代码被砍掉时这个标记串就不存在 ⇒ 本节全部行为断言跟着红
+  check('★ 对照臂（结构）：解析器里有 JSONPatch 识别（砍掉新解析必红）',
+    TRACKER_SRC.includes('JSONPATCH_TAG_RE') && TRACKER_SRC.includes("kind: 'jpadd'"))
+
+  // 真实块（逐字取自 tools/_probe-uv.mjs 对 session-7347d5f7 的 dump，2026-09-24）
+  const REAL_UV = `<UpdateVariable>
+<Analysis>
+- time passed: about 15 minutes since the door was pushed open (11:27 to 11:42)
+- dramatic updates allowed: no, this is a first-contact scene with no major event
+- variables: time initialized; race affinity for 凛原族 set to base 5 (no offense committed); personal affinity left empty since no companion agreed yet
+</Analysis>
+<JSONPatch>
+[
+  { "op": "insert", "path": "/时间", "value": { "日期": "09-12", "时刻": "11:42" } },
+  { "op": "insert", "path": "/种族好感度", "value": { "凛原族": 5 } },
+  { "op": "insert", "path": "/个人好感度", "value": {} }
+]
+</JSONPatch>
+</UpdateVariable>`
+
+  const p8 = parseVariableOps(REAL_UV)
+  check('★ 真实块解析出 3 个 op（砍掉新解析 = ops 0 = 本条当场红）',
+    p8.ops.length === 3, JSON.stringify({ ops: p8.ops.length, bad: p8.bad, jp: p8.jsonPatch }))
+  check('★ insert 映射成 jpadd（对象路径 = 设键）',
+    p8.ops.every((o) => o.kind === 'jpadd'), JSON.stringify(p8.ops.map((o) => o.kind)))
+  check('★ jsonPatch 统计：blocks=1 ops=3 bad=0',
+    !!p8.jsonPatch && p8.jsonPatch.blocks === 1 && p8.jsonPatch.ops === 3 && p8.jsonPatch.bad === 0,
+    JSON.stringify(p8.jsonPatch))
+  const SID8 = 'synth-jp-real-' + Date.now()
+  const s8 = applyVariableMessage(SID8, { key: p8.key, ops: p8.ops })
+  check('★ insert×3 落树正确（时间/种族好感度/个人好感度 三个顶层键）',
+    pick(s8, '时间.时刻') === '11:42' && pick(s8, '种族好感度.凛原族') === 5
+      && s8['个人好感度'] && Object.keys(s8['个人好感度']).length === 0,
+    JSON.stringify(s8))
+  check('★ <Analysis> 的思考痕迹绝不进变量（英文行一个字都不在树里）',
+    JSON.stringify(s8).indexOf('time passed') < 0 && JSON.stringify(s8).indexOf('first-contact') < 0,
+    JSON.stringify(s8).slice(0, 120))
+  check('★ 与真消息同构：era_data 消息键照常取到（顺序语义与既有三来源一致）', (() => {
+    const MSG = '<VariableThink>提及 <JSONPatch> 不算块</VariableThink>\n' + REAL_UV +
+      '\n<era_data>{"era-message-key"="era_mk_1789928999999_x1","era-message-type"="assistant"}</era_data>'
+    const p = parseVariableOps(MSG)
+    return p.key === 'era_mk_1789928999999_x1' && p.ops.length === 3 && p.bad === 0
+  })(), '...')
+  check('★ 重复送达无副作用（幂等，与 ②③ 同一口径）',
+    JSON.stringify(applyVariableMessage(SID8, { key: p8.key, ops: p8.ops })) === JSON.stringify(s8))
+
+  // ops 语义矩阵：delta / 追加 / JSON Pointer 转义 / replace / move / remove
+  const MIX = '<UpdateVariable><JSONPatch>[' +
+    '{ "op": "insert", "path": "/文本键", "value": "abc" },' +
+    '{ "op": "delta", "path": "/好感", "value": 3 },' +
+    '{ "op": "delta", "path": "/文本键", "value": 1 },' +
+    '{ "op": "insert", "path": "/清单", "value": ["甲"] },' +
+    '{ "op": "insert", "path": "/清单", "value": "乙" },' +
+    '{ "op": "insert", "path": "/排队/-", "value": "尾" },' +
+    '{ "op": "replace", "path": "/a~1b~0c", "value": 7 },' +
+    '{ "op": "move", "from": "/清单", "path": "/旧清单" },' +
+    '{ "op": "remove", "path": "/不存在" },' +
+    '{ "op": "bogus", "path": "/x" },' +
+    '{ "op": "insert" }' +
+    ']</JSONPatch></UpdateVariable>'
+  const p8b = parseVariableOps(MIX)
+  check('★ 坏 op 跳过并计数（bad=2），同数组的好 op 一个不丢',
+    p8b.jsonPatch.ops === 9 && p8b.jsonPatch.bad === 2 && p8b.bad === 2,
+    JSON.stringify({ jp: p8b.jsonPatch, bad: p8b.bad }))
+  const s8b = applyVariableMessage('synth-jp-mix-' + Date.now(), { ops: p8b.ops })
+  check('★ delta：缺失从 0 起算；**已存在**的非数字路径跳过（不是从 0 重算）',
+    s8b['好感'] === 3 && s8b['文本键'] === 'abc', JSON.stringify(s8b))
+  check('★ insert 到数组父层 = 追加到末尾（["甲"] 再插 "乙" ⇒ 两元素）',
+    JSON.stringify(s8b['旧清单']) === JSON.stringify(['甲', '乙']), JSON.stringify(s8b['旧清单']))
+  check('★ 路径以 /- 结尾 = 追加（父层缺失时建成数组）',
+    JSON.stringify(s8b['排队']) === JSON.stringify(['尾']), JSON.stringify(s8b['排队']))
+  check('★ JSON Pointer 转义：~1 → /、~0 → ~（replace 按保守策略缺失也设值）',
+    s8b['a/b~c'] === 7 && p8b.jsonPatch.byOp.replace === 1, JSON.stringify(s8b))
+  check('★ move：整树搬移（值深拷贝，源位置消失）',
+    JSON.stringify(s8b['旧清单']) === JSON.stringify(['甲', '乙']) && s8b['清单'] === undefined,
+    JSON.stringify(s8b))
+  check('★ remove：目标不存在 = 无操作（重放幂等）', !('不存在' in s8b), JSON.stringify(s8b))
+
+  // 坏块：跳过计数，不整批失败（后面的真块照常解析）
+  const p8c = parseVariableOps('<UpdateVariable><JSONPatch>not json</JSONPatch></UpdateVariable>' + REAL_UV)
+  check('★ 坏块跳过（bad≥1）且不整批失败（真块照常 3 op）',
+    p8c.bad >= 1 && p8c.jsonPatch.blocks === 1 && p8c.jsonPatch.ops === 3,
+    JSON.stringify({ bad: p8c.bad, jp: p8c.jsonPatch }))
+  check('★ <initvar> 形态不被误计成 bad（① 的地盘不碰）', (() => {
+    const p = parseVariableOps('<UpdateVariable><initvar>时间: 11:42</initvar></UpdateVariable>')
+    return p.jsonPatch.blocks === 0 && p.jsonPatch.bad === 0
+  })(), '...')
+  check('★ Analysis 里的 JSON 形状文本不被宽容分支误吃（先剔 Analysis 再找补丁体）', (() => {
+    const p = parseVariableOps('<UpdateVariable><Analysis>示例 [1,2,3] 与 {\"op\":1}</Analysis>[{"op":"delta","path":"/好感","value":2}]</UpdateVariable>')
+    return p.jsonPatch.ops === 1 && p.ops[0].kind === 'jpdelta' && p.bad === 0
+  })(), '...')
+
+  // 顺序语义：带消息键按 epoch 重放（乱序送达结果一致），与 ②③ 同一套账本
+  const ka = { key: 'era_mk_1000_ja', epoch: 1000, ops: [{ kind: 'jpdelta', path: '/好感', delta: 5 }] }
+  const kb = { key: 'era_mk_2000_jb', epoch: 2000, ops: [{ kind: 'jpdelta', path: '/好感', delta: 3 }] }
+  const JA = 'synth-jp-ord-' + Date.now()
+  const JB = 'synth-jp-ord2-' + Date.now()
+  let oa = null
+  for (const f of [ka, kb]) oa = applyVariableMessage(JA, f)
+  let ob = null
+  for (const f of [kb, ka]) ob = applyVariableMessage(JB, f)
+  check('★★ JSONPatch 混入键序账本：乱序送达 = 顺序送达（好感=8）',
+    oa['好感'] === 8 && JSON.stringify(oa) === JSON.stringify(ob),
+    'A=' + JSON.stringify(oa) + '  B=' + JSON.stringify(ob))
+
+  // ★ 对照臂（行为）：同一消息里 ④ 与 ② 混合时各解析各的、不重复解析
+  const p8d = parseVariableOps('<VariableEdit>{"来源":"era"}</VariableEdit>' + REAL_UV)
+  check('★ ④ 与 ② 混合一条消息：块各归各（1 variableedit + 3 jpadd，按文中位置排序），无重复',
+    p8d.ops.length === 4 &&
+    p8d.ops.map((o) => o.kind).join(',') === 'variableedit,jpadd,jpadd,jpadd' && p8d.bad === 0,
+    JSON.stringify(p8d.ops.map((o) => o.kind)))
+}
+
 console.log('\n=== 结果: ' + (fail ? fail + ' 项失败' : '全部通过') + ' ===')
 process.exit(fail ? 1 : 0)

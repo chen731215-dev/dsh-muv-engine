@@ -2945,3 +2945,109 @@ node verify-no-redouble.mjs           →   4 通过 /  0 失败（before 臂 SK
 - 处置：修复有效果（vh-E/F），**先提交让真机做最终判据**；ratchet 判据与新语义的调和列下一轮
   第一顺位。vh-fix 工兵的大改（vh 重写多形态 +extent 重构）因棘轮 12 臂全红已回滚，
   patch 备份在 。
+
+## 38. 第 38 轮：MVU JSONPatch（第四种变量格式）+ 元素形态显示泄漏 —— 变量终于生效、正文不再糊（2026-09-24）· `2026-09-22y`
+
+### 38.1 真机实锤：第四种格式长什么样
+
+DSH 会话 `session-7347d5f7`（ST 角色卡），模型**正式输出**（非 reasoning）里出现了 MVU 标准的
+第四种变量写入格式 —— `<UpdateVariable>` 里不再包 `<initvar>` YAML：
+
+```
+<UpdateVariable>
+<Analysis>
+- time passed: about 15 minutes since the door was pushed open (11:27 to 11:42)
+- dramatic updates allowed: no, this is a first-contact scene
+- variables: time initialized; race affinity for 凛原族 set to base 5
+</Analysis>
+<JSONPatch>
+[
+  { "op": "insert", "path": "/时间", "value": { "日期": "09-12", "时刻": "11:42" } },
+  { "op": "insert", "path": "/种族好感度", "value": { "凛原族": 5 } },
+  { "op": "insert", "path": "/个人好感度", "value": {} }
+]
+</JSONPatch>
+</UpdateVariable>
+```
+
+同一条消息里**还有** `<VariableThink>` / `<VariableEdit>` / `<era_data>` —— 四种来源真的会同楼混发。
+提取工具：`node "C:/deepseek harness/tools/_probe-uv.mjs"`（zstd 多帧解压代码可直接抄）。
+两个用户可见后果：① 变量全没生效（extract 端点一个 op 都收不到）；② `<Analysis>` 英文行 +
+JSON 数组裸文本糊在正文里。
+
+### 38.2 服务端：`parseVariableOps` 第四来源（`lib/var-tracker.js`）
+
+ops 映射表（④ JSONPatch → 我们的变量树；与 ①②③ 同一账本、同一套顺序/重放语义）：
+
+| MVU op | 我们的 kind | 语义 |
+|---|---|---|
+| insert / add | `jpadd` | 对象路径 = 设键（已存在则覆盖）；**目标本身是数组**或**父层是数组**或路径以 `/-` 结尾 = 追加到末尾（`/-` 父层缺失时建成数组）；数组追加**先 clone 再 push**（杜绝别名） |
+| replace | `jpadd` | RFC 6901 要求已存在；MVU 实卡不保证 ⇒ 保守：缺失也落为设值，次数记 `jsonPatch.byOp.replace` |
+| remove | `jpremove` | 删键 / 数组按下标 splice；目标不存在 = 无操作（重放幂等） |
+| move | `jpmove` | 从 `from` 搬到 `path`；值 JSON 往返深拷贝；源不存在 = 无操作 |
+| delta | `jpdelta` | 数值路径累加；缺失从 0 起算（与 ③ `_.add` 同约定）；**已存在**的非数字路径跳过 |
+
+- JSON Pointer（RFC 6901）转义：`~1`→`/`、`~0`→`~`；导航按**精确键**（不走点分拆分，键带 `.` 不劈开）。
+- `<Analysis>` **先整块剔掉**再找补丁体 —— 它是给模型的思考痕迹，绝不进变量，而且里面
+  可能恰好有 `[1,2,3]` 这类 JSON 形状文本，不剔会被宽容分支误吃。
+- `<initvar>` 形态的 UV 块**不碰**（① 的地盘，不误计 bad）。
+- 宽容双认：`<JSONPatch>` 包裹的标准形态 + Analysis 后直接跟 JSON 数组的裸形态。
+  数组形状守卫：每一项必须是"有字符串 `op` 字段的对象"，防止把普通 JSON 数组吃进变量。
+- 已消费的 UV 块从 ②③ 扫描源里**等长空白化**剔除（位置不偏移，`at` 时间轴不乱），
+  块内嵌套的 `<VariableEdit>` / `_.set` 不会被两个来源重复解析。
+- 坏块/坏 op：跳过并计数（`bad` + `jsonPatch.bad` + `jsonPatch.byOp`），不抛、不整批失败。
+- 响应包新增 `jsonPatch: {blocks, ops, bad, byOp}`（`/api/muv-engine/extract`）。
+
+### 38.3 显示层：泄漏机制实锤与修法（`lib/client.js`）
+
+**复现**（`C:/deepseek harness/tools/_probe-leak.mjs`，真 Edge + 真模块 + 真块三形态）：
+
+| 形态 | HEAD 实测 | 结论 |
+|---|---|---|
+| 转义文本（`&lt;UpdateVariable&gt;…`，单行） | `varedit=1` 不泄漏 | 既有 E_variable 夹具覆盖的就是这种 |
+| 转义文本 + 多行真实块 | `varedit=1 jsonpatch=1` 不泄漏 | 文本形态连嵌套块也能收 |
+| **元素形态**（标签被 DSH 渲染成真元素） | `varedit=0 / analysisLeak=1 / patchLeak=1` | **实锤泄漏机制** |
+
+机制：DSH 把标签渲染成**真元素**时（§20.4 实测两种形态之一），字面标签文本不在任何
+文本节点里（`muvTextWithBreaks` 只走文本节点）⇒ 两条折叠正则永远打不中 ⇒ 内部内容裸露。
+
+修法：`muvRenderVariableBlocks` 新增**元素形态 pass**（先于文本 pass 跑）：
+`querySelectorAll('updatevariable, variableedit, variableinsert, variablethink, analysis, jsonpatch')`
+—— 变量块/推演/JSONPatch → `muvDetailsBlock` 折叠卡（与酒馆路径同 class）、`analysis` → 删除；
+只处理仍挂在本根上的元素（外层整块折叠后内层随之摘除）；内容一律 textContent。
+双路径集合对齐：酒馆路径 `_tavernRenderTags` 本来就有 JSONPatch（5029）/变量块（5066）/
+Analysis 隐藏（5118），本轮补齐的是原生 DOM 路径的**元素形态**这一面。
+`muvFeedVariables` 收集正则**没动**：它收 innerHTML（两种形态都在）且**先于**折叠跑（§20.4）。
+
+### 38.4 门禁（全绿，数字）
+
+- `test-era-vars.mjs`：+ [8] 节 20 条，全部通过（真实块夹具 / insert×3 落树 / Analysis 不进
+  变量 / era_data 照常取键 / 幂等 / 坏 op 计数 / delta / 数组追加 / Pointer 转义 / move /
+  remove 幂等 / initvar 不误计 / Analysis 形状文本不误吃 / 键序重放乱序一致 / ④②混合不重复 /
+  结构对照臂——砍掉 `JSONPATCH_TAG_RE` 即红）。
+- `test-client-render.mjs`：**347 通过 / 0 失败**（+3 条元素形态断言）。
+- `test-regex-engine.mjs`：26 通过 / 0 失败；`test-snapshots.mjs`：全部通过；
+  `test-client-source.mjs`：exit 0。
+- `verify-decorate-dom.mjs`：12 用例全 PASS —— 新增 **K**（转义多行真实块）与 **L**
+  （**元素形态**真实块），判据 `variableBlocks≥1 + jpLeak=0`（Analysis 英文行 / `"op"` 不许裸露）；
+  markdown 存活照旧双向钉。
+- `verify-guard-tag-agnostic.mjs`：80 通过 / 0 失败（含浏览器臂）。
+- `verify-era-bridge.mjs`：after 臂 **21 通过 / 0 失败**（连跑 3 次全绿；期间出现过 17/4 的
+  时序波动、HEAD 对照同红同绿 ⇒ §26.1 归因环境时序，与 card-compat 0/1/3 波动同口径）。
+- `verify-varblocks-dom.mjs`：全部通过。card-compat 未跑（任务口径允许，0/1/3 波动不强制）。
+
+### 38.5 顺带修的两个门禁基建问题（非本轮引入）
+
+- `verify-era-bridge.mjs` 的 `OLD_REV = '324b751'` 已随 §26.2 git 事故丢失（`git show` 必炸）
+  ⇒ 照 §27.4 对 card-compat 的同一处置改 `7623ffa`（可 `MUV_OLD_REV` 覆盖）。
+- WorkBuddy 宿主的 node shim 里 `spawnSync('git')`（连 `cmd.exe`）一律 **EBUSY**（git 本身
+  没问题，bash 里正常）⇒ `exportOldSource` 加容错：旧源码导出文件已存在就直接复用
+  （手工 `git show <rev>:lib/client.js > .tmp-era-old-client-<rev>.js`，内容可 md5 核对）。
+
+### 38.6 只能真机验的部分 / 用户该看什么
+
+- 同一张卡再跑一轮：正文里不应再有 `<Analysis>` 英文行 / JSON 数组裸文本；
+  MUV 面板应能看到 `时间 = {日期: 09-12, 时刻: 11:42}`、`种族好感度.凛原族 = 5`。
+- 折叠卡（🔧 变量更新 / 🔧 变量补丁）可展开核对原始数据。
+- 若某楼变量仍没生效：看 extract 响应里的 `jsonPatch` 计数（blocks/ops/bad）定位是
+  "没喂到"还是"解析失败"。

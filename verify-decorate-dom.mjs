@@ -152,6 +152,32 @@ ${MARKDOWN}
 <p>他叹了口气，没有再说什么。</p>`,
 })
 
+// ── 2026-09-24：MVU JSONPatch 块（真实夹具，session-7347d5f7 实锤）──────────────
+// K = 转义文本形态（多行真实块）；L = **元素形态**（DSH 把标签渲染成真元素，
+// 字面标签文本不在任何文本节点里 —— 泄漏实锤的那一种，HEAD 上 analysisLeak/patchLeak 双 1）。
+const REAL_UV_BLOCK = `<UpdateVariable>
+<Analysis>
+- time passed: about 15 minutes since the door was pushed open (11:27 to 11:42)
+- dramatic updates allowed: no, this is a first-contact scene with no major event
+- variables: time initialized; race affinity for 凛原族 set to base 5 (no offense committed); personal affinity left empty since no companion agreed yet
+</Analysis>
+<JSONPatch>
+[
+  { "op": "insert", "path": "/时间", "value": { "日期": "09-12", "时刻": "11:42" } },
+  { "op": "insert", "path": "/种族好感度", "value": { "凛原族": 5 } },
+  { "op": "insert", "path": "/个人好感度", "value": {} }
+]
+</JSONPatch>
+</UpdateVariable>`
+Object.assign(MESSAGES, {
+  K_jsonpatch: `${MARKDOWN}
+<p>门被推开之后，时间来到了 11:42。</p>
+<p>${escText(REAL_UV_BLOCK)}</p>`,
+  L_jsonpatch_elem: `${MARKDOWN}
+<p>门被推开之后，时间来到了 11:42。</p>
+<p>${REAL_UV_BLOCK}</p>`,
+})
+
 // 每条消息「该渲染出来的东西」——**两个方向都要钉**：markdown 不能丢，功能也不能丢。
 const NEEDS = {
   A_choices: ['choiceBtns'],
@@ -167,6 +193,9 @@ const NEEDS = {
   I_textstatus: ['tsBars', 'sbDetails'],
   J_notstatus: [],
 }
+// ★ 2026-09-24：K/L（MVU JSONPatch 真实块）—— 两条形态都要求折叠卡成型
+NEEDS.K_jsonpatch = ['variableBlocks']
+NEEDS.L_jsonpatch_elem = ['variableBlocks']
 
 /**
  * 生成一页夹具（客户端源码 + 消息集 + state 标签）。
@@ -232,6 +261,7 @@ ${keys.map((k) => `  <div class="cap">${k}</div>\n  <div class="host"><div id="m
         + ' videos=' + count(k, 'video') + ' audios=' + count(k, 'audio')
         + ' imgs=' + count(k, 'img') + ' illustrations=' + count(k, '.muv-illustration')
         + ' variableBlocks=' + count(k, '.muv-varedit') + ' abstracts=' + count(k, '.muv-abstract')
+        + ' jsonpatch=' + count(k, '.muv-jsonpatch')
         + ' speechBlocks=' + count(k, '.muv-speech') + ' charNames=' + count(k, '.muv-char-name')
         + ' dialogueBlocks=' + count(k, '.muv-dialogue') + ' locations=' + count(k, '.muv-location')
         + ' gameCards=' + count(k, '.muv-game-card') + ' cardFields=' + count(k, '.muv-card-field')
@@ -256,6 +286,8 @@ ${keys.map((k) => `  <div class="cap">${k}</div>\n  <div class="host"><div id="m
         // （同理：这段注释里也不能出现反引号，它会终止外层的模板字符串。）
         + ' rawTags=' + (['<UpdateVariable>', '<Abstract>', '<speech>', '</speech>', '<char>', '</char>']
             .some(function (s) { return txt.indexOf(s) >= 0 }) ? 1 : 0)
+        // ★ 2026-09-24：MVU JSONPatch 的用户可见症状 —— Analysis 英文行 / JSON 数组裸露
+        + ' jpLeak=' + ((txt.indexOf('time passed') >= 0 || txt.indexOf('"op"') >= 0) ? 1 : 0)
         + ' pwned=' + (typeof window.__pwned === 'undefined' ? 0 : window.__pwned)
         + ' literalStars=' + (/\\*\\*/.test(txt) ? 1 : 0);
       var pre = document.createElement('pre');
@@ -387,8 +419,11 @@ for (const raw of verdicts) {
   const needs = NEEDS[key] || ['choiceBtns']
   const featureOk = needs.every((n) => num(n) >= 1)
   // 第三类的用户可见症状是「标签外泄成裸文本」——它和 markdown 是两件事，必须单独钉
-  const needsNoRawTags = key === 'E_variable' || key === 'F_tags'
+  const needsNoRawTags = key === 'E_variable' || key === 'F_tags' || key === 'K_jsonpatch' || key === 'L_jsonpatch_elem'
   const rawTagsOk = !needsNoRawTags || num('rawTags') === 0
+  // ★ 2026-09-24：K/L（MVU JSONPatch 真实块）—— Analysis 英文行与 JSON 数组不许裸露
+  const needsNoJpLeak = key === 'K_jsonpatch' || key === 'L_jsonpatch_elem'
+  const jpLeakOk = !needsNoJpLeak || num('jpLeak') === 0
   // H：源码块藏住了 **且** 普通代码块还在（只钉一面会放过"无差别隐藏"）
   const needsNoSrcLeak = key === 'H_source'
   const srcLeakOk = !needsNoSrcLeak || num('srcLeak') === 0
@@ -414,13 +449,14 @@ for (const raw of verdicts) {
     if (num('rawBrackets') !== 1) bad0.push('正文里的单个 [时间:…] 被吞掉了')
     if (bad0.length) { tsOk = false; tsWhy = bad0.join(' / ') }
   }
-  const ok = markdownKept && featureOk && rawTagsOk && srcLeakOk && tsOk
+  const ok = markdownKept && featureOk && rawTagsOk && srcLeakOk && jpLeakOk && tsOk
   if (!ok) bad++
   console.log(`\n  [${key}] ${ok ? 'PASS' : 'FAIL'}`)
   console.log('    ' + v)
   console.log('    markdown 存活=' + (markdownKept ? '是' : '**否**') +
     '   ' + needs.map((n) => n + '=' + num(n)).join(' ') +
     (needsNoRawTags ? '   裸标签残留=' + (rawTagsOk ? '无' : '**有**') : '') +
+    (needsNoJpLeak ? '   Analysis/JSON裸露=' + (jpLeakOk ? '无' : '**有**') : '') +
     (needsNoSrcLeak ? '   裸源码残留=' + (srcLeakOk ? '无' : '**有**') : '') +
     (tsOk ? '' : '   ★ ' + tsWhy))
 }

@@ -789,6 +789,13 @@ check('★ <VariableThink> 与 <Abstract> 也在这一类里',
 check('复用酒馆路径同样的 class（样式共用）',
   varBlocksSrc.includes("'muv-varedit'") && varBlocksSrc.includes("'muv-varthink'") && varBlocksSrc.includes("'muv-abstract'"))
 check('JSON 能解析就美化缩进（与酒馆路径一致）', varBlocksSrc.includes('JSON.stringify(JSON.parse(raw), null, 2)'))
+check('★ 元素形态 pass：DSH 把标签渲染成真元素时也认（querySelectorAll 小写标签集合）',
+  varBlocksSrc.includes("querySelectorAll('updatevariable, variableedit, variableinsert, variablethink, analysis, jsonpatch')"),
+  varBlocksSrc.slice(0, 80))
+check('★ 元素形态：Analysis 删除、变量块/推演/JSONPatch 折叠（与酒馆路径集合对齐）',
+  varBlocksSrc.includes("muvDetailsBlock('muv-jsonpatch'") && varBlocksSrc.includes("'remove'"))
+check('★ 元素形态 pass 只处理仍挂在本根上的元素（外层折叠后内层已摘除）',
+  varBlocksSrc.includes('root.contains(el)'))
 const detailsSrc = extractFunction(SRC, 'muvDetailsBlock')
 check('★ 折叠卡正文用 textContent（不解析 HTML）', detailsSrc.includes('textContent') && !/\.innerHTML/.test(detailsSrc))
 check('★ 挂在卫生 pass 上、独立 try', extractFunction(SRC, 'muvSanitizeNode').includes('muvRenderVariableBlocks(md)'))

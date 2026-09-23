@@ -3055,12 +3055,12 @@ Analysis 隐藏（5118），本轮补齐的是原生 DOM 路径的**元素形态
 ## 39. 第 39 轮（2026-09-24 凌晨）：自主诊断定型 + 开场白/白边四连修（6606288，构建 d）
 
 ### 39.1 自主诊断工具（效率质变）
--  三件套定型： 的 cookie（有效期至 9-29）
-  注入 → openPage → 会话枚举/点击（）→ iframeSessions 逐元素诊断。
+- `C:\deepseek harness\tools\dsh-live*.mjs` 三件套定型：`_dsh-cookie.json` 的 cookie（有效期至 9-29）
+  注入 → openPage → 会话枚举/点击（`.YDXeBa_sessionRow`）→ iframeSessions 逐元素诊断。
 - **DSH 服务端对 client.js 是逐请求读盘**（rev 随内容变）——客户端改动硬刷新即生效，无需重启。
 
 ### 39.2 四连修（全部真机实锤后动手）
-1. **开场白钉死**：苍玄界 greeting 正则 ；ST 播种不传深度（script.js:7660），
+1. **开场白钉死**：苍玄界 greeting 正则 `maxDepth:0`；ST 播种不传深度（script.js:7660），
    DSH 重渲染旧会话首楼 depth>0 ⇒ 拒替换 ⇒ 钉死。beautifyMuv 内：微小响应（≤400B）+
    短占位符（≤300）+ depth>0 ⇒ depth 0 重打一次。真机验证 retry-depth0 → iframe 出现。
 2. **装饰触发不可靠**：观察器单次触发 + React 晚挂载 ⇒ 永不重试。3s 兜底扫摆。
@@ -3072,4 +3072,4 @@ Analysis 隐藏（5118），本轮补齐的是原生 DOM 路径的**元素形态
 
 ### 39.3 未决
 - verify-frame-ratchet 5 FAIL（真卡三档收敛 / 100vh 对抗臂）——§37.3 既有冲突缩小（9→5），归因未完成。
-- 卡脚本  之外的  是否随 saveChat 垫片消失，待真机。
+- 卡脚本 `_.debounce(SillyTavern.saveChat)` 之外的 `Expected a function` 是否随 saveChat 垫片消失，待真机。

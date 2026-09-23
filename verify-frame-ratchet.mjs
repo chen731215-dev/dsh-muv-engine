@@ -82,7 +82,14 @@ PAYLOADS.push({
   html: HERO('.hero{position:absolute;top:40px;left:0;right:0}'),
 })
 
-const R = loadClientRenderers()
+// ★★ 2026-09-23 修：必须给 `window` 桩（与 verify-frame-height.mjs 同一条教训）。
+//   真实 DSH 里 `cardHtmlIframe` 在**浏览器里**跑，`rewriteVhMinHeight` 读得到
+//   `window.innerHeight` ⇒ 把卡里的 `min-height:100vh` 烤成**父页视口常量**（ST 语义）。
+//   Node 侧不传桩 ⇒ 重写静默跳过 ⇒ 卡里的 `min-height:100vh` 原样进 iframe ⇒ 它 = iframe
+//   自己的高度 ⇒ 真·不动点：起始 600/900/1500 → 报 600/900/1500（实测就是这么报的，
+//   `正文美化` 那三档的 FAIL 就是这么来的 —— 那是**夹具缺省行为**，不是上线行为）。
+//   探针窗口 1280×900 ⇒ headless 下 innerHeight 恰为 900。
+const R = loadClientRenderers(undefined, { innerHeight: 900 })
 
 // 每个实例在子文档里挂 `data-payload@start`，用来把消息事件对回具体 iframe。
 const CASE_PROBE = (key) => '<script>(function(){var k=' + JSON.stringify(key) + ';' +
@@ -124,9 +131,24 @@ function buildPage(payloads) {
       html = html.replace(/(style="display:block;width:100%;height:)\d+px/, '$1' + start + 'px')
       html = html.replace('<iframe', '<iframe data-key="' + key.replace(/"/g, '&quot;') + '"')
       // 注入到 srcdoc 里（`</body>` 前）
-      html = html.replace(/(srcdoc=")([\s\S]*?)(" sandbox)/, (m, a, doc, b) =>
-        a + doc.replace(/<\/body\s*>/, CASE_PROBE(key).replace(/&/g, '&amp;').replace(/"/g, '&quot;') +
-          INSTRUMENT.replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '</body>') + b)
+      // ★★ 2026-09-23 修：产物里的 srcdoc 值被 `escAttr` **整体转义**（`<` → `&lt;`、
+      //   `>` → `&gt;` —— 见 lib/client.js 的 escAttr）。所以：
+      //   ① 要匹配的是**转义形态**的 `&lt;/body&gt;`，不是 `</body>`；
+      //   ② 插进去的探针也必须**先转义**，浏览器解开属性实体后才还原成真脚本。
+      //   原来那句 `doc.replace(/<\/body\s*>/, …)` 打在不含该字面量的转义产物上是**空操作**
+      //   ⇒ 子文档探针从未注入 ⇒ 下面第 1 节的三列（`extent` / `走的路径` / `内容底`)
+      //   **恒为 `?`**，两条判据（有没有走 `body.scrollHeight` 回退 / 内容底边是否可见）
+      //   **恒真** —— 空判据。这与"空表假绿"是同一类病，一起修掉。
+      const escProbe = (s) => String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+      html = html.replace(/(srcdoc=")([\s\S]*?)(" sandbox)/, (m, a, doc, b) => {
+        const probe = escProbe(CASE_PROBE(key) + INSTRUMENT)
+        const re = /&lt;\/body\s*&gt;/gi
+        let mm, last = null
+        while ((mm = re.exec(doc))) last = mm
+        if (!last) return a + doc + b
+        return a + doc.slice(0, last.index) + probe + doc.slice(last.index) + b
+      })
       frames.push(html)
     }
   }
@@ -144,9 +166,16 @@ function buildPage(payloads) {
     'var k=all[i].dataset.key;(seen[k]=seen[k]||[]).push(e.data.__muvFrameHeight);' +
     'var lim=muvFrameHeightLimits();' +
     'clamp[k]=clamp[k]||{min:lim.min,max:lim.max,rawMax:null,clampedMax:null};' +
+    // ★★ 2026-09-23 修：这里是**多了一个 `}`** —— `}}}' + '}, false);'` 一共闭了 4 层，
+    //   而 `function(e){ … for(…){ if(…){ … } } }` 只需要 3 层。整个父页内联脚本因此
+    //   **语法错（`SyntaxError: missing ) after argument list`）⇒ 一行都不执行**
+    //   ⇒ 没有监听器、没有 `#out`、`parsed={}` ⇒ 这个门禁从此**永远"全部通过"**（空表假绿）。
+    //   实测：改动前后的源码（`git show b536cb4:lib/client.js`）表现完全一致。
+    //   修法就是把这一层的花括号减掉：`h;}}`（收 `if(...){` 与 `for(...){`）
+    //   + `}, false);`（收 `function(e){` 并结束 addEventListener 调用）＝ 一共 3 层。
     'var c=clamp[k];if(c.rawMax===null||e.data.__muvFrameHeight>c.rawMax)c.rawMax=e.data.__muvFrameHeight;' +
     'var h=Math.round(e.data.__muvFrameHeight);if(h<lim.min)h=lim.min;if(h>lim.max)h=lim.max;' +
-    'if(c.clampedMax===null||h>c.clampedMax)c.clampedMax=h;}}}' +
+    'if(c.clampedMax===null||h>c.clampedMax)c.clampedMax=h;}}' +
     '}, false);' +
     'window.__muvFrameHListener=1;' +
     'window.addEventListener("message", onMuvFrameHeightMessage, false);' +
@@ -154,7 +183,10 @@ function buildPage(payloads) {
     'for(var i=0;i<all.length;i++){var f=all[i];var k=f.dataset.key;' +
     'out[k]={final:parseFloat(f.style.height),reports:(seen[k]||[]),clamp:(clamp[k]||null),' +
     'ownScrollbar:(f.scrollHeight>f.clientHeight+1)};}' +
-    'document.getElementById("out").textContent=JSON.stringify(out);}' +
+    'var s=JSON.stringify(out);var o=document.getElementById("out");if(o)o.textContent=s;return s;}' +
+    'window.__report=report;' +
+    // 仍然挂 load+5s（有则更好），但**判据不再依赖它**：父页 `load` 要等 3 个真卡 iframe 的
+    // 远程资源（字体/图/视频）全部落定，实测在这个夹具里**可能永远不 fire** ⇒ 只靠它就会拿到空表。
     'window.addEventListener("load",function(){setTimeout(report,5000)});' +
     '</script></body></html>'
 }
@@ -170,13 +202,27 @@ for (let i = 0; i < PAYLOADS.length; i++) {
   fs.writeFileSync(file, buildPage([p]), 'utf8')
   const rt = await openPage(EDGE, { url: 'file:///' + file.replace(/\\/g, '/'), outDir: OUT, windowSize: '1280,900' })
   try {
-    await sleep(6500)
-    const dom = await evalJson(rt.cdp, 'JSON.stringify((function(){var o={};' +
-      'var all=document.querySelectorAll("iframe.muv-iframe");' +
-      'var frames=[];for(var i=0;i<all.length;i++){frames.push({key:all[i].dataset.key})}' +
-      'o.frames=frames;o.out=(document.getElementById("out")||{}).textContent||"";return o})())', rt.pageSession)
+    // ★ 等"有帧 + 至少一条上报"（轮询而不是固定 sleep），再补 6s 让内容/棘轮收敛。
+    //
+    // 为什么必须改（实测，2026-09-23）：原来的 `await sleep(6500)` 之后只读一次
+    // `#out`，而 `report()` 挂在**父页 `load` + 5000ms** 上；父页 `load` 要等这批
+    // （1 真卡 × 3 档起点，其中 ERA 状态栏 210 KB、带远程字体/6 图/1 视频）全部落定，
+    // 在这个夹具里**可能永远不 fire** ⇒ `#out` 空串 ⇒ `parsed={}` ⇒ `byName` 为空
+    // ⇒ **下面的判据一条都不跑，直接报"全部通过"**（空表假绿）。
+    // 已用 `git show b536cb4:lib/client.js`（改动前的源码）实测复现同样现象 ⇒ 与客户端无关。
+    let dom = null
+    const t0 = Date.now()
+    while (Date.now() - t0 < 40000) {
+      dom = await evalJson(rt.cdp, 'window.__report ? window.__report() : ""', rt.pageSession)
+      let cur = {}
+      try { cur = typeof dom === 'string' ? JSON.parse(dom) : (dom || {}) } catch (_) { cur = {} }
+      if (Object.keys(cur).length && Object.values(cur).some((v) => (v.reports || []).length > 0)) break
+      await sleep(400)
+    }
+    await sleep(6000)   // 原来的 6500ms 等待就是为这一段的收敛
+    dom = await evalJson(rt.cdp, 'window.__report ? window.__report() : ""', rt.pageSession)
     let parsed = {}
-    try { parsed = JSON.parse(dom.out || '{}') } catch (_) { parsed = {} }
+    try { parsed = typeof dom === 'string' ? JSON.parse(dom) : (dom || {}) } catch (_) { parsed = {} }
     // 子文档侧的 extent 快照：走 CDP 子会话（沙箱 iframe 在独立渲染进程里）
     const snaps = new Map()
     for (const s of rt.cdp.iframeSessions) {
@@ -190,6 +236,10 @@ for (let i = 0; i < PAYLOADS.length; i++) {
 }
 
 // ───────── 报告 ─────────
+// ★ 防空表假绿：一条实例读数都没有 ⇒ 下面的判据一条都不会跑，"全部通过"是空的。
+//   第一次实测就是这么骗过去的（固定 sleep 抢在父页 report() 之前，见上面轮询那段）。
+check('读到逐实例读数（防空表假绿）', Object.keys(all).length > 0,
+  '0 条读数 ⇒ 下面的判据一条都没执行；这行必须红，别把空表当通过')
 console.log('\n=== 1. 逐实例读数（extent / 回退 / 夹取 / 收敛）===')
 console.log('  ' + '载荷@起点'.padEnd(34) + 'final'.padStart(7) + '  报回序列(末4)'.padEnd(22) +
   'extent'.padStart(7) + '  走的路径'.padEnd(20) + '夹取raw→clamped'.padEnd(18) + 'ownSB  内容底  文档高')

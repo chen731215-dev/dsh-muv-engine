@@ -535,5 +535,90 @@ const mediaRow = (obj, key) => {
 
 try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch (_) {}
 
+// ═══════════════ 8. 测量修正通道：媒体落定引起的收缩必须能回缩（2026-09-22u） ═══════════════
+//
+// 取证（HANDOFF §34）：收缩方向的常规路径要求**连续 3 次**观测才清零重学，而媒体落定引起的
+// 收缩往往**只有一次**观测机会 —— 定时补量到 10.9s+150ms 就停了，RO 又只在**盒子**尺寸变化时
+// fire（媒体引起的包围盒变化可以完全不动盒子，见第 7 节）。合成夹具（真时间 CDP）实测：
+//   img 用 `width/height` **属性**预留 600×2000 的高盒子（那次读到的 2300 是**真实**内容高，
+//   棘轮没记错）→ 图片是 600×200 的**扁**图、src 在 **11.5s**（晚于最后一次补量）才设
+//   → 内容缩到 500 后再无第二次观测 ⇒ 帧高永久停在 2300 ⇒ **1800px 死白**。
+//   对照：同一份文档把 src 提前到 400ms ⇒ 靠 2500/5300/8100 三次补量凑够 3 次 ⇒ 正常回落。
+//
+// 本轮加的通道：媒体**全部落定**（`MS()`）+「首帧已过」+ **没有**观测到溢出 + 已学值高出实测
+// 内容 24px 以上 ⇒ 这次收缩是"修正一次过时读数"，**一次就够**（语义与边界见 lib/client.js 里
+// `extent()` 的「测量修正通道」段）。三条判据缺一条，这条门禁就是在测空气：
+//   A 先撑高：夹具必须真的把帧高撑到过 ≥2000（否则"回落"恒真）；
+//   B 回缩：11.5s 的 src 落定后，帧高必须回落到内容量级（≤600）；
+//   C 变异臂：把 `if(mf&&MS())` 砍成 `if(false)`（通道关闭）⇒ B 必须**红**。
+const MEDIA_WIDE_SVG = 'data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22' +
+  '%20width%3D%22600%22%20height%3D%22200%22%3E%3Crect%20width%3D%22600%22%20height%3D%22200%22%20fill%3D%22%230a5%22%2F%3E%3C%2Fsvg%3E'
+
+/** 「先大后小」：img 属性预留 600×2000（内容 300+2000=2300），真实图片 600×200（内容缩到 500）。 */
+const SHRINK_LATE = {
+  name: '测量修正·先大后小',
+  html: '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+    '<style>html,body{margin:0;padding:0;height:100%}#sp{background:#123}</style></head><body>' +
+    '<div id="sp">SPACER</div>' +
+    '<img id="mi" width="600" height="2000" alt="late" style="display:block;width:600px;height:auto">' +
+    '<scr' + 'ipt>(function(){' +
+    // spacer 高由运行时设置（夹具纪律：文本里不许出现 height:NNNpx）
+    'document.getElementById("sp").style.height="300px";' +
+    // src 在 11.5s —— 晚于引导脚本最后一次低频补量（10.9s）+150ms 去抖。
+    // 触发放**子文档自己的定时器**：§29 已记，父→子 postMessage 在早期会丢。
+    'setTimeout(function(){var i=document.getElementById("mi");' +
+    'if(i&&!i.getAttribute("src"))i.src="' + MEDIA_WIDE_SVG + '";},11500);' +
+    '})();</scr' + 'ipt></body></html>',
+}
+
+/** 跑一个「先大后小」场景：等到 11.5s 的 src 落定 + 去抖 + 700ms 安全复核之后收数。 */
+async function runShrinkScenario(R2, tag, payload) {
+  const start = 900
+  const iframe = R2.cardHtmlIframe(payload.html)
+    .replace(/(style="display:block;width:100%;height:)\d+px/, '$1' + start + 'px')
+    .replace('<iframe', '<iframe data-payload="' + payload.name + '" data-start="' + start + '"')
+  const file = path.join(tmpDir, 'shrink-' + tag + '.html')
+  fs.writeFileSync(file, '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>' + iframe +
+    '<pre id="out"></pre><script>' + scenParentScript('') + '</scr' + 'ipt></body></html>', 'utf8')
+  const rt = await openPage(EDGE, { url: 'file:///' + file.replace(/\\/g, '/'), outDir: tmpDir, windowSize: '1200,900' })
+  try {
+    await sleep(15000)
+    const j = await evalJson(rt.cdp, 'window.__report()', rt.pageSession)
+    try { return typeof j === 'string' ? JSON.parse(j) : (j || {}) } catch (_) { return {} }
+  } finally { rt.close() }
+}
+
+console.log('\n=== 8. 测量修正通道：媒体落定引起的收缩必须能回缩 ===')
+fs.mkdirSync(tmpDir, { recursive: true })
+const SHRINK_EXPECT = 600         // 内容 500 + 余量
+const SHRINK_PEAK = 2000          // 「先大」相位必须真的发生过
+const shrinkCur = await runShrinkScenario(R, 'late', SHRINK_LATE)
+const MUT_FIX_FROM = 'if(mf&&MS()){window.__muvHFit=0;fit=0;window.__muvHReset=0}'
+const MUT_FIX_TO = 'if(false){window.__muvHFit=0;fit=0;window.__muvHReset=0}'
+let shrinkMut = {}
+if (clientSource().indexOf(MUT_FIX_FROM) >= 0) {
+  const R_MUTF = loadClientRenderersFrom(clientSource().replace(MUT_FIX_FROM, () => MUT_FIX_TO), undefined, PROBE_WIN)
+  shrinkMut = await runShrinkScenario(R_MUTF, 'mut-late', SHRINK_LATE)
+} else {
+  console.log('  SKIP 找不到测量修正变异点 ' + JSON.stringify(MUT_FIX_FROM) +
+    ' —— 通道换写法了，这条要跟着改（否则 C 臂变成永真）')
+}
+{
+  const a = mediaRow(shrinkCur, SHRINK_LATE.name)
+  const peak = Math.max(...(a.reports || []).concat([a.final]))
+  check('「' + SHRINK_LATE.name + '」确实先撑到过 ' + SHRINK_PEAK + 'px 量级（否则下面那条恒真）',
+    peak >= SHRINK_PEAK, '峰值=' + peak + '  序列=' + JSON.stringify((a.reports || []).slice(-6)))
+  check('★★★「' + SHRINK_LATE.name + '」媒体落定后帧高必须回落到内容量级（≤' + SHRINK_EXPECT + '）',
+    a.final <= SHRINK_EXPECT, 'final=' + a.final + '  序列=' + JSON.stringify((a.reports || []).slice(-6)))
+  if (Object.keys(shrinkMut).length) {
+    const m = mediaRow(shrinkMut, SHRINK_LATE.name)
+    check('★★★ 变异臂（测量修正通道被砍）本臂必须变红 —— 判据能红的实证',
+      m.final > SHRINK_EXPECT,
+      '变异体 final=' + m.final + '（≤' + SHRINK_EXPECT + ' 说明回缩不是这条通道给的，判据在测空气）')
+  }
+}
+
+try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch (_) {}
+
 console.log('\n=== 结果: ' + (fail ? fail + ' 项失败' : '全部通过') + ' ===')
 process.exit(fail ? 1 : 0)

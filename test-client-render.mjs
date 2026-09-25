@@ -388,6 +388,10 @@ if (!cardFile || !readPngCard) {
     const out = renderFencedHtml(rep)
     check('「' + s.scriptName + '」→ 恰好 1 个 iframe', (out.match(/muv-iframe/g) || []).length === 1,
       'iframe=' + (out.match(/muv-iframe/g) || []).length)
+    // ★ 断言回到"裸 wrap"形态（2026-09-25 恢复楼位判据）：`muv-fullpage` 只在
+    //   封面楼加，而门禁这里没有装饰链上下文 ⇒ `muvFullpageFloorNow()` 恒 false。
+    //   （工兵 A 随着"产物形态判据"把它改成了必带 muv-fullpage —— 那条断言与错误
+    //   判据配套，必须一起还原。）
     check('「' + s.scriptName + '」→ 整个替换串都进了 srcdoc（' + rep.length + ' 字）',
       out.startsWith('<div class="muv-statusbar-wrap"><iframe') && out.endsWith('</iframe></div>'),
       JSON.stringify(out.slice(0, 50)) + ' … ' + JSON.stringify(out.slice(-30)))
@@ -707,7 +711,78 @@ const applySrc = extractFunction(SRC, 'applyDecoratedHtml')
 check('★ 占位符也走 Range 段替换（第二类修复点）',
   applySrc.includes('STATUS_PH_TEST') && applySrc.includes('insertHtmlAtRange('), applySrc.slice(0, 120))
 check('取片段走配平扫描而不是写死正则', applySrc.includes('extractStatusWrap('))
-check('找不到落点才整条替换（最后手段保留）', /body\.innerHTML = html/.test(applySrc))
+check('找不到落点才整条替换（最后手段保留）', /body\.innerHTML = muvParaKeepHtml\(html\)/.test(applySrc))
+// ★★ 楼位判据的回归护栏（2026-09-25）：build k 曾把破格判据改成"产物形态"
+//   （整页 HTML 文档一律打 muv-fullpage）⇒ 真机实测**农场会话 7/7 楼被拉成 100vw**
+//   （每轮回复的 srcdoc 长度相同 = 52359），既是 HANDOFF §40.1 记过的那个事故，
+//   也偏离 ST 基准（docs/44-ST卡片排版规格.md：整页卡只占消息列宽、首楼与后续楼
+//   零差异、不允许满宽穿出）。下面四条各钉一条腿，任何一条被改回"与楼位无关"都会红。
+check('★★ fullpage 判据走楼位（renderFencedHtml 必须问 muvFullpageFloorNow）',
+  extractFunction(SRC, 'renderFencedHtml').includes('muvFullpageFloorNow()'),
+  '整页文档被打成了无条件满宽')
+check('★★ fullpage 判据走楼位（wrapLoneDocuments 必须问 muvFullpageFloorNow）',
+  extractFunction(SRC, 'wrapLoneDocuments').includes('muvFullpageFloorNow()'),
+  '整页文档被打成了无条件满宽')
+// ★ 后两条**不走 extractFunction**：`muvDecorKeyOf` 里有正则字面量
+//   `/session[/=:-]([a-f0-9-]{20,})/i`（字符类内含 `/`、且带 `{20,}`），本文件的
+//   配平提取器会在那里截断并抛 `Unexpected token '}'` —— 与 `test-client-source.mjs`
+//   里记的 `rewriteVhMinHeight` 除法陷阱同一类词法问题。改用**定界切片 / 源码级**
+//   断言，判据强度不变（这些字符串在源码里唯一）。
+const keyAt = SRC.indexOf('function muvDecorKeyOf(')
+const keySeg = keyAt >= 0 ? SRC.slice(keyAt, keyAt + 1600) : ''
+check('★★★ 楼位必须进产物缓存键（|fp）——否则封面楼的满宽产物会被后续楼复用',
+  keySeg.includes("'|fp'") && keySeg.includes('muvFullpageFloorNow()'),
+  keyAt < 0 ? '找不到 muvDecorKeyOf' : '缓存键里没有 |fp / 没问楼位旗标')
+check('★★ _decorateOne 按 isOldestFloor 置旗标、且两处都在 finally 复位',
+  SRC.includes('muvFullpageFloor = isOldestFloor') && (SRC.match(/muvFullpageFloor = false/g) || []).length >= 2,
+  '旗标设置/复位不完整（跨 await 泄漏，或封面楼拿不到破格类）')
+// ★★ 状态栏楼缓存（2026-09-25，用户实测反馈"切回会话状态栏要重新渲染"）：
+//   边界从"只缓存 iframe 楼"放宽到"也缓存状态栏楼"，同时加一道变量维度的保险。
+//   下面四条把两条腿都钉住：放宽不能退回（否则又闪），保险不能缺（否则冻变量），
+//   且保险**不能挂错地方**（挂到 TTL 重取上会让切回白丢缓存）。
+check('★★ 状态栏楼也进产物缓存（接受条件含 muv-statusbar-wrap）',
+  extractFunction(SRC, 'muvDecorStore').includes('muv-statusbar-wrap'),
+  '状态栏楼仍被挡在缓存外 ⇒ 切回会话仍会重渲染')
+check('★★★ 缓存键含变量修订号 |v（否则缓存会把变量冻住）',
+  keySeg.includes("'|v'") && keySeg.includes('muvVarRevOf(sid)'), '缓存键缺变量维度')
+check('★★ 变量修订号有 bump 口', /function muvVarRevBump\(\)/.test(SRC), '找不到 muvVarRevBump')
+check('★★★ bump 恰好挂在 2 个真实变更点上、不挂 TTL 重取',
+  (SRC.match(/try \{ muvVarRevBump\(\) \}/g) || []).length === 2,
+  'bump 挂点数量不是 2 ⇒ 要么漏了变更点（冻变量）、要么挂到重取上（白丢缓存）')
+// ★★★ 修订号必须**按会话分开记**（2026-09-25 自查修正的回归护栏）：
+//   第一版是"全局单计数 + 切会话归零"，那会让切回会话的键与缓存里的键对不上 ⇒ 全部 miss
+//   ⇒ 恰好毁掉"切回秒开"。所以：必须是 sid→rev 映射，且**任何地方都不得把它归零**。
+check('★★★ 变量修订号按会话分开记（不是全局单计数）',
+  /var muvVarRevBySid = Object\.create\(null\)/.test(SRC), '修订号仍是全局单计数')
+check('★★★ 修订号不在会话切换处归零（否则切回会话全部 miss）',
+  !/muvVarRev\s*=\s*0/.test(SRC) && !/muvVarRevBySid\s*=\s*(Object\.create\(null\)|\{\})/.test(SRC.slice(SRC.indexOf('function muvChatFence('), SRC.indexOf('function muvChatFence(') + 900)),
+  'muvChatFence（或别处）把修订号归零了 ⇒ 上一个会话的缓存会被全部作废')
+// ★★★ 缓存容量（2026-09-25 实测修正的回归护栏）：原 `MUV_DECOR_MAX = 32` 太小 ——
+//   真机逐行切走→切回实测，**命中的全是最后访问的三个会话，更早访问的全都重装饰**
+//   （miss 23/41/3 次），而一个长会话（实测 24 个产物楼）就能吃掉大半容量。
+check('★★★ 缓存条数上限 ≥ 256（32 实测会让跨会话切回 miss）',
+  (() => { const m = /var MUV_DECOR_MAX = (\d+)/.exec(SRC); return !!m && Number(m[1]) >= 256 })(),
+  (() => { const m = /var MUV_DECOR_MAX = (\d+)/.exec(SRC); return m ? 'MUV_DECOR_MAX=' + m[1] : '找不到 MUV_DECOR_MAX' })())
+check('★★★ 缓存有总字节限界（双限界：条数 + 总字节）',
+  /var MUV_DECOR_TOTAL_MAX = /.test(SRC) && /var muvDecorBytes = 0/.test(SRC) && /muvDecorBytes > MUV_DECOR_TOTAL_MAX/.test(SRC),
+  '缺总字节限界 ⇒ 要么内存无界，要么只能靠小条数上限（那正是 bug 的成因）')
+// ★★★ 权威 depth（2026-09-25）：旧口径把"当前渲染窗口长度"当楼数 —— 真机实测
+//   同一 turn 的多条给 18,17,16… 而权威值是 3，且虚拟化下切回会话必然 miss。
+//   新口径 = 会话投影的 总楼数 − 楼号（纯客户端，不动服务端）。
+//   ① 主路径必须用权威口径；② **旧口径必须留作兜底**（内部 API 在别的 DSH 版本
+//   可能不存在 ⇒ 必须退化而不是报错 —— 这条对"别人下载这个插件"尤其重要）。
+const decorMsgsSrc = extractFunction(SRC, 'decorateMessages')
+check('★★★ depth 主路径用权威口径（总楼数 − 楼号）',
+  decorMsgsSrc.includes('turns.total - turn'), '仍在数渲染窗口')
+check('★★★ depth 保留旧口径兜底（内部 API 缺失时不许报错）',
+  decorMsgsSrc.includes('targets.length - 1 - i'), '兜底被删 ⇒ 别的 DSH 版本上会退化/报错')
+check('★★ 权威楼数来自会话投影 turnOutline / sessionStats',
+  /function muvSessionTurnsNow\(\)/.test(SRC) && SRC.includes('turnOutline') && SRC.includes('sessionStats') && SRC.includes('__DSH_TAVERN_CTX__'),
+  '权威来源没接上')
+check('★★ 楼号读自 data-chat-turn',
+  /function muvTurnOfEl\(/.test(SRC) && SRC.includes("getAttribute('data-chat-turn')"), '楼号读取缺失')
+check('★★ 首楼判据也用权威楼号（虚拟化下"DOM 第一个"未必最旧）',
+  decorMsgsSrc.includes('turns.first'), '首楼仍按 DOM 序判')
 check('★ 表头折叠挂在 muvSanitizeNode 上', extractFunction(SRC, 'muvSanitizeNode').includes('muvFoldStatusHeader('))
 check('★ 表头折叠复用 normalizeStatusHeader（两条路径不各说各话）',
   extractFunction(SRC, 'muvFoldStatusHeader').includes('normalizeStatusHeader('))
@@ -1483,6 +1558,81 @@ console.log('\n[24] 文本级状态栏：判据（裸方括号前缀 / 状态折
     new Function('MUV_TEXT_STATUS', onBody + '; return muvTextStatusOn()')(true) === true)
   check('★ 开关读取口：闭包缺失时退回**默认开**（门禁逐字提取场景）',
     new Function(onBody + '; return muvTextStatusOn()')() === true)
+
+  // ══ 卡 iframe 首屏遮蔽（2026-09-25，足控天堂「切回先夜色再跳白天」）══════════
+  // 判据来源：docs/47 的夹具实测 —— 卡文档 `<body data-theme="night">` 写死、已保存的主题
+  // 只在卡自己的 `DOMContentLoaded` 里落，而那一刻被卡自己的 35 条 CDN 模块链拖到
+  // 4.3–6.8 秒 ⇒ 每次切回都先看 2.1–3.0 秒夜色再跳白天。修法 = 起手盖住（opacity），
+  // 卡内垫片在自己的初始化跑完后报 ready 再显形。
+  const shimSrc = extractFunction(SRC, 'muvCardCompatScript')
+  check('★ 垫片会报「我准备好了」（宿主显形的主路）',
+    shimSrc.indexOf('__muvReady') > 0, String(shimSrc.indexOf('__muvReady')))
+  check('★★ 信号必须**排在卡自己的监听器之后**（DOMContentLoaded + setTimeout 0），不能当场 post',
+    /addEventListener\("DOMContentLoaded",function\(\)\{setTimeout\(function\(\)\{post\(\{__muvReady:1\}\)\},0\)\},false\)/.test(shimSrc))
+
+  // 遮蔽的判据（只盖"自带初始主题属性"的文档；对照臂要求普通文档不被卷进来）
+  const maskExpr = String(SRC.split('var mask = ')[1] || '').split('\n')[0]
+  const maskOf = new Function('raw', 'return ' + maskExpr)
+  check('★ 自带初始主题属性的文档才遮蔽（`<body data-theme="night">`）',
+    maskOf('<html><body data-theme="night"><p>x</p></body></html>').indexOf('data-muv-mask') > 0, maskExpr.slice(0, 60))
+  check('★ `<html data-theme=…>` 同样算（不只看 body）',
+    maskOf('<html data-theme="day"><body><p>x</p></body></html>').indexOf('data-muv-mask') > 0)
+  check('★★ 对照臂：普通卡文档（body/html 上都没有 data-theme）**不许**被遮蔽',
+    maskOf('<html><body><p>x</p></body></html>') === '', JSON.stringify(maskOf('<html><body><p>x</p></body></html>')))
+  check('★★ 对照臂：`data-themeish=` 这种前缀相同的属性**不许**命中（词边界）',
+    maskOf('<html><body data-themeish="x"><p>y</p></body></html>') === '')
+
+  // 遮蔽本体：必须是 opacity（不能用 visibility/display —— 帧内高度引导脚本按
+  // `getComputedStyle(el).visibility==="hidden"` 跳元素，会把整卡测成 0 高）
+  // ★ 先把所有匹配都取出来并**要求只有一条**：写这条护栏时源码注释里正好也有一份
+  //   "选择器 + 花括号"的示例，只取第一条会把注释当成规则（实测被这个骗过一次绿）。
+  const maskCssAll = SRC.match(/iframe\.muv-iframe\[data-muv-mask\]\{[^}]*\}/g) || []
+  check('★★ 遮蔽规则在源码里只出现一次（免得注释里的示例把下面两条护栏骗过去）',
+    maskCssAll.length === 1, JSON.stringify(maskCssAll))
+  const maskCss = maskCssAll[0] || ''
+  check('★ 遮蔽用 opacity（不影响帧内布局与高度测量）',
+    maskCss.indexOf('opacity:0') > 0, maskCss)
+  check('★★ 遮蔽**不许**用 visibility/display（会把整卡高度测成 0）',
+    maskCss.indexOf('visibility') === -1 && maskCss.indexOf('display') === -1, maskCss)
+  check('★ 显形选择器存在（`[data-muv-shown="1"]`）',
+    SRC.indexOf('iframe.muv-iframe[data-muv-shown="1"]{opacity:1}') > 0)
+
+  // 显形：幂等 + 不抛
+  const showSrc = extractFunction(SRC, 'muvCardShow')
+  const show = new Function('frame', showSrc + '; muvCardShow(frame); return frame')
+  const fakeEl = () => ({
+    a: {},
+    setAttribute(k, v) { this.a[k] = String(v) },
+    getAttribute(k) { return this.a[k] === undefined ? null : this.a[k] },
+  })
+  const e1 = fakeEl()
+  check('★ 显形 = 写 `data-muv-shown="1"`', show(e1).a['data-muv-shown'] === '1', JSON.stringify(e1.a))
+  check('★ 显形幂等（已有标记就不重写）', show(e1).a['data-muv-shown'] === '1')
+  check('★★ null / 非法对象不抛（消息来源可能是已销毁的帧）',
+    (() => { try { new Function('frame', showSrc + '; muvCardShow(frame)')(null); new Function('frame', showSrc + '; muvCardShow(frame)')({}); return true } catch (_) { return false } })())
+
+  // 兜底：绝不能把卡永久藏起来
+  const maskSrc = extractFunction(SRC, 'ensureCardMask')
+  check('★ 兜底①：捕获期监听 iframe 的 `load`（load 不冒泡，必须 capture）',
+    maskSrc.indexOf("addEventListener('load'") > 0 && /addEventListener\('load',[\s\S]*?\}, true\)/.test(maskSrc))
+  check('★ 兜底①只对带 data-muv-mask 的 iframe 生效（普通 iframe 不参与）',
+    maskSrc.indexOf("t.getAttribute('data-muv-mask')") > 0)
+  check('★ 兜底②：绝对上限兜底（超过上限一律显形）',
+    maskSrc.indexOf('MUV_CARD_MASK_MAX') > 0 && maskSrc.indexOf('setInterval') > 0)
+  check('★★ 上限用 WeakMap 记「第一次看到它还盖着」的时刻，**不许**把时间戳写进 iframe HTML',
+    maskSrc.indexOf('new WeakMap()') > 0 && !/data-muv-born/.test(SRC))
+  check('★ 上限 ≥ 10s（实测最坏 6.8s，太短等于没有遮蔽）',
+    Number((/var MUV_CARD_MASK_MAX = (\d+)/.exec(SRC) || [])[1]) >= 10000,
+    String((/var MUV_CARD_MASK_MAX = (\d+)/.exec(SRC) || [])[1]))
+  check('★ 遮蔽只在建卡 iframe 时兜底安装（幂等标记挂 window）',
+    SRC.indexOf('window.__muvCardMaskOn === true') > 0 && /function cardHtmlIframe[\s\S]{0,200}ensureCardMask\(\)/.test(SRC))
+
+  // 显形消息的接线
+  const onMsg = extractFunction(SRC, 'onMuvCardCompatMessage')
+  check('★ 宿主认 `__muvReady` 并只对"确实是我们的卡 iframe"的 source 显形',
+    onMsg.indexOf('__muvReady') > 0 && onMsg.indexOf('muvCardShow(frame)') > 0)
+  check('★★ 显形分支必须**先于**任何 KV/变量处理返回（它不该顺带写任何东西）',
+    onMsg.indexOf('if (isReady) { muvCardShow(frame); return }') > 0)
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)

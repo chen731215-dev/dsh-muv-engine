@@ -115,10 +115,18 @@ async function launchEdge(url) {
 }
 
 // ── 宿主夹具页 ───────────────────────────────────────────────────────────────
-function fixtureHtml(nobtn, mode) {
-  const btn = nobtn ? '' : '<button id="fakeSendBtn" type="button">发送</button>'
+// ★ 2026-09-25 新增场景③（contenteditable）：DSH 真机会话视图里 **0 个 textarea**，
+//   聊天输入框是 `[contenteditable="true"]`（类名 uV2eYG_input，发送钮 aria-label「发送消息」）。
+//   旧夹具用假 textarea ⇒ 门禁全绿但真机静默失败（muvDeliverUserText 找不到输入框直接
+//   `return false`）——夹具必须贴真实 DOM，否则测的是幻觉。
+function fixtureHtml(nobtn, mode, ce) {
+  const btn = nobtn ? '' : '<button id="fakeSendBtn" type="button" aria-label="发送消息">发送</button>'
+  const input = ce
+    ? '<div id="fakeDshInput" contenteditable="true" role="textbox" class="uV2eYG_input" style="min-height:40px;border:1px solid #999"></div>'
+    : '<textarea id="fakeDshInput" data-muv-macro-hooked rows="3" placeholder="给 DSH 发消息"></textarea>'
+  const readVal = ce ? 'inp.textContent' : 'inp.value'
   return `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
-<textarea id="fakeDshInput" data-muv-macro-hooked rows="3" placeholder="给 DSH 发消息"></textarea>
+${input}
 ${btn}
 <div id="log"></div>
 <script>
@@ -128,7 +136,7 @@ window.__dshSend = null;
 // 仿真 DSH 的两个发送绑定
 var inp = document.getElementById('fakeDshInput');
 var btnEl = document.getElementById('fakeSendBtn');
-function fire(via){ if(window.__dshSend) return; window.__dshSend = { fired:true, via:via, text: inp.value }; var l=document.getElementById('log'); if(l) l.textContent += via+' '; }
+function fire(via){ if(window.__dshSend) return; window.__dshSend = { fired:true, via:via, text: ${readVal} }; var l=document.getElementById('log'); if(l) l.textContent += via+' '; }
 if (btnEl) btnEl.addEventListener('click', function(){ fire('button'); });
 inp.addEventListener('keydown', function(e){ if(e.key==='Enter' && !e.shiftKey) fire('enter'); });
 // 宿主：镜像 onMuvCardCompatMessage 的 isUserSend 分支
@@ -186,6 +194,20 @@ async function run() {
   check('场景② A 文本到达输入框', j2.val === '你好，DSH', JSON.stringify(j2))
   check('场景② B 发送通道触发', !!(j2.send && j2.send.fired), JSON.stringify(j2))
   check('场景② D 命中键盘通道', !!(j2.send && j2.send.via === 'enter'), JSON.stringify(j2))
+
+  // 场景③：DSH 真实形态 —— contenteditable 输入框（页面上没有 textarea）
+  const f3 = path.join(OUT, 'host-ce.html'); fs.writeFileSync(f3, fixtureHtml(false, 'send', true), 'utf8')
+  const j3 = await withPage('file:///' + f3.replace(/\\/g, '/') + '?v=' + Date.now(), async (cdp, sid) => {
+    await sleep(800)
+    const r = await cdp.send('Runtime.evaluate', {
+      expression: 'JSON.stringify({ val: document.getElementById("fakeDshInput").textContent, send: window.__dshSend })',
+      returnByValue: true, awaitPromise: true }, sid)
+    return JSON.parse((r.result && r.result.result && r.result.result.value) || 'null') || {}
+  })
+  check('场景③ A 文本到达 contenteditable 输入框', String(j3.val || '').indexOf('你好，DSH') !== -1, JSON.stringify(j3))
+  check('场景③ B 发送通道触发', !!(j3.send && j3.send.fired), JSON.stringify(j3))
+  check('场景③ C 命中按钮通道（aria-label=发送消息）', !!(j3.send && j3.send.via === 'button'), JSON.stringify(j3))
+  check('场景③ E 无 textarea 时不再静默 return false', String(j3.val || '').length > 0 && !!(j3.send && j3.send.fired), JSON.stringify(j3))
 
   console.log('\n' + (fail ? '❌ ' : '✅ ') + `通过 ${pass} / 失败 ${fail}`)
   if (failed.length) console.log('  失败项: ' + failed.join(' | '))

@@ -3073,3 +3073,61 @@ Analysis 隐藏（5118），本轮补齐的是原生 DOM 路径的**元素形态
 ### 39.3 未决
 - verify-frame-ratchet 5 FAIL（真卡三档收敛 / 100vh 对抗臂）——§37.3 既有冲突缩小（9→5），归因未完成。
 - 卡脚本 `_.debounce(SillyTavern.saveChat)` 之外的 `Expected a function` 是否随 saveChat 垫片消失，待真机。
+
+## §40 2026-09-24 三轮速记（构建 j 止；工作区有 build k 半成品，详证见 `C:\deepseek harness\docs\41-0924晚交接.md`）
+
+### 40.1 已收编（5 提交，全在本地无远端）
+- `eee4eb8`（f）：模型自创 `<content>…</content>` 信封被原生 markdown 透传，inline+normal 折叠段间换行 ⇒ 正文一大坨。`muvFixEnvelopeBlocks`（block+pre-wrap 纯展示兜底）+ sanitize 第一步 + `isMuvMessageBody` 探针加 content。
+- `30eeb8e`（g）：垫片补 12 全局（取证=解卡 PNG + 拉远端 import + ST `_bind` 全表 34 名普查）：`updateVariablesWith`/`deleteVariable`/`getButtonEvent`（**缺它整条 ERA 脚本不执行**）/eventClearEvent·MakeFirst·MakeLast·RemoveListener/`getCurrentMessageId`/按钮族+`replaceScriptInfo`（半途 no-op）。`messageData` 0 证据不垫；`listenPreferenceState` 铁律不垫。
+- `fee1d21`（h）：封面楼 full-bleed——真凶是 DSH 消息列 `.EvIC1a_column` 920px 居中（像素级排除了封面/iframe/注入）。`:has(>iframe.muv-iframe)` + 100vw + clip。**该判据随即被证伪（见 56889fa）**。
+- `56889fa`（i）：状态栏与封面楼 wrap **完全同构**（class/data-*/父级零差异）⇒ 结构判据不可行，改楼位判据 `muv-fullpage`（isOldestFloor + 扫摆）——**仍不完美**：农场这类"首楼=状态栏"的卡被误伤（用户实锤），工作区 build k 已改打标点到 `renderFencedHtml` 产出路径。
+- `744c6a0`（j）：装饰产物缓存秒开 20×（127ms→6ms，apply-regex-card 2~3 次→0）。key=权威会话 id+compatKey+depth+fullpage；**只缓存 iframe 产物楼，`.muv-sb`/文本状态栏楼现算**（变量永不冻结）。img/iframe lazy 实测否决（img 打红 visual 逐字 parity、iframe 断棘轮）。图片本就 memory cache 0 重取（例外：21.5MB r2.dev 图 CDN 头不可缓存）。
+
+### 40.2 工作区未收编（build 2026-09-23k，+297/-152 混合半成品）
+- 工兵 A（装饰链）：fullpage 打标唯一化到 `renderFencedHtml` 产出路径、删 isOldestFloor/扫摆猜测、`muvParaKeepHtml`（整条替换保段）、信封泛化；`test-client-render.mjs` 两处断言配套。**未跑门禁未真机**。
+- 工兵 B（垫片）：KV 暗色持久化修复（卡 localStorage→跨会话栅栏的 init 时序/落盘问题），**已过门禁差真机闭环**。
+- 未跟踪 `_dsh-tok.txt` 含页面 token，**收编前必须 gitignore/删除**。
+- 收编流程与三 bug 断点：见 `docs/41-0924晚交接.md` §2-§3。
+
+### 40.3 同日 tavern-v2 `d353b06`（跨仓库）
+预设宏管线：保存时 `{{setvar}}×338/{{getvar}}×290/{{random}}×46` 被 `cleanObjectStrings` 剥空（变量组 3180→2 字符）+ `{{char}}` 曾换成玩家名 + 顺序未按 ST `prompt_order` ⇒「预设文风词条不生效/不是一个模型在输出」。修：`expandStMacros()` 出口求值、保存不清洗、`{{char}}`→角色名、破限前置收窄按模块名。tavern-lite presets.json 已按 prompt_order 重建（备份 `.bak-st-refill-20260924`）。架构级待拍板：depth 注入 / 采样参数 per-preset / CARD_MAX 分片。
+
+### 40.4 基线更新
+- verify-frame-ratchet：**8 FAIL**（§39.3 的 5 漂移而来，HEAD 对照臂同 8 = 既有未决）。
+- verify-visual：早先简报 83/14 已过期，**当日 HEAD 两臂同 50 FAIL（0 新增）**，归因一律以当日 HEAD 对照为准。
+
+## §41 第 41 轮（2026-09-25）：卡首屏遮蔽 —— 足控天堂「切回从夜晚跳回白天」· `docs/47`
+
+**现象**（用户实锤）：「在足控天堂里，切换回去的时候，感觉要渲染很多次，每次切回去都要从夜晚切回到白天模式」。
+**定位**（全部真机/夹具数字，详见 `C:\deepseek harness\docs\47-足控天堂主题闪烁-定位实录.md`）：
+- **不是"没存住"**：同会话另两个命名空间（`k30222287-337ee` / `kd00119e3-337ed`）的种子注入成功**且在增长**
+  ⇒ `muvKvP` 持久层 + 种子 + 垫片这条链是通的 ⇒ 判定为**闪烁**（甲/乙两读法里的乙），**原假设"卡写 night 覆盖 day"证否**。
+- 根因三段：① 卡文档 `<body data-theme="night">` 是**写死的**默认值；② 已保存主题**只在卡的 `DOMContentLoaded` 里落**；
+  ③ 那一刻被**卡自己注册的 TavernHelper 脚本链**（35 条 CDN 请求，最慢 `phone-ctn.pages.dev/index.js` 2.1–5.2s）拖到
+  `domContentLoadedEventEnd` **4.3–6.8s**；而我们的产物**每次切回都要重建这份文档**（`applyDecoratedHtml` 整条替换）。
+- 夹具（真卡 srcdoc 原文 + 种子改成 `day`）：**闪烁窗口 2.1–3.0 秒**（冷/热缓存两轮）；遮蔽对照臂**显形时主题已是 `day`**。
+- **"保活 iframe 节点"实证不可行**：沙箱 iframe 一旦 `appendChild`/`insertBefore`/detach 重插，**帧内 `__alive` 重新从 1 开始**
+  且重新报 `parse`+`dcl` ⇒ 搬移即重建（`_scratch/fixture-iframe-move.mjs`）。
+
+**改动**（客户端 5 处，`lib/client.js`）：
+1. 垫片新增第 0 段：`DOMContentLoaded` + `setTimeout(…,0)` → `post({__muvReady:1})`。**必须排后报**（垫片是最早的脚本，
+   它的监听器排在卡的前面；timeout 回调排在全部监听器之后 ⇒ 报出去时卡的主题已落好）。
+2. `muvCardShow(frame)`（写 `data-muv-shown="1"`，幂等）+ `ensureCardMask()`（捕获期 `load` 兜底 + `MUV_CARD_MASK_MAX=15000` 绝对上限）。
+3. 宿主样式：`iframe.muv-iframe[data-muv-mask]{opacity:0;transition:opacity .12s linear}` + `[data-muv-shown="1"]{opacity:1}`。
+4. `cardHtmlIframe()`：`body`/`html` 上有 `data-theme=` 才打 `data-muv-mask="1"` ⇒ **波及面收窄**（ERA 状态栏、苍玄界封面照旧不遮蔽）。
+5. `onMuvCardCompatMessage()`：认 `__muvReady`（只认 source 确实是我们的卡 iframe）→ 显形后**立即 return**。
+
+**铁律（别改回去）**：遮蔽只能用 `opacity`。帧内高度引导脚本按 `getComputedStyle(el).visibility === "hidden"` 跳过元素
+（`client.js:1442`），把宿主 iframe 改成 `visibility:hidden` 会让**帧内所有元素**被判不可见 ⇒ 整卡测成 0 高、高度塌掉。
+
+**验收**：
+- `node test-client-render.mjs` → **385 通过 / 0 失败**（exit 0；本项新增 21 条护栏）。
+- **护栏能红 9/9**（`_scratch/test-mask-guards-red.mjs`）；其中一条抓出**真缺陷**：遮蔽规则的 CSS 正则第一个匹配
+  落在**注释里的示例**上（护栏一直在看注释）⇒ 现在护栏要求"规则在源码里只出现一次"，注释示例也改了。
+- **真机 5 条判据全过**（`_scratch/verify-mask-live2.mjs`）：遮蔽窗口存在（`mask=1 shown=null`）→ 显形距主题帧出现 **1992ms**
+  （远早于 15s 上限 ⇒ 走 ready 主路）→ 遮蔽期间高度 **900→2438→4749px** 正常收敛 → 切回种子 `{"L:zkt2-theme":"day"}`
+  → 除主题帧外只有 1 个 iframe 被遮蔽。
+- **生效方式：刷新页面**（客户端插件按请求从磁盘读，不用重启 DSH）。
+
+**残留**：那 2–6 秒变成**空框**（卡的初始化时长本身没变）；**方案 C（hook `document.addEventListener` 让卡的回调提前跑）未做** ——
+它能把 2–6 秒也砍掉，但会改变"卡的回调在 TavernHelper/MVU 框架加载完之后才跑"这条语义，必须带开关 + 在四张真卡上验。

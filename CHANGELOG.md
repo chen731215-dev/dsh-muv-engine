@@ -1,6 +1,42 @@
 # Changelog
 
-## 未发布（2026-09-24 · 三十七）★ MVU JSONPatch：第四种变量格式解析 + 元素形态显示泄漏修复 · `2026-09-22y`
+## 0.3.10（2026-09-25 · 三十八）★ 用户消息桥 contenteditable 适配：卡选项点击无反应根治 · `2026-09-25a`
+
+真机实锤（DSH 会话视图 DOM 取证）：DSH WebUI 会话视图**全页 0 个 `<textarea>`**，聊天输入框是
+`[contenteditable=true]`（`uV2eYG_input` 类，发送按钮 `aria-label="发送消息"`）。而卡内行动选项的
+回传链终点 `muvDeliverUserText` 只认 textarea（三级选择器全落空后 `return false` **静默丢弃**）——
+用户点选项"毫无反应且无报错"。iframe 内全链路（点击 → triggerSlash → postMessage → 宿主监听）
+本来就是通的，断在宿主最后一环。
+
+### 1. `muvDeliverUserText` 补 contenteditable 分支
+
+- textarea 三级探测全落空后改走 contenteditable：`document.querySelector('[contenteditable="true"]')`
+  （排除隐藏收件箱 `data-muv-inbox`）；两皆无则打日志后如实放弃（不再无声）。
+- 填值走**追加语义**（铁律：绝不清空输入框）：光标 Range 移到内容末尾 + `execCommand('insertText')`，
+  失败兜底 `appendChild(textNode)`；随后派发 `InputEvent('input', {bubbles})` 让 React 感知
+  （实测发送按钮从 disabled 变可点）。
+- `mode === 'send'` 时 60ms 后 `muvUserSendFire(ce)`（通道① 发送按钮真实 click / 通道② Enter 序列，不变）。
+
+### 2. `triggerSlash` `/send` 剥离 `|/命令` 脏尾巴
+
+- 真卡写法 `/send 选项文本|/trigger`：旧代码把 `|/trigger` 一起当文本发出。现在只剥 `|` 后紧跟
+  `/命令` 的尾巴；文本中真正的 `|` 保留（`a|b` → `a|b`；`a|/trigger|/x` → `a`；无尾巴原样）。
+
+### 3. 门禁夹具补盲区（教训沉淀）
+
+- `verify-user-send.mjs` 夹具原先用假 textarea → 门禁全绿但真机静默失败（**夹具必须贴真实 DOM**）。
+- 新增场景③：contenteditable 输入框（`uV2eYG_input` 类 + `aria-label="发送消息"` 按钮），
+  断言文本到达、发送通道触发、命中按钮通道、无 textarea 时不再静默 return false。
+
+### 验证
+
+- `test-client-render.mjs` 385 通过 0 失败；`verify-user-send.mjs` 10/10（含场景③ 4 条）；
+  尾巴剥离 7/7 单元用例。
+- 真机冒烟（headless Edge + CDP，真实 DSH 页 + 真卡会话 + 真桥监听）：桥日志两条全出
+  （追加文本 + 通道① 发送按钮 click 已触发）、`POST api/session/prompt` 发出、模型开始生成
+  —— 全链路闭环。
+
+## （2026-09-24 · 三十七，随 0.3.10 首发到 npm）★ MVU JSONPatch：第四种变量格式解析 + 元素形态显示泄漏修复 · `2026-09-22y`
 
 真机实锤（DSH 会话 `session-7347d5f7`，ST 角色卡）：模型**正式输出**里出现了 MVU 标准的
 第四种变量写入格式 —— `<UpdateVariable>` 内含 `<Analysis>`（给模型的思考痕迹）+ `<JSONPatch>`

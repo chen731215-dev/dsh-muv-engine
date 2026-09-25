@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.11（2026-09-26 · 三十九 · **未发布到 npm**）★ 状态栏行动选项点击无反应根治 + 一次点击插两份 · `2026-09-26c`
+
+0.3.10 修的是「卡 iframe → 宿主 contenteditable」那一环，但**宿主自己**这条级联状态栏按钮路径
+当时没被覆盖 —— 用户报的还是"选项点了没反应"。真机取证（`_scratch/_probe-sbopt8.mjs`，真鼠标
+`Input.dispatchMouseEvent` 点真实会话里的可见选项）把两件事一起钉死。
+
+### 1. 点击委托漏了 `.muv-sb-opt`（这就是"没反应"）
+
+- `status-cascade.js` 的 `renderOptions()` 产出的是 `<button class="muv-sb-opt">`（`<Status_block>`
+  里的「行动选项」，夹具卡·提瓦特等卡全走这条），而 `exports.apply` 里的全局点击委托只匹配
+  `.muv-choice-btn, .tavern-option-btn` ⇒ 按钮**可见、有 hover、但零处理器**，点击静默无反应。
+- 修：委托匹配 `.muv-sb-opt, .muv-choice-btn, .tavern-option-btn`；删掉委托里那套旧
+  textarea-only 覆盖式逻辑（它在 DSH 真机 0 个 textarea 的前提下必然落空，还绕过了
+  `muvDeliverUserText` 的 contenteditable 追加 / InputEvent / 真发送钮三件事），三条入口统一走
+  `muvDeliverUserText(text, 'send')`。
+- 字母前缀只在**确实渲染出徽标**时剥（`.muv-choice-letter` 子元素或 `data-opt-letter`）：
+  旧代码无条件 `/^[A-D]\s*/` 会把状态栏选项原文里 `A new day…` 的首字母吃掉。
+
+### 2. 一次点击把选项文本插**两份**（0.3.10 遗留，被本次修复放大）
+
+- 真机时间线取证：点击后输入框里选项原文出现两份（52 字 ×2 = 104）。
+- 根因：`execCommand('insertText')` 本身已触发**原生** `input` 事件、宿主受控编辑器据此更新模型；
+  随后我们又无条件补了一个带 `data` 的合成 `InputEvent`，宿主把它当成"再插一次"的指令。
+- 修：插入期间监听 `input`，**原生事件已到就不再补**合成事件（真的一个都没到才补，保留 React 感知兜底）。
+- 附带加固：兜底 `appendChild` 的判据改成看**文本长度是否增长**，而不是 `execCommand` 的返回值
+  （真机存在"插入成功却返回 false"）。
+
+### 3. 门禁（全部可红）
+
+- `verify-user-send.mjs`：新增场景④（真实 `.muv-sb-opt` 点击：投递 / 追加不覆盖 / InputEvent /
+  **只出现一次** / 字母剥离不误伤 / 旧两类按钮不回归 / 非选项元素无副作用）、场景⑤（真机
+  `execCommand` 插入却返回 false 时仍只插一份）、场景⑥（**受控编辑器仿真**：合成 InputEvent
+  会让宿主再插一次 —— 真机两份的离线复现位）。**23/0**。
+- 三条红臂：`--break=sb-opt-selector`（还原漏选择器 → 13 通过 10 失败）、
+  `--break=ce-append-fallback`、`--break=ce-synthetic-input`（各自精确变红）。
+- 回归：`test-client-render` 385/0、`test-status-cascade` 84/0、`verify-choices-dom` 全过、
+  `verify-frame-height` 全过、`verify-frame-ratchet` 8 项失败 = **改动前基线**（对照 HEAD 实测，
+  非本次漂移；文档里记的 10/7 是更早的树状态）。
+- 真机验收（`_probe-sbopt8.mjs --block-post`，POST 被浏览器拦下 ⇒ **零污染**）：构建戳
+  `2026-09-26c` / 选项原文进框 / 原生 input 事件 / 桥日志两条 / 发送钮真实 click /
+  `POST api/session/prompt` / 输入框只留**一份** —— V1–V9 全 PASS。
+
 ## 0.3.10（2026-09-25 · 三十八）★ 用户消息桥 contenteditable 适配：卡选项点击无反应根治 · `2026-09-25a`
 
 真机实锤（DSH 会话视图 DOM 取证）：DSH WebUI 会话视图**全页 0 个 `<textarea>`**，聊天输入框是

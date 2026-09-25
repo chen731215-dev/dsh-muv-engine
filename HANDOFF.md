@@ -3131,3 +3131,20 @@ Analysis 隐藏（5118），本轮补齐的是原生 DOM 路径的**元素形态
 
 **残留**：那 2–6 秒变成**空框**（卡的初始化时长本身没变）；**方案 C（hook `document.addEventListener` 让卡的回调提前跑）未做** ——
 它能把 2–6 秒也砍掉，但会改变"卡的回调在 TavernHelper/MVU 框架加载完之后才跑"这条语义，必须带开关 + 在四张真卡上验。
+
+## §42 0925-0926：0.3.10 发布 + GitHub 备份（wip 分叉为脱敏版）· `docs/48`
+
+### 42.1 v0.3.10 已上 npm（`chencheng810`）
+- `8943db9`（contenteditable 适配：DSH 输入框是 `[contenteditable=true]` 非 textarea，`muvDeliverUserText` 三级选择器全落空静默丢弃 → caret+insertText 追加不清空+InputEvent+60ms 发送）+ `1f764e7`（版本 bump/CHANGELOG/triggerSlash `/send` 剥尾 + 门禁夹具）。构建 `2026-09-25a`。
+- 真机冒烟 7 判据全 PASS（`_scratch/_probe-smoke7.mjs`，合成 MessageEvent source=contentWindow 绕 iframe CDP 上下文丢失）。
+
+### 42.2 GitHub 备份现状（github.com/chen731215-dev/*，token 已验证 `chen731215-dev`）
+- `master` = `47244dc`（本地已 fetch ff 对齐，远端曾多 1 个 §16 快照 docs 提交）。
+- `wip/card-interactive`：**远端是 API 管线脱敏版 `e3134c52`，本地原版 `1f764e73`——历史不同构，别直接 pull**。
+  原因：29 个新提交全带 `.work-census-rows.json`（10.8MB）内含 **11 个历史真实 token**（2 ghp_ + 9 npm_），push protection 对 git push 与 API 建 blob 都 422（仓库公开）。上传管线对该文件原地 REDACTED（脱敏 blob `1095c692→9ce306f4`，断言+远端终验无残留）；**本地仓库未动，本地历史仍含真 token**。29 条 SHA 映射全表见 `docs/48` §3.4。
+- tavern-v2（main `8ce705a` / wip `675075d` / card-skill-compiler `99c2e54`）与 muv-table（master `9cd3a3a` / wip `30461e7`）直推成功，与本地一致。
+
+### 42.3 工具链铁律（本轮实测）
+- 推 git：`env -u http_proxy … git -c http.proxy= -c https.proxy= -c http.version=HTTP/1.1`（**HTTP/2 本机必 OOM malloc 500MB，与仓库大小无关**；全局 proxy 7897=Clash 常没开；github.com 直连间歇 SNI 阻断，**api.github.com 直连基本一直活**）。
+- API 上传管线：`_scratch/_ghapi-push-muvengine-v2.mjs`（单进程 `cat-file --batch` 读 blob；逐 blob spawn 244 次会卡死；commit 时区必须 RFC3339 带冒号 `+08:00`）。同步 muv-engine 时改 TIP 常量重跑即可。
+- 本地历史 11 个旧 token + 本轮聊天明文 token，**建议全部轮换**（`docs/48` §4.2）。

@@ -32,6 +32,7 @@ const NEEDED = [
   'mediaTagDisposition', 'muvCloneMediaElement', 'muvBuildMediaElement', 'muvRenderMediaTags',
   'muvRenderIllustrations', 'muvReplaceTagBlocks', 'muvDetailsBlock', 'muvSimpleBlock',
   'muvRenderVariableBlocks', 'muvRenderImages', 'muvRenderTagRules', 'muvSanitizeNode',
+  'muvRenderGameCards', 'muvFillGameCardFields',
 ]
 let code = ''
 for (const n of NEEDED) {
@@ -43,7 +44,9 @@ const reBlock = SRC.slice(SRC.indexOf('var RE_TOOLCALL'), SRC.indexOf('function 
 const markDecl = /var MUV_SAN_MARK = '[^']*'/.exec(SRC)
 const attrsDecl = /var MUV_MEDIA_ATTRS = \{[\s\S]*?\}/.exec(SRC)
 const rulesDecl = /var MUV_TAG_RULES = \[[\s\S]*?\n      \]/.exec(SRC)
+const gameDecl = /var MUV_GAME_TAGS = \[[\s\S]*?\n      \]/.exec(SRC)
 check('取到 MUV_TAG_RULES 表', !!rulesDecl)
+check('取到 MUV_GAME_TAGS 表（游戏卡渲染的输入）', !!gameDecl)
 
 const MESSAGE = '<div class="_markdown_kcgor_5" id="msg">'
   + '<p>她把杯子推过来，<strong>指尖</strong>停在杯沿。</p>'
@@ -71,7 +74,8 @@ const MESSAGE = '<div class="_markdown_kcgor_5" id="msg">'
 
 const PROBE = '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>' + MESSAGE +
   '<pre id="out"></pre><script>' + reBlock + '\n' + (markDecl ? markDecl[0] : '') + '\n'
-  + (attrsDecl ? attrsDecl[0] : '') + '\n' + (rulesDecl ? rulesDecl[0] : '') + '\n' + code + '\n' +
+  + (attrsDecl ? attrsDecl[0] : '') + '\n' + (rulesDecl ? rulesDecl[0] : '') + '\n'
+  + (gameDecl ? gameDecl[0] : '') + '\n' + code + '\n' +
   'function report(){' +
   'var msg=document.getElementById("msg");' +
   'muvSanitizeNode(msg);' +

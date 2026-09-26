@@ -340,19 +340,89 @@ function lastBodyTagInScript(doc) {
 }
 
 /**
- * 剥掉高度引导脚本，只留卡自己的文档。
- *
- * 为什么要剥：引导脚本是插在**最后一个 `</body>` 之前**的，它把正文切成两段，于是
- * 「srcdoc 逐字包含正文」不再成立（9 条用例会全红，差值恰好等于脚本长度）。剥掉之后
- * 可以要求更强的判据：**逐字相等**，而不只是包含。
+ * 逐字取出文档里每一段 `<script>…</script>`（含标签），带位置。
+ * 「某段脚本有没有被注入」这类判据必须以**段**为单位，不能靠 `indexOf` 子串。
  */
-function stripBootstrap(s) {
-  const at = String(s).indexOf('__muvH')
-  if (at < 0) return s
-  const open = s.lastIndexOf('<script', at)
-  const close = s.indexOf('</script>', at)
-  if (open < 0 || close < 0) return s
-  return s.slice(0, open) + s.slice(close + '</script>'.length)
+function scriptBlocks(doc) {
+  const out = []
+  const re = /<script\b[^>]*>[\s\S]*?<\/script\s*>/gi
+  let m
+  while ((m = re.exec(String(doc)))) out.push({ index: m.index, text: m[0] })
+  return out
+}
+
+/**
+ * 剥掉**整条注入链**，只留卡自己的文档。
+ *
+ * ⚠ 这里踩过两次，两次都是**判据错伪装成产品缺陷**，所以把话说全：
+ *
+ * ① 剥的**不是一段，是四段**。注入链是
+ *    `withFrameHeightBootstrap(withCardLibs(withCardReset(withCardCompat(rewriteVhMinHeight(raw)))))`
+ *    —— 内层先跑，三处都有产物：
+ *      · `withCardReset` 在第一个 `<head>` 后插 `<meta name="viewport" …>` +
+ *        `<style data-muv-reset="__muvReset">…</style>`（≈242 字）
+ *      · `withCardCompat` 紧接着插 `<script>__muvKvSeed… + 垫片</script>`（≈4197 字）
+ *      · `withCardLibs` 在 `</head>` 之前插 ST 同款前端库（≈691 字）
+ *      · `withFrameHeightBootstrap` 在最后一个 `</body>` 前插引导脚本（≈1664 字）
+ *    只剥引导脚本，「逐字相等」永远差 ①+② = 4443 字，而且**首处不同恒在 @42** ——
+ *    42 正是第一个 `<head>` 的右尖括号之后，也就是 reset 那段 `<meta name="viewport">`
+ *    的落点。看到 "@42" 不要往浏览器抖动上想，它在 @42 是**必然**。
+ *
+ * ② 定位**不能用** `indexOf('__muvH')` 这个子串。垫片里有 `__muvKvSeed` 与
+ *    `__muvHello`，两者都**包含** `__muvH`，而垫片位置更靠前（@288 对 @62037）
+ *    ⇒ 子串定位会剥掉**垫片那一整段**：剥后反而比正文多 1910 字（4197 减掉本该剥的
+ *    1664 再扣掉 reset 的重叠），差值随卡而变，看起来像"产品多塞了东西"。
+ *    定位一律用各段**专属 token**：引导脚本 `__muvHFit`、垫片 `__muvKvSeed`、
+ *    reset `data-muv-reset="__muvReset"`。
+ *
+ * 剥干净之后判据反而**更强**：逐字相等 —— 既证明正文没被截断/改写，也证明注入的
+ * 恰好就是这四段、没有别的东西被塞进 srcdoc。
+ *
+ * @returns {{doc:string, segments:Array<[string,number]>}} doc=剥后的文档；segments=各段名与字数
+ */
+function stripInjected(s) {
+  let cur = String(s)
+  const segments = []
+  const cutScriptWith = (token) => {
+    const blk = scriptBlocks(cur).find((b) => b.text.indexOf(token) !== -1)
+    if (!blk) return false
+    segments.push([token, blk.text.length])
+    cur = cur.slice(0, blk.index) + cur.slice(blk.index + blk.text.length)
+    return true
+  }
+  cutScriptWith('__muvHFit')       // 引导脚本：专属 token（先剥，它与末尾的 </body> 贴在一起）
+  cutScriptWith('__muvKvSeed')     // 兼容垫片：专属 token
+  // 前端库（ST 同款六件套，`withCardLibs` 注入在 `</head>` 之前）：
+  // `<link data-muv-libs="fa">` + 5 个 `<script data-muv-libs=…>`，整段连续（≈691 字）。
+  // 不剥它，「逐字相等」会恒定差 691 字、首处不同恒在 `</head>` 之前 —— 那个位置是**必然**。
+  const li = cur.indexOf('<link data-muv-libs=')
+  if (li >= 0) {
+    const blks = scriptBlocks(cur).filter((b) => b.text.indexOf('data-muv-libs="vr"') !== -1)
+    const blk = blks.length ? blks[blks.length - 1] : null
+    if (blk) {
+      const end = blk.index + blk.text.length
+      segments.push(['libs', end - li])
+      cur = cur.slice(0, li) + cur.slice(end)
+    }
+  }
+  const META = '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+  const st = cur.indexOf('<style data-muv-reset="__muvReset">')
+  if (st >= 0) {
+    const close = cur.indexOf('</style>', st)
+    if (close >= 0) {
+      let from = st
+      // 紧跟其前的那个 viewport meta 是同一处注入，必须一起剥
+      if (cur.slice(Math.max(0, st - META.length), st) === META) from = st - META.length
+      segments.push(['reset', close + '</style>'.length - from])
+      cur = cur.slice(0, from) + cur.slice(close + '</style>'.length)
+    }
+  }
+  return { doc: cur, segments }
+}
+
+/** 引导脚本被注入了**几段**？必须按段数，不能数 `window.__muvH=1`（卡自己也能写）。 */
+function bootstrapBlocks(doc) {
+  return scriptBlocks(doc).filter((b) => b.text.indexOf('__muvHFit') !== -1)
 }
 
 /** 第一处不同的位置，用来在失败时报出「差在哪」而不是只说「不相等」。 */
@@ -424,12 +494,19 @@ for (const t of targets) {
   check(`${tag}: 恰好 1 个 iframe`, frames === 1, '实际 ' + frames)
   check(`${tag}: iframe 结构闭合`, out.includes('</iframe>'), out.slice(-120))
   if (sc) {
-    const un = stripBootstrap(unescapeAttr(sc.raw))
-    check(`${tag}: 剥掉高度引导脚本后，正文逐字相等（无截断、无改写）`, un === t.body,
-      un === t.body ? '' : `正文=${t.body.length}字 剥后=${un.length}字 首处不同@${firstDiff(un, t.body)}`)
-    check(`${tag}: 高度引导脚本只注入一次`,
-      (unescapeAttr(sc.raw).match(/window\.__muvH=1/g) || []).length === 1,
-      '注入次数 = ' + (unescapeAttr(sc.raw).match(/window\.__muvH=1/g) || []).length)
+    const rawUn = unescapeAttr(sc.raw)
+    const inj = stripInjected(rawUn)
+    const un = inj.doc
+    check(`${tag}: 剥掉注入链（reset+垫片+前端库+引导脚本）后，正文逐字相等（无截断、无改写）`, un === t.body,
+      un === t.body ? '' : `正文=${t.body.length}字 剥后=${un.length}字 差=${un.length - t.body.length} 首处不同@${firstDiff(un, t.body)} 剥掉的段=[${inj.segments.map((x) => x[0] + ':' + x[1]).join(' ')}]`)
+    // ★ 判据必须是**引导脚本专属 token**，不能数 `window.__muvH=1`：卡自己也能写那一行
+    //   （P0-2 的指标陷阱），数它会**因为错误的原因通过**。这里按「哪一段 `<script>` 含
+    //   `__muvHFit`」计段数。对抗用例见 §2b。
+    const boots = bootstrapBlocks(rawUn)
+    check(`${tag}: 高度引导脚本只注入一次（按专属 token __muvHFit 的**段数**算）`,
+      boots.length === 1,
+      '含 __muvHFit 的 <script> 段数 = ' + boots.length +
+      '（`window.__muvH=1` 出现 ' + (rawUn.match(/window\.__muvH=1/g) || []).length + ' 次）')
     check(`${tag}: iframe 外面无裸奔残渣`, !(sc.before + sc.after).includes('</html>'),
       'iframe 外出现 </html>，文档被腰斩后裸奔')
     check(`${tag}: 最后一个 </body> 不在 <script> 内（高度注入点不会切碎卡的 JS）`,
@@ -472,6 +549,39 @@ check('新实现：仍是 1 个 iframe（内部 ``` 没腰斩围栏）', pNew.fr
 check('新实现：文档收尾文字在 iframe 内部（真的被渲染）', pNew.inside, '被吞了或跑到外面了')
 check('新实现：iframe 外面没有裸奔的原文', !pNew.outside, '原文漏到 iframe 外')
 emit('synth-new', '合成用例（文档正文含 ```）→ <b>新实现</b>', outSynthNew)
+
+// ── 2b. 对抗用例：卡文档自带 `window.__muvH=1;`（P0-2 的指标陷阱） ──────────
+//
+// 为什么必须有这一条：判「引导脚本注入了几次」如果数 `window.__muvH=1`，那么**卡自己写
+// 一行同样的文本**就会让计数 ≥1 ⇒ 断言**因为错误的原因通过**。这里把那个陷阱做成显式
+// 的对抗用例：卡文档里直接写 `window.__muvH=1;`，断言引导脚本**仍然**被注入（按引导脚本
+// 专属 token `__muvHFit` 的**段数**判），而朴素的子串计数**照样会读到 1**。
+console.log('\n=== 2b. 对抗用例：卡自己写了 window.__muvH=1; ===')
+const ADV = '```html\n<!DOCTYPE html>\n<html><head><meta charset="utf-8"></head>\n<body>\n' +
+  '<script>window.__muvH=1;</' + 'script>\n' +
+  '<h1 style="color:#7fd1ff">对抗用例</h1>\n' +
+  '</body></html>\n```\n'
+{
+  const advBody = fenceBodyOf(ADV)
+  const out = renderNew(ADV)
+  const sc = srcdocOf(out)
+  const rawUn = sc ? unescapeAttr(sc.raw) : ''
+  const boots = bootstrapBlocks(rawUn)
+  const nH = (rawUn.match(/window\.__muvH=1/g) || []).length
+  const inj = stripInjected(rawUn)
+  console.log(`  iframe=${(out.match(/<iframe\b/g) || []).length}  含 __muvHFit 的段数=${boots.length}` +
+    `  window.__muvH=1 出现=${nH} 次  剥后=${inj.doc.length}字 正文=${advBody ? advBody.length : '?'}字`)
+  check('★ 对抗：卡自带 window.__muvH=1 时，高度引导脚本**仍然**被注入（按 __muvHFit 段数判）',
+    boots.length === 1,
+    '含 __muvHFit 的 <script> 段数 = ' + boots.length + '（0 = 被卡自己的拷贝顶掉了，引导脚本整段被跳过）')
+  check('★ 对抗：朴素的「数 window.__muvH=1」在这里必然 ≥1 ⇒ 那种判据会因错误的原因通过',
+    nH >= 1, 'window.__muvH=1 出现 ' + nH + ' 次（卡自己的那一份就在里面）')
+  check('对抗：剥掉注入链后，对抗文档的正文也逐字相等',
+    !!advBody && inj.doc === advBody,
+    '剥后=' + inj.doc.length + ' 正文=' + (advBody ? advBody.length : '?') +
+    ' 首处不同@' + (advBody ? firstDiff(inj.doc, advBody) : '-'))
+  emit('synth-adversarial', '对抗用例：卡自带 <b>window.__muvH=1;</b>', out)
+}
 
 // ── 3. 老/新对照 ────────────────────────────────────────────────────────────
 const oldPath = process.argv[2]
@@ -617,10 +727,12 @@ for (const t of targets) {
     const out = renderNew(input)
     const frames = (out.match(/<iframe\b/g) || []).length
     const sc = srcdocOf(out)
-    const ok = frames === 1 && !!sc && stripBootstrap(unescapeAttr(sc.raw)) === t.body
+    const un = sc ? stripInjected(unescapeAttr(sc.raw)).doc : ''
+    const ok = frames === 1 && !!sc && un === t.body
     if (!ok) {
       wrapFail++
-      console.log(`  FAIL ${tag} [${label}]: iframe=${frames} srcdoc=${!!sc} 输出=${out.length}字(输入${input.length})`)
+      console.log(`  FAIL ${tag} [${label}]: iframe=${frames} srcdoc=${!!sc} 剥后=${un.length}字 正文=${t.body.length}字` +
+        ` 首处不同@${sc ? firstDiff(un, t.body) : '-'} 输出=${out.length}字(输入${input.length})`)
     }
   }
 }

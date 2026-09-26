@@ -76,12 +76,22 @@ if (!fs.existsSync(TAVERN)) {
 console.log('\n=== ② beautifyMuv 的入口闸门放不放媒体标签过去 ===')
 
 // 闸门是 beautifyMuv 的第一条语句：不匹配就直接 return text（原样返回，什么都不做）。
-const gateLine = SRC.split(/\r?\n/).find(l => l.includes('if (!/<StatusPlaceHolder'))
-check('找到 beautifyMuv 的入口闸门', !!gateLine)
+//
+// ★ 本轮更新（守卫标签无关化）：这条判据以前是手写枚举，只认 `<StatusPlaceHolder|<Prism|…`，
+//   于是 `<video>` / `<img>` / `<audio>` / 中文标签**整轮跳过去** —— 用户看到的裸标签就来自这里。
+//   现在换成形状判据 `/<[!\/]?[a-zA-Z_\u4e00-\u9fa5][^<>]*>/`：任何 HTML 形态的标签都放行。
+//   下面这批断言因此**反向**：媒体输入必须被放行；同时补一组"仍然拦住"的反向用例
+//   （纯散文 / `2 < 3` / 没闭合的尖括号）—— 那两条一起才说明判据既修好了、又没放过宽。
+//   真机（真卡 + 真实助手正文 + 真 DOM）的 before/after 在 verify-guard-tag-agnostic.mjs。
+const GUARD_LINE_RE = /^\s*if \(!muvHasTag && !muvShortOk\) return text\s*$/
+const gateLine = SRC.split(/\r?\n/).find(l => GUARD_LINE_RE.test(l))
+check('找到 beautifyMuv 的入口闸门', !!gateLine, gateLine ? '' : '（源码里没有形如 if (!muvHasTag && !muvShortOk) return text 的行）')
 check('闸门不匹配时直接 return 原文', /return text/.test(gateLine || ''))
-const gateLit = gateLine ? /\/<StatusPlaceHolder[\s\S]*?\/i/.exec(gateLine) : null
-check('能取出闸门正则字面量', !!gateLit)
-const gate = gateLit ? new Function('return ' + gateLit[0])() : null
+// 标签判据字面量在 muvHasTag 定义行上（守卫块的第一行），不在守卫行上。
+const tagLine = SRC.split(/\r?\n/).find(l => /^\s*var muvHasTag = \//.test(l))
+const gateLit = tagLine ? /var muvHasTag = (\/[\s\S]*?\/[a-z]*)\.test\(text\)/.exec(tagLine) : null
+check('能取出闸门正则字面量', !!gateLit, tagLine ? tagLine.trim() : '')
+const gate = gateLit ? new Function('return ' + gateLit[1])() : null
 const MEDIA_INPUTS = [
   ['带 src 的 video', '<video src="x.mp4"></video>'],
   ['带 src 的 audio', '<audio src="x.mp3"></audio>'],
@@ -90,12 +100,28 @@ const MEDIA_INPUTS = [
   ['媒体 + 正文', '他推开门。\n<video src="x.mp4"></video>\n风灌了进来。'],
 ]
 for (const [label, input] of MEDIA_INPUTS) {
-  check('闸门放行？否 → 媒体消息 ' + label + ' 原样返回（beautifyMuv 什么也不做）',
-    gate && gate.test(input) === false, gate ? 'gate matched' : 'no gate')
+  check('★ 闸门放行：媒体消息 ' + label + ' ⇒ beautifyMuv 继续往下走（旧枚举会整轮跳过）',
+    gate && gate.test(input) === true, gate ? 'gate 没命中' : 'no gate')
 }
 // 对照：闸门认识的那些标记确实会被放行（证明闸门本身在工作，不是我取错了）
 check('对照：带 <Status_block> 的消息会被闸门放行', gate && gate.test('<Status_block>x</Status_block>') === true)
 check('对照：带 <choices> 的消息会被闸门放行', gate && gate.test('<choices>\nA. 甲\n</choices>') === true)
+// ★ 反向用例：放开媒体名字不等于"什么文本都放行"。这些必须仍然被标签判据拦住 ——
+//   注意 2026-09-22 起守卫多了一条**短文本放行**分支（占位符 greeting 那一档）：
+//   短纯散文会被完整决策放行去取卡（有意的新语义），但**标签判据本身**仍然不命中它们；
+//   长散文（>300 字、无标签）则整条被拦，早退还在 —— 下面的长散文用例钉这一条。
+const PROSE_INPUTS = [
+  ['纯散文（一个标签都没有）', '他推开门，风灌了进来。他说了一句"今天真冷"，然后把窗关上。'],
+  ['算术：2 < 3', '他看到 2 < 3 就想反驳。'],
+  ['比较：a <= b', '条件写成 a <= b 才算对。'],
+  ['后面没有收尾的 `>`', '这行是 x <y 没有收尾。'],
+  ['数字紧跟尖括号：1 <2', '他还说了一句 1 <2。'],
+  ['长散文（301 字、无标签）—— 完整守卫对它整条拦下', '深'.repeat(301)],
+]
+for (const [label, input] of PROSE_INPUTS) {
+  check('★ 闸门仍然拦住（不误命中）：' + label, gate && gate.test(input) === false,
+    gate ? '却被放行了' : 'no gate')
+}
 
 console.log('\n=== ③ DSH 自己的 markdown 管线：原始 HTML 会被放行成真元素吗 ===')
 
@@ -158,14 +184,17 @@ if (mediaRendered !== null && wrapExtract) {
 }
 
 console.log('\n=== 结论 ===')
-console.log('  ① 原生路径的引擎侧对媒体标签完全不可达：renderMediaTags 只挂在')
-console.log('     window._tavernRenderTags 上，而它的唯一调用者是酒馆面板。')
-console.log('  ② 媒体消息连 beautifyMuv 的入口闸门都过不去 → 引擎返回原文，什么都不做。')
-console.log('  ③ 因此「模型自己写的 <video src>」在原生路径上没有任何东西会给它加')
-console.log('     controls/preload；DSH 自己的 markdown 管线也没开 allowDangerousHtml，')
-console.log('     原始 HTML 不会被原样输出成可播放元素。')
-console.log('  → 结论：不是"DSH 已经渲染正常"，而是这条链在原生路径上整个缺失。')
-console.log('     浏览器侧最终观感（裸标签文本 vs 无 controls 的空元素）请用 verify-visual.mjs 复核。')
+console.log('  ① 原生路径的 `_decorateOne` 自己不认媒体标签：renderMediaTags 只挂在')
+console.log('     window._tavernRenderTags 上，而它的唯一调用者是酒馆面板；')
+console.log('     装饰链里能改文本的只有 beautifyMuv（卡的脚本）。')
+console.log('  ② ★ 本轮更新：媒体消息现在**能过** beautifyMuv 的入口闸门了（判据改成标签无关，')
+console.log('     见 ② 那一组断言）。所以卡自己的正则脚本（[6]「视频」/ [9]「CG插图」）第一次')
+console.log('     有机会在原生路径上跑 —— 它们把 `<video>名字</video>` 补成带 src 的播放器。')
+console.log('     真有元素落地的 before/after 数字在 verify-guard-tag-agnostic.mjs（真卡+真 DOM）。')
+console.log('  ★ 仍然不成立的部分（别把它说成"修好了"）：卡里**没有**对应脚本的标记不会被美化。')
+console.log('     实测：`<audio>欢快</audio>` 那一轮守卫已放行、真卡 10 条脚本 0 命中 ⇒ DOM 一字不改。')
+console.log('  ③ DSH 自己的 markdown 管线没开 allowDangerousHtml ⇒ 原始 HTML 不会被原样输出成')
+console.log('     可播放元素；落到页面里的元素一律来自引擎/卡的产物（上面 ④ 那条路）。')
 console.log('  → ④ 的实现方式：**DOM 段替换**（上面两条断言给出理由）。')
 
 console.log('\n=== 结果: ' + (fail ? fail + ' 项失败' : '全部通过') + ' ===')

@@ -61,7 +61,8 @@ if (!R) {
   check('带 load 后测量 + ResizeObserver + 定时兜底',
     boot.includes('addEventListener("load"') && boot.includes('ResizeObserver') && /setTimeout\(m,700\)/.test(boot))
   const lim = R.muvFrameHeightLimits()
-  check('夹取范围是 160 / 2400', lim.min === 160 && lim.max === 2400, lim.min + '/' + lim.max)
+  check('夹取：下限 160 / 上限远高于真卡实测（2083）且仍是防护量级',
+    lim.min === 160 && lim.max >= 6000 && lim.max <= 100000, lim.min + '/' + lim.max)
 }
 
 console.log('\n=== 注入：插在最后一个 </body> 之前，且不碰卡自己的脚本 ===')
@@ -111,8 +112,8 @@ if (!R) {
   H({ data: { __muvFrameHeight: 9999 }, source: { name: 'stranger' } })
   check('★ 陌生 source 的消息被丢弃', frames.map(f => f.style.height).join(',') === before, before)
 
-  H({ data: { __muvFrameHeight: 5000 }, source: winA })
-  check('上限夹到 2400', frames[0].style.height === '2400px', frames[0].style.height)
+  H({ data: { __muvFrameHeight: 99999 }, source: winA })
+  check('上限夹到 muvFrameHeightLimits().max', frames[0].style.height === R.muvFrameHeightLimits().max + 'px', frames[0].style.height)
   H({ data: { __muvFrameHeight: 10 }, source: winA })
   check('下限夹到 160', frames[0].style.height === '160px', frames[0].style.height)
 

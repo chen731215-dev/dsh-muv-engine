@@ -90,6 +90,33 @@ for (const nm of CARDS) {
   check('「' + nm + '」返回值是整页文档', /^\s*(<!doctype|<html)/i.test(html), JSON.stringify(html.slice(0, 40)))
 }
 
+console.log('\n=== ★ 替换串里的 $ 序列：必须字面量入文（照 ST 的函数式替换） ===')
+// 这条钉的是一个**很贵**的坑（2026-09-22 实测）：
+//   `String.replace(re, str)` 会把替换串里的 `$'` / `$&` / `` $` `` / `$$` 当特殊引用；
+//   而卡的正则替换串经常就是一整页 HTML（`_足控天堂2` [2]「ERA 状态栏」= 210KB 文档），
+//   文档里的卡 JS 写着 `key.charAt(0)==='$'` —— `$'` 被解释成"匹配之后的文本"，
+//   于是那行变成 `==='<StatusPlaceHolderImpl/>'`（引号错位）⇒ 整段卡脚本 SyntaxError
+//   ⇒ **卡的 JS 全废**（tab 切不动 / 数据不渲染 / 按钮无反应），而 HTML/CSS 照常显示。
+//   修法 = 照抄 ST `regex/engine.js:419-442` 的**函数式替换**，只展开 `$1`…`$99` 与 `$<name>`。
+const dollarScript = [{ scriptName: 'doc', findRegex: '/<PH\\/>/g', replaceString: "var k='<PH/>'; function f(){return k&&k.charAt(0)==='$'}", disabled: false }]
+const dollarOut = applyAllRegexScripts('x<PH/>y', dollarScript).text
+const dollarWant = "xvar k='<PH/>'; function f(){return k&&k.charAt(0)==='$'}y"
+check('★ 替换串逐字入文（$\' / $& / $` 都不被解释）', dollarOut === dollarWant,
+  dollarOut === dollarWant ? '' : '得到=' + JSON.stringify(dollarOut))
+const greedyScript = [{ scriptName: 'd', findRegex: '/A(\\d+)B/g', replaceString: 'pre$&mid$$tail', disabled: false }]
+const greedyOut = applyAllRegexScripts('A7B', greedyScript).text
+check('★ $& 与 $$ 也保持字面量（只有 $1 展开）', greedyOut === 'pre$&mid$$tail', JSON.stringify(greedyOut))
+const groupScript = [{ scriptName: 'g', findRegex: '/<img>(.*?)<\\/img>/gi', replaceString: '<img src="cdn/$1.webp" alt="$1">', disabled: false }]
+check('★ $1 仍然按捕获组展开（既有行为不能丢）',
+  applyAllRegexScripts('<img>猫/笑1</img>', groupScript).text === '<img src="cdn/猫/笑1.webp" alt="猫/笑1">',
+  applyAllRegexScripts('<img>猫/笑1</img>', groupScript).text)
+const namedScript = [{ scriptName: 'n', findRegex: '/a(?<x>\\d+)b/g', replaceString: '[${x}]'.replace('${x}', '$<x>'), disabled: false }]
+check('★ $<name> 具名组展开（与 ST 同一口径）', applyAllRegexScripts('a9b', namedScript).text === '[9]',
+  applyAllRegexScripts('a9b', namedScript).text)
+const matchMacro = [{ scriptName: 'm', findRegex: '/猫/g', replaceString: '〈{{match}}〉', disabled: false }]
+check('★ {{match}} → 整段匹配（ST 的宏）', applyAllRegexScripts('猫', matchMacro).text === '〈猫〉',
+  applyAllRegexScripts('猫', matchMacro).text)
+
 console.log('\n=== applyAllRegexScripts 冒烟（别把选择逻辑改坏） ===')
 const sample = [{ scriptName: 'r', findRegex: '/猫/g', replaceString: '喵', disabled: false }]
 check('display 模式能替换', applyAllRegexScripts('一只猫', sample).text === '一只喵',

@@ -3148,3 +3148,63 @@ Analysis 隐藏（5118），本轮补齐的是原生 DOM 路径的**元素形态
 - 推 git：`env -u http_proxy … git -c http.proxy= -c https.proxy= -c http.version=HTTP/1.1`（**HTTP/2 本机必 OOM malloc 500MB，与仓库大小无关**；全局 proxy 7897=Clash 常没开；github.com 直连间歇 SNI 阻断，**api.github.com 直连基本一直活**）。
 - API 上传管线：`_scratch/_ghapi-push-muvengine-v2.mjs`（单进程 `cat-file --batch` 读 blob；逐 blob spawn 244 次会卡死；commit 时区必须 RFC3339 带冒号 `+08:00`）。同步 muv-engine 时改 TIP 常量重跑即可。
 - 本地历史 11 个旧 token + 本轮聊天明文 token，**建议全部轮换**（`docs/48` §4.2）。
+
+## §43 第 43 轮（2026-09-26）：状态栏行动选项点击无反应根治 + 一次点击插两份 · `docs/49`
+
+承接 48 号文档的遗留项 1（"contenteditable 修复真机复测：用一张带选项的卡点选项"）——真机复测
+结果：**还是没反应**，而且顺手抓出第二个缺陷。
+
+### 43.1 根因一：点击委托漏了 `.muv-sb-opt`（`6d748b5`，构建 `2026-09-26c`）
+
+- `status-cascade.js` 的 `renderOptions()` 产出 `<button class="muv-sb-opt">` —— 就是
+  `<Status_block>` 里那份「行动选项」（夹具卡·提瓦特等全部走这条）；而 `client.js` 里
+  `exports.apply` 的全局点击委托只匹配 `.muv-choice-btn, .tavern-option-btn`。
+  按钮**可见、有 hover、零处理器** ⇒ 点击静默无反应。
+- 0.3.10 修的是「卡 iframe → 宿主 `muvDeliverUserText`」那一环；**宿主自己**这条级联状态栏
+  按钮路径当时没被覆盖，所以用户看到的仍然是"修了还是没反应"。
+- 修法：委托选择器补 `.muv-sb-opt`；删掉委托里那套旧 textarea-only 覆盖逻辑（DSH 真机 0 个
+  textarea，必然落空，且绕过 contenteditable 追加 / InputEvent / 真发送钮），三条入口统一走
+  `muvDeliverUserText(text, 'send')`。字母前缀**只在确实有徽标时剥**（`.muv-choice-letter`
+  子元素 / `data-opt-letter`）—— 旧的无条件 `/^[A-D]\s*/` 会把选项原文 `A new day…` 吃掉首字母。
+
+### 43.2 根因二：一次点击把选项文本插**两份**（0.3.10 遗留，被本轮修复放大）
+
+- 真机时间线（`_probe-sbopt8.mjs` 在输入框上挂 MutationObserver）：点击后 52 字的选项原文在
+  框里变成 104 字。
+- 机理：`execCommand('insertText')` **自己就会派发原生 `input`**，宿主（React 受控编辑器）
+  据此更新模型；随后我们又无条件补了一个带 `data` 的合成 `InputEvent`，宿主把它当成
+  "再插一次"的指令。
+- 修法：插入期间监听 `input`，**原生事件已到就不再补**合成事件（真的一个都没到才补，保留
+  React 感知兜底）；另把兜底 `appendChild` 的判据改成看**文本长度是否增长**，而不是
+  `execCommand` 的返回值（真机存在"插入成功却返回 false"）。
+
+### 43.3 门禁（`verify-user-send.mjs` 23/0，三条红臂各自精确变红）
+
+- 场景④ 真实 `.muv-sb-opt` 点击：投递 / 追加不覆盖 / InputEvent / **原文只出现一次** /
+  字母剥离不误伤 `A new day…` / 旧两类按钮不回归 / 非选项元素零副作用。
+- 场景⑤ `execCommand` 插入却返回 false 时仍只插一份。
+- 场景⑥ **受控编辑器仿真**（合成 InputEvent 会让宿主再插一次）—— 真机两份的离线复现位。
+- 红臂：`--break=sb-opt-selector`（13 通过 10 失败）、`--break=ce-append-fallback`、
+  `--break=ce-synthetic-input`。
+- 回归：`test-client-render` 385/0、`test-status-cascade` 84/0、`verify-choices-dom` 全过、
+  `verify-frame-height` 全过；`verify-frame-ratchet` **8 项失败 = 改动前 HEAD 实测同值**
+  （对照实测，非本轮漂移；`docs/48` 记的 10/7 是更早的树状态）。
+
+### 43.4 真机验收（零污染口径，可复用）
+
+- `_scratch/_probe-sbopt8.mjs`：**全程真鼠标**（`Input.dispatchMouseEvent`）—— 真点侧栏分组行
+  → 逐个真点会话行直到 DOM 里出现 `.muv-sb-opt` → 真点第 1 个选项的中心坐标。V1–V9 全 PASS：
+  构建戳 / 原文进框 / 原生 input / 桥日志两条 / 发送钮真实 click / `POST api/session/prompt` /
+  框里只有**一份**。
+- ★ 新增零污染口径：`--block-post` 用 `Fetch.enable` + `Fetch.failRequest` 把 `session/prompt`
+  拦在浏览器里 —— 全链路照跑、**服务器收不到**，不往用户会话里塞测试消息。
+  副作用提示：发送被拦后宿主会把草稿**还原**进输入框（`+172ms` 那条 mutation 就是它），
+  所以"点了之后框里应该留字"这类断言必须配 `--block-post` 才成立。
+- ★ 排障经验：宿主页里 patch `document.execCommand` / `document.createTextNode` / `console.info`
+  **都拦不到插件的调用**（插件在自己的执行世界里），主世界探针只能看 DOM 结果 —— 指望
+  "hook 一下就定位"会白跑；改用"改一处 → 看 DOM 结果"的二分法最快。
+
+### 43.5 发布
+
+- npm `dsh-muv-engine@0.3.11`（`chencheng810`）；GitHub `wip/card-interactive` 用 API 管线
+  重传脱敏版（`_scratch/_ghapi-push-muvengine-v3.mjs`，TIP 常量 + PATCH ref）。

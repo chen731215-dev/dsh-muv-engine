@@ -1,0 +1,5 @@
+# dsh-muv-engine bundle patch: mounts the MUV engine plugin.
+# Provides regex engine, variable tracking, and status bar rendering.
+- insert:
+    - id: muv-engine
+      name: 'dsh-muv-engine'

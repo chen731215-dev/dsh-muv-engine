@@ -1,0 +1,34 @@
+﻿# 依赖
+node_modules/
+
+# 本地临时探针（用完即删，不应入库）
+tmp-*
+*.tmp
+
+# 日志与打包产物
+*.log
+npm-debug.log*
+*.zip
+*.tar
+*.tar.gz
+*.bundle
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 门禁自动生成的对照臂源码（可由 git show 重建，不入库）
+.tmp-old-client-*.js
+
+# 提交信息临时文件（提交时会被 git add -A 顺带带上，别入库）
+_cm.txt
+_commit-msg.txt
+
+# 调试残留（历次 .tmp-xxx 探针脚本，用完即弃）
+.tmp-*
+_hfix-*
+muv-agentlog.mjs
+
+# 用户数据（全局正则脚本库 global-regex.json 等，不入库）
+data/

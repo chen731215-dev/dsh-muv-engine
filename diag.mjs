@@ -205,6 +205,11 @@ function scanPresets() {
     if (row.cardName || row.managedName || row.pngName) rows.push(row)
   }
 
+  // ★ 注意（2026-09）：activePresetId() 是**按会话文件 mtime 猜**出来的
+  //   「最近写入的会话所绑的预设」，**不是**"当前会话的权威预设"。
+  //   权威值在 DSH 会话日志的事件流里（`agent-preset/selected` / header 的 `agentPreset`），
+  //   由酒馆的 `GET /api/tavern/current-session?sessionId=` 解析。
+  //   所以下面的 ▶ 只表示「这个预设最近被酒馆写过」，**别当成"你现在正在用的卡"**。
   const active = activePresetId()
   for (const r of rows) {
     const mark = r.preset === active ? '▶' : ' '
@@ -309,7 +314,15 @@ async function probeApi() {
     const j = res.body
     r.noParam = { cardName: j.cardName, name: j.name, source: j.cardSource, file: j.fileName, regex: (j.regexScripts || []).length }
     say(`  /tavern-card (无参)   → 卡=${j.cardName}  来源=${j.cardSource}  正则=${(j.regexScripts || []).length}  文件=${j.fileName}`)
-    say(`     ↳ 无参时若拿到别的卡，说明 sessionId / presetId 都没传对`)
+    // ★ 语义已变（2026-09）：无参**不再**回落到「最近写入的会话」猜测，而是稳定返回
+    //   酒馆默认预设（tavern-lite）并标 presetSource='default'。所以这一行**不再**能用来
+    //   判断"sessionId / presetId 没传对" —— 它只会稳定地拿到默认卡。
+    //   要验证某个会话/预设的定位，请**显式带参数**：
+    //     ?sessionId=<id>                 → 按会话解析（服务端查 bindings → 默认）
+    //     ?presetId=<id>&preferPreset=1    → 强制按该预设解析（诊断/卡库检查）
+    //     ?preferActive=1                  → 这才启用「最近写入的会话」猜测
+    say(`     ↳ presetSource=${j.presetSource || '(无)'}；无参恒为稳定默认，**不**代表定位正确`)
+    say(`       要验证定位请显式带 ?sessionId= / ?presetId=&preferPreset=1`)
   } catch (e) {
     say(`  ✗ tavern-card 失败: ${e.message}`)
   }

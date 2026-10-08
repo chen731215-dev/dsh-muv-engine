@@ -380,8 +380,11 @@ console.log('\n⑦ 模块函数的全局唯一性（"搬了忘了删原处"的 g
 {
   const uq = moduleUniquenessReport({ parts, artifact })
   check('★ 真实仓库：模块里的函数在产物里各只声明 1 次', uq.ok, uq.problems.join(' | '))
-  check('两个模块的函数都被数到了（mod-text 3 个 + mod-vr-ui 4 个 = 7）',
-    uq.moduleFns.reduce((s, m) => s + m.names.length, 0) === 7,
+  // ★ 派生断言（**不硬编码模块数/函数数**）：每加一段这两个数都会变，写死会让"段N 的测试"在
+  //   "段N+1"里报红 —— 那不是真问题，却会训练人忽略红灯。改成与"实际存在的模块片"对齐。
+  const modParts = parts.filter((p) => /(^|\/)mod-[^/]+\.js$/.test(p.path))
+  check('唯一性判据覆盖了**全部** ' + modParts.length + ' 个模块片（派生，不写死数字）',
+    uq.moduleFns.length === modParts.length && modParts.length >= 3,
     JSON.stringify(uq.moduleFns.map((m) => m.path + ':' + m.names.length)))
 
   // 反证 ①：搬了但**没删原处** ⇒ 产物里声明两次 ⇒ 必须红并点名
@@ -422,9 +425,14 @@ console.log('\n⑧ 模块迁移账本（"函数被挪到同层别的模块 / 被
 {
   const lg = moduleLedgerReport({ parts, manifest })
   check('★ 真实仓库：每个模块里的函数都在、文本摘要都对得上', lg.ok, lg.problems.join(' | '))
-  check('账本覆盖了两个模块（mod-text 3 个 + mod-vr-ui 4 个 = 7）',
-    lg.entries.reduce((s, e) => s + e.ledgered, 0) === 7,
-    JSON.stringify(lg.entries.map((e) => e.path + ':' + e.ledgered)))
+  // ★ 同样是派生断言：账本必须覆盖**全部**模块片，且每个模块的"账本条数 == 实际声明数"
+  const modParts2 = parts.filter((p) => /(^|\/)mod-[^/]+\.js$/.test(p.path))
+  const ledgerKeys = Object.keys(manifest.modules || {})
+  check('账本覆盖了**全部** ' + modParts2.length + ' 个模块片、且条数与实际声明数一致（派生）',
+    ledgerKeys.length === modParts2.length && modParts2.length >= 3 &&
+    lg.entries.every((e) => e.ledgered === e.declared) &&
+    lg.entries.every((e) => e.ledgered > 0),
+    JSON.stringify(lg.entries.map((e) => e.path + ':' + e.ledgered + '/' + e.declared)))
 
   const modText = parts.find((p) => p.path.endsWith('mod-text.js'))
   const others = () => parts.filter((p) => p.path !== modText.path)
@@ -438,7 +446,12 @@ console.log('\n⑧ 模块迁移账本（"函数被挪到同层别的模块 / 被
   }
   // 反证 ②：账本记的函数从模块里消失（被挪走）⇒ 必须红
   {
-    const stripped = { ...modText, text: modText.text.replace(/\n\s*function splitArgs[\s\S]*?\n\s*\}\n/, '\n') }
+    // ★ 夹具必须**形态无关**：判据本身会归一化，但**我的合成夹具**若直接在 CRLF 文本上跑
+    //   `\n\s*function …` 这种正则，会**匹配不上**（`\r\n` 挡住它）⇒ "strip" 没发生 ⇒
+    //   判据（正确地）说 ok ⇒ 而我的断言要求"必须红" ⇒ 这一格**在 CRLF 形态下红**。
+    //   实测就是这么被抓到的（CRLF 夹具里唯一失败的一格）。修：先在归一化文本上做改动。
+    const lfLocal = (s) => String(s).replace(/\r\n/g, '\n')
+    const stripped = { ...modText, text: lfLocal(modText.text).replace(/\n\s*function splitArgs[\s\S]*?\n\s*\}\n/, '\n') }
     const r = moduleLedgerReport({ parts: [...others(), stripped], manifest })
     check('反证：账本记的函数从模块里消失（被挪走）⇒ 红并点名',
       r.ok === false && r.problems.some((p) => p.includes('splitArgs')), r.problems.join(' | '))

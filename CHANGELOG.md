@@ -1,5 +1,96 @@
 # Changelog
 
+## 未发布（工程化 · muv-S1）★ 55 个散落脚本分家 + 统一 runner + CI + 仓库卫生闸门
+
+**本次不动产品行为**：`lib/*.js` 一行未改（`git diff --stat HEAD -- lib` 为空）。只做工程化：
+把仓根 55 个脚本收进目录、接上统一 runner 与 CI、加仓库卫生闸门，并清掉 6 处历史遗留的本机路径。
+分家前：55 个 `test-*` / `verify-*` / `repro-*` 全堆在仓根，**没有统一 runner、没有 CI** ——
+「哪些门禁跑过」全靠人记。
+
+### 1. 分家（只移动 + 只改路径引用）
+
+- `test-*.mjs`(7) → `tests/`；`verify-*`(41，含 `verify-guard-samples.json`) → `tools/verify/`；
+  `repro-*.mjs`(7) → `tools/repro/`；`diag.mjs` 留在仓根（它在 `package.json.files` 里，是用户可跑的自检入口）。
+- 内容改动全是「搬家必须改」的三类：ESM 相对说明符（`./lib/` → `../lib/` / `../../lib/`）；
+  同伴仓相对路径（按深度 `../../dsh-muv-table/` / `../../../dsh-muv-table/`）；
+  仓库根推导（新增 `REPO_ROOT`，替掉「脚本目录就是仓根」的旧假设）。
+- **三处不是 import、而是运行时按 cwd 解析**的 `'./lib/client.js'` 单独修正
+  （`verify-session-id-sources` / `verify-tavern-card-locator` / `-patched-preview`）——
+  它们被「统一替换」误伤过一次（会去仓外找 `lib/`），改成 `REPO_ROOT` 后不再依赖 cwd。
+- `verify-tavern-card-locator-patched-preview.mjs`：工作区里**先于本次工作**就被删过（`git status` 是 `D`）。
+  本次从 HEAD **恢复**并按规则搬进 `tools/verify/` ⇒ 历史上以 **rename** 出现，**不是静默删除**。
+
+### 2. `tools/run-each-test.mjs`（`npm test` / `npm run test:all`）
+
+口径照抄 tavern 的同名文件，四处按本仓现实适配（每条都是实测踩出来的）：
+
+- **本仓这批脚本不是 node:test**（自带 `check()` 报告器）：直接 `node <文件>`、**以 exit code 为准**，
+  同时认三种计数（`# pass N` / `ℹ pass N` / 本仓原生 `=== 结果|断言: N 通过, M 失败 ===`）。
+- **空跑即失败（`❔`）两档都判**：① 报告器在场却 0 项断言；② **根本没有报告器且 0 字节输出**（静默退出）。
+  ②就是「免费绿灯」，必须与「合法无计数」分开 —— 后者以 exit code 判定、单独一桶列名。
+- **语料排除非测试**（`CORPUS_EXCLUDE`，每条带理由，且**名单里写了不存在的文件即判失败**，防它悄悄烂掉）：
+  `tools/verify/verify-shared.mjs` 与 `tests/test-client-source.mjs`（共享库，无断言无输出）、
+  `tools/verify/verify-guard-samples.gen.mjs`（**生成器：当测试跑会回写 `verify-guard-samples.json`**）。
+- **计数分三桶报**：有计数 / 无计数（正常）/ 异常（超时·崩溃·空输出），
+  避免「本来就不产计数」与「跑挂了」混在一张清单里（后者才是要看的东西）。
+- 超时判定修成 `error.code==='ETIMEDOUT' || signal != null`：
+  旧写法 `status===null && !error` 在这台机器上**恒假** ⇒ `⌛` 档与它的诊断分支是死代码。
+- **用坏样本自证**（11 个夹具：0 字节文件 / 只 `process.exit(0)` / 空跑 / 崩溃 / 超时 / tap / spec /
+  `skipped>0` / 合法无计数 …）各自必须落到预期档位，3 个非测试文件必须被排除 —— 实测全中。
+
+### 3. `npm run check`（`tools/check-syntax.mjs`）
+
+扫 `lib/` + `tests/` + `tools/`，在**当前进程内**按 ESM 解析（`vm.SourceTextModule`，不 spawn 子进程）。
+扫目录而不是手抄清单（手抄必然落后于目录）。本次实测 **66 个文件全通过**。
+
+### 4. CI（`.github/workflows/check.yml`）+ 仓库卫生闸门
+
+- 步骤 = `check` + `test` + `check:hygiene`；**刻意没有** `continue-on-error` / `|| true`。
+- 含「同伴仓」步骤：本仓测试按**相对路径** import `../dsh-muv-table/…`、`lib/index.js` 按**裸名**
+  import `dsh-muv-table/…`，干净 checkout 里两者都不存在 ⇒ 会得到一片「Cannot find module」的假红。
+  所以先 clone 同伴仓成**兄弟目录**，再在 `node_modules/` 下建 junction。
+- 并在 checkout **之前**关掉 `core.autocrlf`：本仓工作树 `.mjs` 全是 LF，Windows runner 默认会检出成 CRLF，
+  而多条门禁是逐字比较源码的 —— CRLF 会让它们因为换行符假红。
+- `tools/check-repo-hygiene.mjs` + `.githooks/pre-commit`（找不到 node 时 fail-open）：
+  移植 tavern 那套并适配本仓路径规则（`data/`、`.tmp-*` 临时产物）。
+  本地启用：`git config core.hooksPath .githooks`（每个克隆一次）。
+- **顺手清掉 6 处历史遗留的本机路径**（公开仓库不该带）：
+  `verify-fence-hijack-main` / `verify-fence-residue` / `verify-regex-depth` / `verify-status-placeholder-era` /
+  `verify-guard-samples.gen` / `verify-guard-samples.json` 里的真实用户名一律占位化
+  （优先 `process.env.*`，其余 `C:/Users/<user>/…`）；`verify-guard-samples.json` 的 `_provenance`
+  连带**会话 id / 预设目录**一起占位，生成器同步改了 ⇒ 重新生成不会再把真实值带回来。
+  判据：`npm run check:hygiene` → exit 0。
+  （**遗留记账**：`lib/client.js` 等文件的注释里仍有**缩写**的会话 id `session-c98dfb13-…`；
+  `lib/` 本次不许动，未处理。）
+
+### 5. git 卫生
+
+- `refs/heads/master`（`feeeaff8`）与 `refs/remotes/origin/master`（`efabdabb`）**实测都能解析到真实 commit**，
+  且后者是 `origin/HEAD` 的目标 ⇒ 它们**不是悬空引用**，本次**不删**
+  （删掉是数据丢失，不是卫生）。只处理了 `refs/heads/master` 的**格式**问题
+  （ref 文件缺结尾换行，`git fsck` 报 `refMissingNewline`）。
+
+### 6. 基线（本次实测）
+
+- `npm run test:all`（= `node tools/run-each-test.mjs --all --timeout 60000`）：
+  跑了 52 个（跳过 3 个非测试），合计 `pass=655 fail=3`；
+  **有计数 10 / 无计数（正常）18 / 异常 24**，exit 1。
+- `npm test`（只跑 `tests/`）：6 个文件、`pass=521 fail=0`、**exit 0** ⇒ CI 的 test 步骤可达绿。
+- 异常那 24 个**没有一个是因为搬家**：与搬家前逐个 exit code 对照，
+  仅 1 个从红转绿（`verify-fence-predicates`：原先多一层/硬编码的路径，搬家顺带修好），
+  其余状态变化全是「环境依赖本来就跑不动」（真卡目录 `C:\MySpecialFolder\…`、真会话回复样本、fzstd、
+  网络 clone、真 Edge）。逐条成对对照表在提交说明与交接材料里。
+- **刻意不把 `tools/verify|repro` 那批塞进 CI**：它们大多需要真卡 / 真会话 / 真浏览器（结构性跑不动），
+  塞进去只有两种下场 —— 假红（然后没人再看 CI），或加 `continue-on-error`（等于把闸门拆掉）。
+  宁可留在本地 `npm run test:all` 并把「跑不动」如实记账。
+
+### 7. 换行符
+
+分家范围内的 55 个文件全部**纯 LF**（与 HEAD 一致）。中途 `git checkout`（`core.autocrlf=true`）
+把工作树写成 CRLF，补丁脚本插入的行又是 LF ⇒ 一度出现 28 个「CRLF 为主 + 少量裸 LF」的混合体，
+已按其 HEAD 版本的 EOL 归一。判据要**两条一起看**：`git diff --ignore-cr-at-eol` **看不见**这类 churn
+（会被 autocrlf 骗过去），**必须直接量工作树字节**。
+
 ## 0.3.11（2026-09-26 · 三十九 · 已发布 npm `chencheng810`）★ 状态栏行动选项点击无反应根治 + 一次点击插两份 · `2026-09-26c`
 
 0.3.10 修的是「卡 iframe → 宿主 contenteditable」那一环，但**宿主自己**这条级联状态栏按钮路径

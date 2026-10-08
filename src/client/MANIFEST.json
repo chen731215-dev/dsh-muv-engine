@@ -1,0 +1,130 @@
+{
+  "note": "分片是【源】，lib/client.js 是【派生物】。改产物必须改分片再重新生成；不许直接编辑产物。",
+  "artifact": {
+    "path": "lib/client.js",
+    "bytes": 556776,
+    "sha256": "d3ad3ef10ffbac03fdf322e55fce9ca6721401dbc8edb4bf4989f9437ebb6aca"
+  },
+  "parts": [
+    {
+      "path": "src/client/part-01.js",
+      "startLine": 1,
+      "endLine": 761,
+      "lines": 761,
+      "bytes": 44419,
+      "sha256": "f142f072dec7757ccc73ea884ddeb884a06948e559264008f4ea8a4d13a11ace",
+      "depthAtStart": 0,
+      "depthAtEnd": 3
+    },
+    {
+      "path": "src/client/part-02.js",
+      "startLine": 762,
+      "endLine": 1357,
+      "lines": 596,
+      "bytes": 35304,
+      "sha256": "ba70bc7cbdad02cf38a358810e88afcbc9766faedc385af5cd26aafe02518675",
+      "depthAtStart": 3,
+      "depthAtEnd": 3
+    },
+    {
+      "path": "src/client/part-03.js",
+      "startLine": 1358,
+      "endLine": 2228,
+      "lines": 871,
+      "bytes": 65888,
+      "sha256": "4d57460b7c4d054bf8de9f149b2060692686181501db269d16d9e264bca5c5e1",
+      "depthAtStart": 3,
+      "depthAtEnd": 3
+    },
+    {
+      "path": "src/client/part-04.js",
+      "startLine": 2229,
+      "endLine": 2678,
+      "lines": 450,
+      "bytes": 27430,
+      "sha256": "6203dadf5d79bee9cc6f4879b753a113a88f9d22e4ff028c2d8b0c6c3dd7bca7",
+      "depthAtStart": 3,
+      "depthAtEnd": 3
+    },
+    {
+      "path": "src/client/part-05.js",
+      "startLine": 2679,
+      "endLine": 3677,
+      "lines": 999,
+      "bytes": 82572,
+      "sha256": "9105facf06bdea6471c9128605565ba1bd50d4161d447136fcb7bf3bbca38566",
+      "depthAtStart": 3,
+      "depthAtEnd": 3
+    },
+    {
+      "path": "src/client/part-06.js",
+      "startLine": 3678,
+      "endLine": 4421,
+      "lines": 744,
+      "bytes": 39361,
+      "sha256": "7efeabdc1bba58b9da7670ae31a32665775d3419a5ad1dbcd2cccd5549126bed",
+      "depthAtStart": 3,
+      "depthAtEnd": 3
+    },
+    {
+      "path": "src/client/part-07.js",
+      "startLine": 4422,
+      "endLine": 5163,
+      "lines": 742,
+      "bytes": 39757,
+      "sha256": "297b5839fd3942c5721e02ced745783ace302e7dbc4db9ecb072233eb5046101",
+      "depthAtStart": 3,
+      "depthAtEnd": 3
+    },
+    {
+      "path": "src/client/part-08.js",
+      "startLine": 5164,
+      "endLine": 5819,
+      "lines": 656,
+      "bytes": 40668,
+      "sha256": "86f830003c6de8dc87016f073ab4e87a07a9bb0884550c6b2baec15f2b18c188",
+      "depthAtStart": 3,
+      "depthAtEnd": 3
+    },
+    {
+      "path": "src/client/part-09.js",
+      "startLine": 5820,
+      "endLine": 6633,
+      "lines": 814,
+      "bytes": 56373,
+      "sha256": "672a871be1fb9a69e2c51bdfe2cd7706951c7ce0cd1733843e4d5c3329ddfc6e",
+      "depthAtStart": 3,
+      "depthAtEnd": 3
+    },
+    {
+      "path": "src/client/part-10.js",
+      "startLine": 6634,
+      "endLine": 7134,
+      "lines": 501,
+      "bytes": 26481,
+      "sha256": "53aabac9182f545358cf3afca4fd06ebd9dda18ec275be973df74f635af989e7",
+      "depthAtStart": 3,
+      "depthAtEnd": 3
+    },
+    {
+      "path": "src/client/part-11.js",
+      "startLine": 7135,
+      "endLine": 8827,
+      "lines": 1693,
+      "bytes": 98484,
+      "sha256": "7f21e9ace763d0edfe13ceeb521a2764ad29dee389ab48e68c32856465327c67",
+      "depthAtStart": 3,
+      "depthAtEnd": 3
+    },
+    {
+      "path": "src/client/part-12.js",
+      "startLine": 8828,
+      "endLine": 8832,
+      "lines": 5,
+      "bytes": 39,
+      "sha256": "b9740da4b958ffad73053b00986cb5186f272b71ab889e2269e48bb77593001c",
+      "depthAtStart": 3,
+      "depthAtEnd": 0
+    }
+  ]
+}

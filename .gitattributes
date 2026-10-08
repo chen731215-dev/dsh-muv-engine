@@ -1,0 +1,29 @@
+# EOL 契约 —— **只钉问题载体**，不做全仓 blanket。
+#
+# ── 背景（本次缺陷）────────────────────────────────────────────────────
+# 本仓 `core.autocrlf = true` 且原先没有 `.gitattributes` ⇒ **同一个提交在不同检出形态下
+# 行尾不同**：CI 的工作流关掉了 autocrlf（检出 LF），而 Windows 上任何人做一次普通
+# `git clone` 会检出 CRLF。实测（@1d4393d，两形态夹具）：
+#     默认 worktree   检出 crlf=8831 lf=0     ⇔ blob 永远是 crlf=0 lf=8831
+#     -c autocrlf=false 检出 crlf=0 lf=8831
+# `lib/client.js` 是**逐字比较类判据的载体**（仓内数十个消费点按源码文本抽函数体，
+# 且 S2 要拿"拼装产物逐字节等于它"当门禁）⇒ 它被检出成 CRLF 时，任何按字符窗口匹配的
+# 判据都会假红，看起来像真失败。
+#
+# ── 两条原则（维护者请一并遵守）────────────────────────────────────────
+# ① **归一化是"判据层"的稳健性；`.gitattributes` 是"契约层"的决定 —— 两层都要，理由不同。**
+#    绝不能由"门禁怎么写"来倒推"文件该是什么形态"。本次病根正是后者。
+# ② **任何 EOL 守卫或 EOL 相关判据，必须看 git blob（或先归一化），绝不能看工作树。**
+#    看工作树的守卫**自己就变成环境依赖** —— 那正是本次缺陷的形态。
+#
+# ── 为什么只写这一条 ───────────────────────────────────────────────────
+# · 全仓 `text=auto eol=lf` 会让 7 个 blob 含 CRLF 的文件（CHANGELOG.md / lib/index.js /
+#   lib/var-tracker.js / README.md / LICENSE / package.json / cordis.patch.yml）一次性
+#   变成"已修改"，需要单独一笔重归一化收尾；LICENSE/package.json 纯属噪音。
+# · 更要紧：`lib/index.js` / `lib/var-tracker.js` 的 CRLF 是本仓族的**既定约定**
+#   （tavern AGENTS §7.4：`lib/index.js` 与 `lib/server/*.js` → CRLF；client bundle → LF）
+#   ⇒ 全仓 LF 化等于推翻契约，应单独立项，不在这里顺手做。
+#
+# 本文件只钉住那个**真正被逐字比较**的文件。它的 blob 实测已是纯 LF（crlf=0 / lf=8831）
+# ⇒ 加这条是**零 churn**（见提交信息里的证据）。
+lib/client.js text eol=lf

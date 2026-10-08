@@ -218,6 +218,37 @@ export const FIX_HINT = [
   '    · 你改的是【分片】src/client/*   → 跑 `node tools/build-client.mjs` 重新生成产物（分片才是源）',
 ].join('\n')
 
+/**
+ * ★ **刷新清单**（纯函数）：按"当前分片内容"重算每片的 bytes/sha256/lines，并重算产物的 bytes/sha256。
+ *
+ * 为什么它必须存在、且必须被断言盯着：生成路径若只重写产物、不刷新清单，那么
+ * "改了分片 → 重新生成 → 清单里的 artifact.sha256 还是旧的" ⇒ form-free 不变式立刻报红，
+ * 而使用者会以为是**产物**错了（其实错的是清单）。
+ * 口径与生成端一致：**按归一化内容**记 bytes/sha256（见 `lf` 的长注释）。
+ * @param {object} o
+ * @param {Array<{path:string, text:string}>} o.parts
+ * @param {string} o.built 拼装结果（= 要落盘的产物内容）
+ * @param {object} o.manifest 现有清单（返回**新的**对象，不改入参）
+ */
+export function refreshedManifest({ parts, built, manifest }) {
+  const out = JSON.parse(JSON.stringify(manifest))
+  const byPath = new Map(parts.map((p) => [p.path, p.text]))
+  for (const decl of out.parts || []) {
+    const t = byPath.get(decl.path)
+    if (typeof t !== 'string') continue
+    const norm = lf(t)
+    decl.bytes = Buffer.byteLength(norm, 'utf8')
+    decl.sha256 = sha256(norm)
+    // ★ 行数口径：分片文件**以换行结尾**（除最后一片），`split('\n')` 会多出一个空尾元素
+    //   ⇒ 必须减 1。否则"lines 之和 == 产物行数"这条断言整体偏大（实测 13 片偏 +12），
+    //   而且会让生成**不幂等**（每次生成都改 lines ⇒ 下次 --check 仍红）。
+    decl.lines = t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
+  }
+  out.artifact.bytes = Buffer.byteLength(built, 'utf8')
+  out.artifact.sha256 = sha256(lf(built))
+  return out
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2)
 // ★ 入口判定必须用 `pathToFileURL`，**不能**手拼 `'file://' + argv[1]`：
@@ -247,13 +278,20 @@ if (isMain) {
     console.error(FIX_HINT)
     process.exit(1)
   }
-  // 默认：生成
-  if (report.ok) {
+  // 默认：生成（= 用分片重写产物 **并刷新清单**）
+  if (report.ok && !argv.includes('--force')) {
     console.log('✅ 产物已是最新（' + report.stats.artifactBytes + ' 字节），无需重写。')
     process.exit(0)
   }
-  fs.writeFileSync(ARTIFACT_PATH, assemble(parts.map((p) => p.text)))
-  const wrote = Buffer.byteLength(fs.readFileSync(ARTIFACT_PATH, 'utf8'), 'utf8')
-  console.log('✍️  已用 ' + parts.length + ' 个分片重新生成 ' + path.relative(REPO, ARTIFACT_PATH) + '（' + wrote + ' 字节）')
+  // ★ 生成**必须同时刷新清单**：否则"改了分片 → 重新生成 → 清单里的 artifact.sha256 还是旧的"
+  //   ⇒ form-free 不变式立刻报红，而用户会以为是产物错了（其实错的是清单）。
+  //   刷新口径与生成端一致：每片按**归一化内容**记 bytes/sha256（见 lf 的长注释），
+  //   产物同理。清单位于 src/client/MANIFEST.json，**不是**产物的一部分，改它不影响逐字节。
+  const built = assemble(parts.map((p) => p.text))
+  fs.writeFileSync(ARTIFACT_PATH, built)
+  const fresh = refreshedManifest({ parts, built, manifest })
+  fs.writeFileSync(MANIFEST_PATH, JSON.stringify(fresh, null, 2) + '\n')
+  console.log('✍️  已用 ' + parts.length + ' 个分片重新生成 ' + path.relative(REPO, ARTIFACT_PATH)
+    + '（' + fresh.artifact.bytes + ' 字节）并刷新清单（parts 的 bytes/sha256/lines + artifact 的 bytes/sha256）')
   process.exit(0)
 }

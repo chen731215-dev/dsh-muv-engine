@@ -1,4 +1,4 @@
-      // ── mod-text：纯文本 / 围栏 / 标签扫描工具（S2 段1 从工厂体内搬来，函数内容逐字未改）──
+    // ── mod-text：纯文本 / 围栏 / 标签扫描工具（S2 段1 从工厂体内搬来，函数内容逐字未改）──
     function splitArgs(src) {
       var out = [], buf = '', q = null
       for (var i = 0; i < src.length; i++) {

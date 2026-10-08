@@ -299,6 +299,59 @@ export function moduleLevelReport({ parts, manifest }) {
   return { ok: problems.length === 0, problems, modules }
 }
 
+/**
+ * ★ **模块函数的全局唯一性**判据。
+ *
+ * 为什么它值得单独一条（它是我给"读父提交做 diff 分类"那条建议的 **git-free 替代**）：
+ *   · 搬迁最经典的错法是"**搬了但忘了删原处**" ⇒ 产物里同一个函数出现**两次**。
+ *     后定义的会覆盖先定义的，于是行为看起来正常、但另一处调用的是"另一个函数"
+ *     —— 这是极难发现的一类（本会话已经栽过一次同族的"看起来接上了其实没接上"）。
+ *     "diff 逐行分类"能抓它，但**要读父提交** ⇒ 依赖 git 历史，与 form-free 那条原则有张力；
+ *   · 这条**只读当前状态**（产物 + 分片）即可：`mod-*` 模块里声明的每个函数名，
+ *     在整个产物里的**声明次数必须恰好 1**。断言更弱，但**依赖更少**，且对每次搬迁都成立。
+ *   ★ 注意**不能**要求"全产物函数名唯一"：本仓有 272 处具名函数声明、只有 195 个不同名字
+ *     （不同 IIFE 里的同名内部辅助是合法的）⇒ 判据必须**只针对模块片里的函数**。
+ *
+ * @param {object} o
+ * @param {Array<{path:string, text:string}>} o.parts
+ * @param {string} o.artifact
+ */
+export function moduleUniquenessReport({ parts, artifact }) {
+  const problems = []
+  // 用**词法**数声明（不扫正则）：字符串/注释里的 `function foo(` 不算数
+  const declNames = (text) => {
+    const toks = tokenize(text)
+    const out = []
+    for (let i = 0; i < toks.length; i++) {
+      if (toks[i].type !== 'ident' || toks[i].value !== 'function') continue
+      let j = i + 1
+      if (toks[j] && toks[j].type === 'punct' && toks[j].value === '*') j++
+      const idt = toks[j]
+      if (idt && idt.type === 'ident') out.push(idt.value)
+    }
+    return out
+  }
+  const total = new Map()
+  for (const nm of declNames(artifact)) total.set(nm, (total.get(nm) || 0) + 1)
+  const mods = parts.filter((p) => /(^|\/)mod-[^/]+\.js$/.test(p.path))
+  if (mods.length === 0) problems.push('没有任何 mod-* 模块片（唯一性无从判定）')
+  for (const p of mods) {
+    const names = declNames(p.text)
+    if (names.length === 0) problems.push(p.path + ' 里没有具名函数声明')
+    for (const nm of names) {
+      const c = total.get(nm) || 0
+      if (c !== 1) {
+        problems.push(p.path + ' 的 `' + nm + '` 在产物里声明了 ' + c + ' 次（应恰好 1 次）'
+          + '——搬了就必须删掉原处，否则另一处调用的是"另一个函数"')
+      }
+    }
+  }
+  return {
+    ok: problems.length === 0, problems,
+    moduleFns: mods.map((p) => ({ path: p.path, names: declNames(p.text) })),
+  }
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2)
 // ★ 入口判定必须用 `pathToFileURL`，**不能**手拼 `'file://' + argv[1]`：
@@ -315,6 +368,14 @@ if (isMain) {
         + '  ' + String(p.bytes).padStart(7) + ' 字节  深度 ' + p.depthAtStart + '->' + p.depthAtEnd)
     }
     console.log('产物：' + manifest.artifact.path + '  ' + manifest.artifact.bytes + ' 字节');
+  }
+  if (argv.includes('--uniqueness')) {
+    const uq = moduleUniquenessReport({ parts, artifact })
+    for (const m of uq.moduleFns) console.log('  ' + m.path.padEnd(26) + ' ' + m.names.join(', '))
+    if (uq.ok) { console.log('✅ 模块函数唯一性：模块内的函数在产物里各只声明 1 次'); process.exit(0) }
+    console.error('❌ 模块函数唯一性不成立（多半是"搬了没删原处"）：')
+    for (const p of uq.problems) console.error('  · ' + p)
+    process.exit(1)
   }
   if (argv.includes('--levels')) {
     const lv = moduleLevelReport({ parts, manifest })

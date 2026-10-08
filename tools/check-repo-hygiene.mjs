@@ -77,6 +77,9 @@ const looksUtf16 = (b) =>
  */
 const hasUtf8Bom = (b) => b.length >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf
 
+/** ★ BOM 判据的**非空跑下限**：至少要真的在这么多 blob 头上工作过（见 scanDetailed 末尾的判红）。 */
+const MIN_BLOB_HEADS = 50
+
 /**
  * ★ **形态判据必须以 blob 为准**（与已立的 EOL 纪律一致：形态判据不许只看工作树）。
  *   工作树可能被 `.gitattributes` / `autocrlf` / `working-tree-encoding` 改写，
@@ -149,7 +152,20 @@ export function scanDetailed(files, { readFromIndex = false } = {}) {
       if (m) issues.push({ file: norm, kind: 'content/' + c.id, why: c.why, hit: String(m[0]).slice(0, 12) + '…' })
     }
   }
-  return { issues, skipped }
+  // ★★ **非空跑下限**：BOM 判据必须证明"它真的在若干个 blob 头上工作过"。
+  //   否则一句「没报 BOM」可能只是「根本没在看」—— 本仓把这类叫"空跑恒真"，与"免费绿灯"同族。
+  //   注：下限**故意放在 scanDetailed 里**（而不是 main 的成功分支）：这样它在**任何**调用路径上都生效，
+  //   而且小仓库上会**响亮报红**而不是安静通过 —— 反证夹具正是靠这一点证明"下限在工作"。
+  const blobHeadsChecked = BLOB_HEADS ? BLOB_HEADS.size : 0
+  if (blobHeadsChecked < MIN_BLOB_HEADS) {
+    issues.push({
+      file: '(非空跑下限)',
+      kind: 'form/bom-coverage',
+      why: 'BOM 判据只检查了 ' + blobHeadsChecked + ' 个 blob 头（要求 ≥ ' + MIN_BLOB_HEADS
+        + '）⇒ 本轮的「没报 BOM」可能只是「没在看」。请确认这是不是一个过小的仓库/夹具。',
+    })
+  }
+  return { issues, skipped, stats: { blobHeadsChecked } }
 }
 
 /** 只返回违规列表（给只关心违规的调用方；跳过明细走 scanDetailed）。 */

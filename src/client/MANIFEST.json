@@ -1,115 +1,127 @@
 {
   "note": "分片是【源】，lib/client.js 是【派生物】。改产物必须改分片再重新生成；不许直接编辑产物。",
+  "linesNote": "各分片 lines 之和 = 产物 split('\\n') 的长度；产物的 \\n 个数比它少 1（末行无尾随换行）。",
   "artifact": {
     "path": "lib/client.js",
-    "bytes": 556776,
-    "sha256": "d3ad3ef10ffbac03fdf322e55fce9ca6721401dbc8edb4bf4989f9437ebb6aca"
+    "bytes": 556913,
+    "sha256": "b97f0450c2c1f120f85cf499eedb14a6e904c045395c9868706924ab7079338b"
   },
   "parts": [
     {
       "path": "src/client/part-01.js",
       "startLine": 1,
-      "endLine": 761,
-      "lines": 761,
-      "bytes": 44419,
-      "sha256": "f142f072dec7757ccc73ea884ddeb884a06948e559264008f4ea8a4d13a11ace",
+      "endLine": 5,
+      "lines": 5,
+      "bytes": 181,
+      "sha256": "8af46630b4f0c6f5c46fbbe068de18416ee87e4fb249427491808750f4d25cbc",
       "depthAtStart": 0,
-      "depthAtEnd": 3
+      "depthAtEnd": 2
+    },
+    {
+      "path": "src/client/mod-text.js",
+      "startLine": 6,
+      "endLine": 60,
+      "lines": 55,
+      "bytes": 1799,
+      "sha256": "83a58824027c1b27e02714cffd1585c12a259166c325a6f79d8a747011570ace",
+      "depthAtStart": 2,
+      "depthAtEnd": 2,
+      "part": "mod-text（S2 段1 搬入：splitArgs / findClosingFence / readStartTag）"
     },
     {
       "path": "src/client/part-02.js",
-      "startLine": 762,
-      "endLine": 1357,
-      "lines": 596,
-      "bytes": 35304,
-      "sha256": "ba70bc7cbdad02cf38a358810e88afcbc9766faedc385af5cd26aafe02518675",
-      "depthAtStart": 3,
-      "depthAtEnd": 3
+      "startLine": 61,
+      "endLine": 2005,
+      "lines": 1945,
+      "bytes": 125275,
+      "sha256": "3f53ca14d070b6e88453c05b32f553f47116651c424ff5c82daaeb22db90b405",
+      "depthAtStart": 2,
+      "depthAtEnd": 2
     },
     {
       "path": "src/client/part-03.js",
-      "startLine": 1358,
-      "endLine": 2228,
-      "lines": 871,
-      "bytes": 65888,
-      "sha256": "4d57460b7c4d054bf8de9f149b2060692686181501db269d16d9e264bca5c5e1",
-      "depthAtStart": 3,
-      "depthAtEnd": 3
+      "startLine": 2006,
+      "endLine": 2683,
+      "lines": 678,
+      "bytes": 45950,
+      "sha256": "e885b8218b88fa4603b9b1cd47960d275ade22762ab80730ce33358e29baf386",
+      "depthAtStart": 2,
+      "depthAtEnd": 2
     },
     {
       "path": "src/client/part-04.js",
-      "startLine": 2229,
-      "endLine": 2678,
-      "lines": 450,
-      "bytes": 27430,
-      "sha256": "6203dadf5d79bee9cc6f4879b753a113a88f9d22e4ff028c2d8b0c6c3dd7bca7",
-      "depthAtStart": 3,
-      "depthAtEnd": 3
+      "startLine": 2684,
+      "endLine": 3428,
+      "lines": 745,
+      "bytes": 67330,
+      "sha256": "5a92fd0cfa43feaa1f051b446e725c0834128601ef48dcadce504fc28a293093",
+      "depthAtStart": 2,
+      "depthAtEnd": 2
     },
     {
       "path": "src/client/part-05.js",
-      "startLine": 2679,
-      "endLine": 3677,
-      "lines": 999,
-      "bytes": 82572,
-      "sha256": "9105facf06bdea6471c9128605565ba1bd50d4161d447136fcb7bf3bbca38566",
-      "depthAtStart": 3,
-      "depthAtEnd": 3
+      "startLine": 3429,
+      "endLine": 4075,
+      "lines": 647,
+      "bytes": 35909,
+      "sha256": "a552a37f26bd9eab1dc42744b12283b69e75580297accffad0d4d2985d34e293",
+      "depthAtStart": 2,
+      "depthAtEnd": 2
     },
     {
       "path": "src/client/part-06.js",
-      "startLine": 3678,
-      "endLine": 4421,
-      "lines": 744,
-      "bytes": 39361,
-      "sha256": "7efeabdc1bba58b9da7670ae31a32665775d3419a5ad1dbcd2cccd5549126bed",
-      "depthAtStart": 3,
-      "depthAtEnd": 3
+      "startLine": 4076,
+      "endLine": 4750,
+      "lines": 675,
+      "bytes": 34548,
+      "sha256": "eecd9634152c08002691e0df08e7b0040a2708e0d84a6bea928f7d57ea046ab8",
+      "depthAtStart": 2,
+      "depthAtEnd": 2
     },
     {
       "path": "src/client/part-07.js",
-      "startLine": 4422,
-      "endLine": 5163,
-      "lines": 742,
-      "bytes": 39757,
-      "sha256": "297b5839fd3942c5721e02ced745783ace302e7dbc4db9ecb072233eb5046101",
-      "depthAtStart": 3,
-      "depthAtEnd": 3
+      "startLine": 4751,
+      "endLine": 5424,
+      "lines": 674,
+      "bytes": 38379,
+      "sha256": "52732b5150729907af0aae9916f8ef02426b4da1748f7fb3c209fc71f3d49bff",
+      "depthAtStart": 2,
+      "depthAtEnd": 2
     },
     {
       "path": "src/client/part-08.js",
-      "startLine": 5164,
-      "endLine": 5819,
-      "lines": 656,
-      "bytes": 40668,
-      "sha256": "86f830003c6de8dc87016f073ab4e87a07a9bb0884550c6b2baec15f2b18c188",
-      "depthAtStart": 3,
+      "startLine": 5425,
+      "endLine": 6141,
+      "lines": 717,
+      "bytes": 56927,
+      "sha256": "8c3078b5d6c2e7b39174bebc9e45ca65c60fa6d078feca03ccc0b64593395ade",
+      "depthAtStart": 2,
       "depthAtEnd": 3
     },
     {
       "path": "src/client/part-09.js",
-      "startLine": 5820,
-      "endLine": 6633,
-      "lines": 814,
-      "bytes": 56373,
-      "sha256": "672a871be1fb9a69e2c51bdfe2cd7706951c7ce0cd1733843e4d5c3329ddfc6e",
+      "startLine": 6142,
+      "endLine": 6795,
+      "lines": 654,
+      "bytes": 34021,
+      "sha256": "26661ee71c4bd31ad8eabf0c3b2b2f573316cded8df8f43db61e37384ce5d531",
       "depthAtStart": 3,
       "depthAtEnd": 3
     },
     {
       "path": "src/client/part-10.js",
-      "startLine": 6634,
-      "endLine": 7134,
-      "lines": 501,
-      "bytes": 26481,
-      "sha256": "53aabac9182f545358cf3afca4fd06ebd9dda18ec275be973df74f635af989e7",
+      "startLine": 6796,
+      "endLine": 7137,
+      "lines": 342,
+      "bytes": 18071,
+      "sha256": "9075285ad0d50c6093fd1cc3c6961166de3d1f3c76f9b1009edb12aaa462e1b5",
       "depthAtStart": 3,
       "depthAtEnd": 3
     },
     {
       "path": "src/client/part-11.js",
-      "startLine": 7135,
-      "endLine": 8827,
+      "startLine": 7138,
+      "endLine": 8830,
       "lines": 1693,
       "bytes": 98484,
       "sha256": "7f21e9ace763d0edfe13ceeb521a2764ad29dee389ab48e68c32856465327c67",
@@ -118,14 +130,13 @@
     },
     {
       "path": "src/client/part-12.js",
-      "startLine": 8828,
-      "endLine": 8832,
+      "startLine": 8831,
+      "endLine": 8835,
       "lines": 5,
       "bytes": 39,
       "sha256": "b9740da4b958ffad73053b00986cb5186f272b71ab889e2269e48bb77593001c",
       "depthAtStart": 3,
       "depthAtEnd": 0
     }
-  ],
-  "linesNote": "各分片 lines 之和 = 8832，而产物的 \\n 个数 = 8831 —— 差值 1 是【末行没有尾随换行】。这不矛盾、也不是 bug：`split('\\n')` 得到 8832 段，最后一段是末行内容本身。拼装 = 分片文本直接相接（前 N-1 片自带行尾、最后一片不带），因此逐字节相等成立。★ 这条写在这里是因为：审阅者与本项目维护者各自都在这上面卡过一次（把 8831/8832 当成不一致去查）。"
+  ]
 }

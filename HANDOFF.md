@@ -3347,3 +3347,41 @@ TEMP 轴：本仓 33 个脚本用 os.tmpdir()；跑夹具时把 TMP/TEMP 指到�
 反例（段2 犯过的）：按块区间构造出"删 N 行 / 增 M 行"，就当成 diff 结论 ——
                     那不是测量，是把构造当成了证据。
 ```
+
+### 44.6 下一个人的第一件事（照抄即可上手）
+
+**先跑这三条拿到基线**（数字写进你的材料，**别引历史数字**）：
+
+```powershell
+node tools/build-client.mjs --check      # 拼装(分片) == lib/client.js，逐字节
+node tools/build-client.mjs --levels     # 每个 mod-* 模块必须单层
+node tools/run-each-test.mjs             # 全套（当前 = 10 文件 764/0 异常 0）
+```
+
+**然后按 §44.5 的四条规则搬下一段**。当前进度与剩余候选：
+
+```
+段1 mod-text.js       3 个纯文本工具（真位移）
+段2 mod-vr-ui.js      4 个视觉渲染面板 UI（★ 就地划界，未位移）
+段3 mod-dom-utils.js  4 个 DOM 小工具（真位移，跨度 593 行）
+段4 mod-text-parse.js 4 个纯文本/HTML 解析与转义（真位移，跨度 401 行）
+段5 mod-card-render.js 3 个卡片字段/块构造/选项样式（真位移，跨度 433 行）
+段6 未开始：@7148 作用域内只剩 muvSessionTurnsNow（会话 API 读取器，单个成段即可）
+           普查口径（零外层依赖 / 被引 1 次 / ≤40 行）下的候选已基本清空；
+           要继续清更多函数，先放宽那个口径再普查（tools/client-scope.mjs 的 scopeReport 可直接用）。
+```
+
+**第一步具体动作**：
+
+```js
+// 1) 先用工具验你打算一起搬的那组：它们同作用域吗？（同深度 ≠ 同作用域，见 §44.5 规则1）
+import { scopeGroupReport } from './tools/client-scope.mjs'
+const r = scopeGroupReport({ src: fs.readFileSync('lib/client.js','utf8'), names: ['你的','函数名'] })
+// r.ok 必须为 true；r.scope 会告诉你它们同属哪个作用域
+// 2) 再搬；搬完必须让这四条都绿：
+//    --check（逐字节）/ --levels（层级纯度）/ --uniqueness（搬了没删原处）/ --ledger（没挪到别的模块）
+// 3) 三轴都要跑：LF / CRLF（夹具自带生效自检）/ TEMP（TMP/TEMP 指夹具专属目录），并报同分
+// 4) 语义中性证据用【元素级比较】：拿掉模块块与函数区间后逐行相同（§44.5 规则4）
+```
+
+**别忘了**：`EXPECTED_PARTS` 在 `tools/build-client.mjs` 里，每次增减模块片都要显式改（它的报错文案会告诉你怎么改）。

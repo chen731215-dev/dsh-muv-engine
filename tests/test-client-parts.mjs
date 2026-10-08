@@ -201,6 +201,43 @@ console.log('\n② ★ 双向反证：两个方向都必须红（防真相源漂
     check('★ 只有**产物**一侧是 CRLF（形态不一致）⇒ 红（.gitattributes 存在的理由）',
       r.ok === false, r.problems.join(' | '))
   }
+
+  // ★ form-free 不变式：`sha256(归一化 concat(分片)) == 清单的 artifact.sha256`
+  //   —— 它**与检出形态无关**，且它是"清单里那句 sha256 声明"的**唯一复查**
+  //      （原先只靠人工每批手算 ⇒ 现在本地与 CI 每批都跑）。
+  {
+    const r = freshnessReport({ parts, artifact, manifest })
+    check('★ form-free：sha256(归一化 concat) == 清单的 artifact.sha256',
+      !!r.stats.builtSha && r.stats.builtSha === r.stats.declaredArtSha,
+      (r.stats.builtSha || '') + ' vs ' + (r.stats.declaredArtSha || ''))
+  }
+  {
+    // 反证：把清单里那句 sha256 改坏 ⇒ 必须红（证明这条断言真的在看那个声明）
+    const c = clone()
+    c.manifest.artifact.sha256 = 'deadbeef'.repeat(8)
+    const r = freshnessReport(c)
+    check('反证：清单的 artifact.sha256 被改坏 ⇒ 红并点名 form-free 不变式',
+      r.ok === false && r.problems.some((p) => p.includes('form-free')), r.problems.join(' | '))
+  }
+  {
+    // 反证：清单里**没有** artifact.sha256 ⇒ 也要红（不许"没有右端"就当绿）
+    const c = clone()
+    delete c.manifest.artifact.sha256
+    const r = freshnessReport(c)
+    check('反证：清单缺 artifact.sha256 ⇒ 红（不许"没有右端"当绿）',
+      r.ok === false && r.problems.some((p) => p.includes('无从复核')), r.problems.join(' | '))
+  }
+  {
+    // form-free 的直接证据：产物与分片**统一**改 CRLF 后，这条摘要**不变**
+    const toCrlf = (s) => (s.includes('\r\n') ? s : s.replace(/\n/g, '\r\n'))
+    const c = clone()
+    c.parts = c.parts.map((p) => ({ ...p, text: toCrlf(p.text) }))
+    c.artifact = toCrlf(c.artifact)
+    const r = freshnessReport(c)
+    check('★ 统一改 CRLF 后 form-free 摘要不变（这就是"form-free"的含义）',
+      r.stats.builtSha === r.stats.declaredArtSha,
+      (r.stats.builtSha || '') + ' vs ' + (r.stats.declaredArtSha || ''))
+  }
 }
 
 console.log('\n③ 分片边界合法性（"每片独立解析"不可满足 ⇒ 已作废，见 boundaryReport 注释）')

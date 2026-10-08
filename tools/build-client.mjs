@@ -167,11 +167,36 @@ export function freshnessReport({ parts, artifact, manifest }) {
       + '        拼装侧: ' + firstDiff.partsCtx)
   }
 
+  // ③ ★ **form-free 不变式**：`sha256(归一化后的 concat(分片)) == 清单里记的产物 sha256`。
+  //
+  //   为什么单独立这一条（它与 ② 的"逐字节"不重复）：
+  //     · ② 比的是**工作树两侧的原始字节** ⇒ **依赖检出形态**（要靠 `.gitattributes` 把两侧钉同形态）；
+  //     · ③ 比的是**归一化后的内容摘要** ⇒ **与检出形态无关**，而且它把"清单里那句
+  //       `artifact.sha256` 到底是不是真的"也验了 —— 否则那是一个**没人复查的声明**。
+  //     · 两边都留：③ 是 form-free 的"内容指纹"，② 是对开发者更严的"逐字节"。
+  //   ★ 这条原先只靠**人工每批手算**（Lead 转述审核方），现在进 `freshnessReport` ⇒
+  //     本地 `npm test` 与 CI 的 `--check` **每批都会跑**。
+  //   `manifest.artifact.sha256` 就是按归一化内容记的（见 loadFromDisk 的生成端），所以这里比得上。
+  const builtSha = sha256(lf(built))
+  const declaredArtSha = manifest && manifest.artifact && manifest.artifact.sha256
+  if (typeof declaredArtSha === 'string' && declaredArtSha) {
+    if (builtSha !== declaredArtSha) {
+      problems.push('★ form-free 不变式不成立：sha256(归一化 concat(分片)) = ' + builtSha.slice(0, 16)
+        + '… ≠ 清单里的产物 sha256 = ' + declaredArtSha.slice(0, 16) + '…'
+        + '（清单那句 `artifact.sha256` 是个**声明**，这条断言是它的唯一复查）')
+    }
+  } else {
+    problems.push('清单缺少 `artifact.sha256` ⇒ form-free 不变式无从复核（它是那条不变式的右端）')
+  }
+
   return {
     ok: problems.length === 0,
     problems,
     firstDiff: firstDiff.offset === null ? null : firstDiff,
-    stats: { parts: parts.length, byteSum, artifactBytes: artBuf.length, byteExact: builtBuf.equals(artBuf) },
+    stats: {
+      parts: parts.length, byteSum, artifactBytes: artBuf.length,
+      byteExact: builtBuf.equals(artBuf), builtSha, declaredArtSha: declaredArtSha || null,
+    },
   }
 }
 

@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { launchEdge, sleep, extractFunction, moduleVarStatements } from './verify-shared.mjs'
+import { readEngineSource, launchEdge, sleep, extractFunction, moduleVarStatements } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
@@ -343,7 +343,7 @@ async function runArm(arm, PAYLOAD) {
 // ── 主流程 ─────────────────────────────────────────────────────────────────
 const PAYLOAD = await fetchRealPayload()
 
-const nowSrc = readFileSync(path.join(REPO_ROOT, 'lib', 'client.js'), 'utf8')
+const nowSrc = readEngineSource()
 // 对照：只把 withStatusPlaceholder 的追加那一行改掉（其余逐字相同）
 const MARK = "        return String(text).replace(/\\s+$/, '') + '\\n' + STATUS_PH_TEXT"
 if (nowSrc.indexOf(MARK) < 0) throw new Error('对照臂的记号在这份源码里找不到（追加那一行被改过？）')

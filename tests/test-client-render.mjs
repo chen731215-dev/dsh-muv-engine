@@ -12,10 +12,11 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { clientSource } from './test-client-source.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..')   // 分家后住 tests/，仓库根在上 1 级
-const SRC = readFileSync(path.join(REPO_ROOT, 'lib', 'client.js'), 'utf8')
+const SRC = clientSource()
 
 let pass = 0, fail = 0
 function check(name, cond, detail) {

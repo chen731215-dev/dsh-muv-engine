@@ -46,13 +46,14 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { readPngCard } from '../../../dsh-muv-table/lib/png-card.js'
 import { regexScriptsOf } from '../../lib/regex-engine.js'
+import { readEngineSource } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
 const OUT = path.join(os.tmpdir(), 'muv-card-interactive')
 mkdirSync(OUT, { recursive: true })
 const CARD_DIR = process.env.MUV_CARD_DIR || 'C:\\MySpecialFolder\\SillyTavern\\data\\default-user\\characters'
-const SRC = readFileSync(path.join(REPO_ROOT, 'lib', 'client.js'), 'utf8')
+const SRC = readEngineSource()
 
 // ─────────────────────────── CLI ───────────────────────────
 const argv = process.argv.slice(2)

@@ -37,7 +37,7 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { readPngCard } from '../../../dsh-muv-table/lib/png-card.js'
 import { regexScriptsOf } from '../../lib/regex-engine.js'
-import { sleep, openPage, fenceBodyOf, looksLikeDoc, heightRuntimeSource, extractFunction, moduleVarStatements } from './verify-shared.mjs'
+import { readEngineSource, sleep, openPage, fenceBodyOf, looksLikeDoc, heightRuntimeSource, extractFunction, moduleVarStatements } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
@@ -1050,7 +1050,7 @@ async function runArm(arm) {
 function buildArms() {
   const otherScript = cardScripts.find((s) => String(s.scriptName) === '主页')
   const arms = []
-  const nowSrc = readFileSync(path.join(REPO_ROOT, 'lib', 'client.js'), 'utf8')
+  const nowSrc = readEngineSource()
   arms.push({
     label: 'after', srcPath: path.join(REPO_ROOT, 'lib', 'client.js'), source: nowSrc,
     body: CARD_BODY, scriptLen: String(picked.replaceString).length,

@@ -15,10 +15,10 @@
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { readPngCard } from '../../../dsh-muv-table/lib/png-card.js'
-import { loadClientRenderers } from '../../tests/test-client-source.mjs'
+import { clientSource, loadClientRenderers } from '../../tests/test-client-source.mjs'
 
 const FILE = 'C:\\MySpecialFolder\\SillyTavern\\data\\default-user\\characters\\_足控天堂2.png'
-const SRC_NEW = fs.readFileSync(new URL('../../lib/client.js', import.meta.url), 'utf8')
+const SRC_NEW = clientSource()
 const SRC_OLD = execFileSync('git', ['show', 'HEAD:lib/client.js'], { cwd: new URL('../../', import.meta.url).pathname.replace(/^\//, ''), encoding: 'utf8' })
 
 function extractFunction(src, name) {

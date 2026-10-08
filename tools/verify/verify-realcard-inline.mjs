@@ -29,11 +29,12 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { readPngCard } from '../../../dsh-muv-table/lib/png-card.js'
 import { regexScriptsOf } from '../../lib/regex-engine.js'
+import { engineSourcePath, readEngineSource } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
-const SRC_PATH = process.env.MUV_CLIENT_SRC || path.join(REPO_ROOT, 'lib', 'client.js')
-const CLIENT = readFileSync(SRC_PATH, 'utf8')
+const SRC_PATH = engineSourcePath()
+const CLIENT = readEngineSource()
 const OUT = process.env.MUV_OUT || path.join(os.tmpdir(), 'muv-realcard-inline')
 mkdirSync(OUT, { recursive: true })
 

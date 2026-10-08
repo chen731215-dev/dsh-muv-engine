@@ -12,6 +12,9 @@
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { spawn } from 'node:child_process'
+// 归一化只实现一份（见 client-scope.mjs 里 `lf` 的长注释：本仓 autocrlf=true，
+// 同一提交在不同检出形态下行尾不同 ⇒ 读口必须归一化，否则下游逐字比较会假红）
+import { lf } from '../client-scope.mjs'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -182,8 +185,36 @@ export function buildFrom(src, names, deps, ret) {
   return fn(...keys.map((k) => deps[k]))
 }
 
-export function readEngineSource(repoDir = REPO_ROOT) {
-  return readFileSync(path.join(repoDir, 'lib', 'client.js'), 'utf8')
+/**
+ * **实际会被读的那个文件路径** —— 给"源码: <路径>"这类**诊断输出**用。
+ *
+ * 为什么要把它也上收到这里：脚本原先各自打印自己拼的路径，于是"诊断里显示的路径"
+ * 与"真正读的文件"是**两份**信息（MUV_CLIENT_SRC 生效时就不一致）。
+ * 统一走这里之后，打印的是**真实生效**的那一份，覆盖臂也能被看见。
+ */
+export function engineSourcePath(repoDir = REPO_ROOT, override = process.env.MUV_CLIENT_SRC) {
+  return override || path.join(repoDir, 'lib', 'client.js')
+}
+
+/**
+ * ★ **收口点**：仓内任何"要 client.js 源码文本"的地方都该走这里，不要自己拼路径。
+ *
+ * 为什么把它做成唯一的读口（S2 ① 收敛消费者）：
+ *   · 搬迁/拼装之后，"真相源"只该有一个 —— 散落的路径副本会让"逐字节相等"这条要求
+ *     变成"几十个门禁各自指望它"，失败面大一个数量级；
+ *   · **归一化行尾也在这里做一次**（`lf`）：本仓 `core.autocrlf=true`，CI 检出 LF、
+ *     Windows 普通 clone 检出 CRLF；把归一化放在读口，消费者不必各自记住
+ *     （见 tools/client-scope.mjs 里 `lf` 的长注释）。
+ *
+ * `override` / `MUV_CLIENT_SRC`：**对照臂**开关。仓内 9 个脚本原先各自写一份
+ * `process.env.MUV_CLIENT_SRC || path.join(...)`，现在上收到这里 —— 能力不变，路径只有一份。
+ *
+ * @param {string} [repoDir] 仓根（默认本仓）
+ * @param {string} [override] 显式覆盖路径（优先级最高）；不传时看 `MUV_CLIENT_SRC`
+ * @returns {string} 归一化（LF）后的源码文本
+ */
+export function readEngineSource(repoDir = REPO_ROOT, override = process.env.MUV_CLIENT_SRC) {
+  return lf(readFileSync(engineSourcePath(repoDir, override), 'utf8'))
 }
 
 /** 生产沙箱常量（从源码里读，绝不写死 —— 写死会让「放宽沙箱」的改动测不出来）。 */

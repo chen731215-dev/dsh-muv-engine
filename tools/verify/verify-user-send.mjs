@@ -32,10 +32,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { readEngineSource } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
-const SRC = fs.readFileSync(path.join(REPO_ROOT, 'lib', 'client.js'), 'utf8')
+const SRC = readEngineSource()
 const EDGE = process.env.MUV_EDGE || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
 const OUT = path.join(os.tmpdir(), 'muv-verify-user-send')
 fs.mkdirSync(OUT, { recursive: true })

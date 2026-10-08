@@ -17,11 +17,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { openPage, evalJson, sleep } from './verify-shared.mjs'
+import { readEngineSource, openPage, evalJson, sleep } from './verify-shared.mjs'
 
 const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
 const REPO_ROOT = path.resolve(HERE, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
-const SRC = fs.readFileSync(path.join(REPO_ROOT, 'lib/client.js'), 'utf8')
+const SRC = readEngineSource()
 
 // before 臂钉在"修复前"的那个提交上（本文件写下时的 HEAD）。
 // 若该提交不可得，或它已经含守卫，则**如实报 SKIP**，不伪造对照。

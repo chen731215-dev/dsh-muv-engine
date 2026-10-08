@@ -22,10 +22,11 @@ import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { extractStatusBody, renderStatusFromText } from '../../lib/status-cascade.js'
+import { readEngineSource } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
-const SRC = readFileSync(path.join(REPO_ROOT, 'lib', 'client.js'), 'utf8')
+const SRC = readEngineSource()
 const OUT = path.join(os.tmpdir(), 'muv-visual-main')
 mkdirSync(OUT, { recursive: true })
 

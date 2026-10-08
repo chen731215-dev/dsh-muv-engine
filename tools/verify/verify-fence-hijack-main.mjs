@@ -9,10 +9,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { engineSourcePath, readEngineSource } from './verify-shared.mjs'
 const REPO_ROOT = path.resolve(new URL('../../', import.meta.url).pathname.replace(/^\//, ''))   // 分家后住 tools/verify/，仓库根在上 2 级
 
 const ENGINE = path.join(REPO_ROOT, 'lib', 'regex-engine.js')
-const CLIENT = process.env.MUV_CLIENT_SRC || path.join(REPO_ROOT, 'lib', 'client.js')
+const CLIENT = engineSourcePath()
 
 const CARD_DIR = 'C:\\MySpecialFolder\\SillyTavern\\data\\default-user\\characters'
 const SESS = path.join(process.env.DSH_HOME || 'C:/Users/<user>/.dsh', 'storages', 'session_projcache', 'sessions')
@@ -75,7 +76,7 @@ function extractFn(src, name) {
   return src.slice(start, i + 1)
 }
 
-const clientSrc = fs.readFileSync(CLIENT, 'utf8')
+const clientSrc = readEngineSource()
 console.log(`源码: ${CLIENT}`)
 console.log(`      ${clientSrc.length} 字符 / ${clientSrc.split('\n').length} 行`)
 console.log(`      含 wrapLoneDocuments（新实现标志）: ${clientSrc.includes('function wrapLoneDocuments(')}\n`)

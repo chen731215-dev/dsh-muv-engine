@@ -23,6 +23,7 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { applyAllRegexScripts, extractStatusBarHtml, regexScriptsOf } from '../../lib/regex-engine.js'
+import { readEngineSource } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
@@ -121,7 +122,7 @@ function makeBeautify(clientSrc) {
   return { beautify: win.MuvEngine.beautify, seen }
 }
 
-const CUR = readFileSync(path.join(REPO_ROOT, 'lib', 'client.js'), 'utf8')
+const CUR = readEngineSource()
 function breakNoDepth(src) {
   const needle = 'body: JSON.stringify({ text: regText, cardJson, depth: depth })'
   if (src.indexOf(needle) < 0) throw new Error('对照臂 nodepth 的记号找不到')

@@ -10,6 +10,9 @@
 // Run of record: test-client-render.mjs (the regression sentinel) and
 // repro-fence-media.mjs / repro-media-script-corruption.mjs (the bug reproductions).
 import fs from 'node:fs'
+// 归一化只实现一份（见 tools/client-scope.mjs 里 `lf` 的长注释：本仓 autocrlf=true，
+// 同一提交在不同检出形态下行尾不同 ⇒ **读口必须归一化**，否则下游逐字比较会假红）
+import { lf } from '../tools/client-scope.mjs'
 
 const CLIENT_PATH = new URL('../lib/client.js', import.meta.url)
 
@@ -41,8 +44,19 @@ const RENDER_EXPORTS = [
   'muvFrameHeightLimits',
 ]
 
-export function clientSource() {
-  return fs.readFileSync(CLIENT_PATH, 'utf8')
+/**
+ * ★ **收口点**：测试侧任何"要 client.js 源码文本"的地方都该走这里（S2 ① 收敛消费者）。
+ *
+ * 两件事都只在这里做一次：
+ *   · **归一化行尾**（`lf`）—— 本仓 `core.autocrlf=true`，CI 检出 LF、Windows 普通 clone
+ *     检出 CRLF；归一化放在读口，消费者不必各自记住；
+ *   · **对照臂覆盖**（`override` / `MUV_CLIENT_SRC`）—— 原先 9 个 verify 脚本各自写一份
+ *     `process.env.MUV_CLIENT_SRC || path.join(...)`，现在上收到读口：能力不变、路径只有一份。
+ * @param {string} [override] 显式覆盖路径（优先级最高）；不传时看 `MUV_CLIENT_SRC`
+ * @returns {string} 归一化（LF）后的源码文本
+ */
+export function clientSource(override = process.env.MUV_CLIENT_SRC) {
+  return lf(fs.readFileSync(override || CLIENT_PATH, 'utf8'))
 }
 
 /**

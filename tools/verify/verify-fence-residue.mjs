@@ -23,6 +23,7 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { applyAllRegexScripts, extractStatusBarHtml, regexScriptsOf } from '../../lib/regex-engine.js'
+import { readEngineSource } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
@@ -115,7 +116,7 @@ function makeBeautify(clientSrc) {
   return win.MuvEngine.beautify
 }
 
-const CUR = readFileSync(path.join(REPO_ROOT, 'lib', 'client.js'), 'utf8')
+const CUR = readEngineSource()
 
 // ── 三条对照臂的源码改造（每条只改一处，其余逐字相同）──────────────────────
 function breakDropInfoString(src) {

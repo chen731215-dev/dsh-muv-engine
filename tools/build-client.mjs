@@ -56,7 +56,7 @@ export const MANIFEST_PATH = path.join(PARTS_DIR, 'MANIFEST.json')
 export const ARTIFACT_PATH = path.join(REPO, 'lib', 'client.js')
 
 /** ★ 分片数的预期值 —— 加/减分片必须显式改这里（防"悄悄多切一片"逃过判据）。 */
-export const EXPECTED_PARTS = 16
+export const EXPECTED_PARTS = 17
 
 export const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex')
 
@@ -390,7 +390,8 @@ export function moduleLedgerReport({ parts, manifest }) {
     }
     return out
   }
-  /** 抠出某个具名函数的源码文本（按 token 配平，字符串/注释里的不算）。 */
+  /** 抠出某个具名函数的源码文本（按 token 配平，字符串/注释里的不算）。
+   *  ★ 调用方必须传**已归一化**的文本（见下 `normPart`）。 */
   const fnText = (text, nm) => {
     const toks = tokenize(text)
     for (let i = 0; i < toks.length; i++) {
@@ -415,7 +416,16 @@ export function moduleLedgerReport({ parts, manifest }) {
   for (const [modPath, spec] of Object.entries(ledger)) {
     const part = parts.find((p) => p.path === modPath)
     if (!part) { problems.push('账本里的模块片不存在：' + modPath); continue }
-    const declared = declNames(part.text)
+    // ★★ **入口先归一化，且让 token 与切片来自同一份文本**。
+    //   为什么必须在**提取之前**归一化，而不是提取完再 lf()：
+    //   实测（CRLF 形态）——在 CRLF 文本上做 token 提取，`function` 关键字的 `start` 会**偏一个字符**
+    //   （提取结果以空格开头），于是切出来的片段两端各错一位、长度也变了；
+    //   这时候**再 `lf()` 也修不回来**（长度已错），账本必然报"摘要不符"。
+    //   ⇒ 与 `tools/client-scope.mjs` 里 `lf` 的长注释是同一条规矩：
+    //     "喂进来的文本"与"拿来切片的文本"必须是同一份。我先前只归一化了**哈希输入**，
+    //     没归一化**提取输入** —— 这正是那条规矩在**消费者**身上被违反的形态。
+    const normPart = lf(part.text)
+    const declared = declNames(normPart)
     const fns = (spec && spec.functions) || {}
     const names = Object.keys(fns)
     if (names.length === 0) problems.push('账本条目 ' + modPath + ' 里没有函数（无从复查）')
@@ -425,7 +435,7 @@ export function moduleLedgerReport({ parts, manifest }) {
           + '多半是被挪到了别的模块，或搬迁时漏了它')
         continue
       }
-      const got = sha256(lf(fnText(part.text, nm) || ''))
+      const got = sha256(lf(fnText(normPart, nm) || ''))
       if (got !== fns[nm]) {
         problems.push(modPath + ' 的 `' + nm + '` 文本摘要与账本不符：按**当前内容**算出 ' + got.slice(0, 16) + '…，'
           + '账本记的是 ' + String(fns[nm]).slice(0, 16) + '… ⇒ 要么你改动了它（那么请同步账本），'

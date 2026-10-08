@@ -204,17 +204,6 @@
          * @param {Element} bodyEl
          * @returns {Element}
          */
-        function messageRootOf(bodyEl) {
-          var node = bodyEl
-          for (var up = 0; up < 4 && node && node.parentElement; up++) {
-            var parent = node.parentElement
-            // 兄弟节点明显多于一条消息 -> 说明 node 已经是单条消息，parent 是列表
-            var siblings = parent.children ? parent.children.length : 0
-            if (siblings > 1) break
-            node = parent
-          }
-          return node || bodyEl
-        }
 
         /** Every message body in the current view, paired with its message root. */
         /**
@@ -230,19 +219,6 @@
          * @param {Element} el
          * @returns {boolean}
          */
-        function muvIsVisibleInDom(el) {
-          try {
-            if (!el || !el.closest) return false
-            if (el.closest('[style*="display: none"], [style*="display:none"], [hidden]')) return false
-            if (el.getAttribute && el.getAttribute('data-streaming') !== null) return false
-            var r = el.getBoundingClientRect()
-            if (r.width === 0 && r.height === 0) return false
-            return true
-          } catch (_) {
-            // 判据自身出错时保守放行：宁可少美化，也不让整条链路不跑
-            return true
-          }
-        }
 
         function messageTargets() {
           var out = []

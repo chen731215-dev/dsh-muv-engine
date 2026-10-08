@@ -829,3 +829,179 @@
      * @type {Object}
      */
     var muvEraVars = {}
+    /** 取数还没回来就收到的请求（帧 + 请求名），回来后一起兑现。 */
+    var muvEraPending = []
+    /** 按 iframe 的 KV 命名空间记账的应答滑动窗口。 */
+    var muvEraGate = {}
+
+    /**
+     * `__muvHello` 的**每帧**节流时间戳（`data-muv-kv` → 上次回送的 ms）。
+     *
+     * 为什么必须有：hello 是卡**唯一**能主动反复触发的入口，而每次回送要付
+     * `muvCompatSeedMap`（深遍历最多 400 条 KV 重建对象）+ `muvChatList`（80 条 / 600KB
+     * 截断）+ 两次 `postMessage`（结构化克隆）。沙箱卡只要
+     * `setInterval(function(){parent.postMessage({__muvHello:1},"*")},0)` 就能把父页主线程
+     * 打满 —— 跨源消息的 source 校验挡不住它（它**就是**我们自己的卡）。
+     * 200ms 是"比任何合理重绘都快、比 setInterval 慢两个数量级"的折中；
+     * 第一次回送**不受限**（否则卡的首屏拿不到种子）。
+     * 故意**声明成纯对象字面量**：`verify-shared.mjs` 的 `moduleVarStatements` 只内联
+     * 「RHS 是纯字面量」的模块级 `var`，带标识符字段的对象字面量会被它跳过 ⇒ 逐字提取出来的
+     * 函数在门禁里会 `ReferenceError`。键被删掉也没关系（下次当作首次）。
+     * @type {Object<string, number>}
+     */
+    var muvHelloAt = {}
+    /** 同帧两次 hello 回送的最小间隔（ms）。 */
+    var MUV_HELLO_MIN_GAP = 200
+
+    /**
+     * 用户消息桥的每帧节流账本（`data-muv-kv` → 最近一次转发 ms）。
+     * 声明口径同 `muvHelloAt`（纯对象字面量，供逐字提取的门禁内联）。
+     * @type {Object<string, number>}
+     */
+    var muvUserSendAt = {}
+    /** 同帧两次「用户消息」转发的最小间隔（ms）。 */
+    var MUV_USERSEND_MIN_GAP = 800
+
+    /**
+     * 卡内**变量写 API** 的每帧节流账本（`data-muv-kv` → 最近一次落库 ms）。
+     *
+     * 为什么要节流：`Mvu.replaceMvuData` / `TavernHelper.insertOrAssignVariables` 是卡**能主动
+     * 反复触发**的入口，每次都要写服务端 + 作废缓存 + 多档重推（三次取数 + 三次全帧 postMessage）。
+     * 沙箱卡 `setInterval(…,0)` 就能把父页与服务端一起打满。声明口径同 `muvHelloAt`。
+     * @type {Object<string, number>}
+     */
+    var muvVarWriteAt = {}
+    /** 同帧两次「变量落库」的最小间隔（ms）。 */
+    var MUV_VARWRITE_MIN_GAP = 200
+    /** 单次 `__muvVarWrite` 的 JSON 体积上限（字符）：恶意卡不能靠一个巨型树撑爆服务端。 */
+    var MUV_VARWRITE_MAX_BYTES = 524288
+
+    /**
+     * `__muvMvuReq` 的每帧节流账本（`data-muv-kv` → 最近一次应答 ms）。
+     * 声明口径同 `muvHelloAt`。@type {Object<string, number>}
+     */
+    var muvMvuReqAt = {}
+    /** 同帧两次 MVU 数据回送的最小间隔（ms）。 */
+    var MUV_MVUREQ_MIN_GAP = 400
+
+    /** 取数没回来就收到的 `__muvMvuReq`（帧），回来后用 `mag_variable_update_ended` 一起兑现。 */
+    var muvMvuPending = []
+
+    /**
+     * 卡 → 宿主的「用户消息」落地：把文本写进 DSH 的聊天输入框。
+     *
+     * mode='fill' 只填不发送（主页卡的提示语是「已填入消息输入框，请检查后手动发送」，
+     * 卡自己会 toast 提示）；mode='send' 填入后再代发一次（多通道，见 `muvUserSendFire`
+     * 的取证结论与通道矩阵：① 真实 click 发送按钮 ② 完整 Enter 键盘序列）。
+     * 找输入框的优先级与 `exports.apply` 里 muv-choice-btn 的点击委托一致：宏钩子标记 →
+     * placeholder 关键词 → 兜底全量扫（可见、可写、rows≥2）。值必须走**原生 setter**
+     * （DSH 的输入框是受控组件）——这条填值路径已验证工作，**本函数不改动**。
+     * @param {string} text
+     * @param {'fill'|'send'} mode
+     * @returns {boolean} 是否找到了输入框并写入
+     */
+
+    /**
+     * 用户消息桥 send 通道（多通道，逐级降级）。
+     *
+     * ★ 取证结论（DSH web-frontend @deepseek-ai/dsh v0.1.5-rc.2，dist/assets/index-*.js +
+     *   vendor-*.js，只读未改本体）：
+     *  - DSH 聊天界面是 **React 应用**；发送绑定在「发送按钮」与「输入框 onKeyDown(Enter)」
+     *    两处（bundle 里有 `IconSendOutline` 发送图标按钮，onClick→发送、onKeyDown
+     *    Enter/Space→发送；输入框走 `e.key === "Enter"` 判据）。
+     *  - 全链路**没有任何 `e.isTrusted` 校验**（bundle 里出现的 `isTrusted:0` 是 React
+     *    SyntheticEvent 的默认字段，不是守卫）——所以合成事件可被接受。
+     *  - **没有任何暴露到 `window` 的可编程发送入口**（仅 `window.__ModuleLoader__` 内部
+     *    加载器，不是发送 API）——故「直接调全局函数」这条通道不可用。
+     *  - React 的 `getEventKey` 把 `keyCode 13 → "Enter"`，且合成 `KeyboardEvent` 的
+     *    `keyCode/which` 取构造参数；若处理器读 `keyCode/which`（非常常见），旧实现只带
+     *    `key:'Enter'`（keyCode/which=0）的合成事件会**静默落空**——这正是用户实测
+     *    「卡里提交后 DSH 没生成下文」的头号嫌疑。
+     *  ⇒ 加固为：① 真实 `click()` 发送按钮（最稳，直接调其发送回调，不吃事件形态）→
+     *    ② 输入框派发**完整键盘序列** keydown+keypress+keyup，keyCode/which/code 全带上。
+     *  ★ 铁律：**绝不清空输入框**——宁可消息留在框里让用户手动按一下，也不能吞字
+     *    （旧实现曾因只派一个 keydown 且没留痕，失败时连「字还在」都不可见）。每通道留痕
+     *    `console.info('[muv-engine] 用户消息桥：…')`，方便用户回报哪个通道命中。
+     * @param {HTMLTextAreaElement|null} ta 已填好值的输入框
+     */
+    function muvUserSendFire(ta) {
+      if (!ta) return
+      function log(s) { try { console.info('[muv-engine] 用户消息桥：' + s) } catch (_) {} }
+      // —— 通道①：发送按钮真实 click()（最可靠，绕过键盘事件形态差异）——
+      var btn = null
+      try {
+        // 从输入框向上爬父链（≤6 层），收集同容器内所有 button；优先「带 发送/Send/Submit
+        // 字样」的，否则回落到容器内最后一个可见且未禁用的 button（发送钮通常在输入框之后）。
+        var chain = ta, lastBtn = null
+        for (var i = 0; i < 6 && chain; i++) {
+          var cands = chain.querySelectorAll ? chain.querySelectorAll('button') : []
+          for (var j = 0; j < cands.length; j++) {
+            var b = cands[j]
+            if (!b || b.disabled || b.offsetParent === null) continue
+            lastBtn = b
+            var label = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '') + ' ' + (b.textContent || '')
+            if (/发送|send|submit/i.test(label)) { btn = b; break }
+          }
+          if (btn) break
+          chain = chain.parentElement
+        }
+        if (!btn && lastBtn) btn = lastBtn
+      } catch (_) {}
+      if (!btn) {
+        try {
+          var all = document.querySelectorAll('button')
+          for (var k = 0; k < all.length; k++) {
+            var x = all[k]
+            if (x && !x.disabled && x.offsetParent !== null && /发送|send|submit/i.test((x.getAttribute('aria-label') || '') + ' ' + (x.getAttribute('title') || '') + ' ' + (x.textContent || ''))) { btn = x; break }
+          }
+        } catch (_) {}
+      }
+      if (btn) {
+        try { btn.click(); log('通道① 发送按钮 click() 已触发（' + (btn.getAttribute('aria-label') || btn.textContent || 'button') + '）'); return } catch (e) { log('通道① 发送按钮 click() 异常：' + (e && e.message)) }
+      } else {
+        log('通道① 未找到发送按钮，跳过')
+      }
+      // —— 通道②：完整键盘序列（keydown+keypress+keyup，keyCode/which/code 全带）——
+      try {
+        var opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true }
+        var seq = ['keydown', 'keypress', 'keyup']
+        for (var s = 0; s < seq.length; s++) {
+          var ev = new KeyboardEvent(seq[s], opts)
+          // 部分浏览器忽略构造参数里的 keyCode/which，强制补成 getter
+          try { Object.defineProperty(ev, 'keyCode', { get: function () { return 13 } }) } catch (_) {}
+          try { Object.defineProperty(ev, 'which', { get: function () { return 13 } }) } catch (_) {}
+          ta.dispatchEvent(ev)
+        }
+        log('通道② 键盘序列 Enter(keydown+keypress+keyup, keyCode=13) 已派发')
+      } catch (e) {
+        log('通道② 键盘序列异常：' + (e && e.message) + '；回退最小 keydown')
+        try { ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true })); log('通道② 兜底 keydown 已派发') } catch (_) {}
+      }
+      // 注意：此处不 return —— 两个通道都试过，但**绝不**清空 ta.value（防吞字）。
+    }
+
+    function muvDeliverUserText(text, mode) {
+      var textarea = null
+      try {
+        textarea = document.querySelector('textarea[data-muv-macro-hooked]') ||
+          document.querySelector('textarea[placeholder*="消息"], textarea[placeholder*="Message"], textarea[placeholder*="输入"]')
+      } catch (_) { textarea = null }
+      if (!textarea) {
+        try {
+          var all = document.querySelectorAll('textarea')
+          for (var i = 0; i < all.length; i++) {
+            if (all[i].offsetParent !== null && !all[i].readOnly && all[i].rows >= 2) { textarea = all[i]; break }
+          }
+        } catch (_) { textarea = null }
+      }
+      if (!textarea) {
+        // ── contenteditable 输入框（DSH 真机取证 2026-09-25）：DSH WebUI 的聊天输入框
+        //    根本不是 `<textarea>` —— 会话视图全页 0 个 textarea，输入框是
+        //    `[contenteditable="true"]`（类名 uV2eYG_input，发送钮 aria-label「发送消息」）。
+        //    旧代码走到这里直接 `return false` 静默放弃 ⇒ 卡的「发送到酒馆」链路
+        //    （状态栏选项点击等）全部无声无息，且没有任何日志（bug：选项点击没反应）。
+        //    verify-user-send 门禁此前没抓到，因为夹具用的是假 textarea —— 与真实 DOM 不符。
+        //    fix：contenteditable 走 caret 移到末尾 + insertText **追加**（同一条铁律：
+        //    绝不清空输入框，宁可消息留在框里让用户手动按一下）。
+        var ce = null
+        try { ce = document.querySelector('[contenteditable="true"]') } catch (_) { ce = null }

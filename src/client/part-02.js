@@ -687,3 +687,35 @@
         if (/^(请选择|选项|行动|选择|接下来)/.test(clean)) continue
         opts.push(clean)
       }
+      return opts
+    }
+
+    /**
+     * Turn `<choices>…</choices>` (and the singular `<choice>`) into option
+     * buttons.
+     *
+     * Extracted from `muvCleanText` so the message decorator can apply it to a
+     * message that contains *only* an options block. `beautifyMuv` routes such
+     * a message straight back out — it has no `<Status_block>` for the cascade
+     * to replace — so before this was shared, a prose-plus-options reply
+     * rendered no buttons at all.
+     *
+     * ⚠️ 这是**字符串**路径：它只有在调用方把结果整串写回 DOM 时才生效。而整串写回
+     * 会吃掉 markdown（`_decorateOne` 用的是 `innerText`）。原生路径现在改走 DOM 层的
+     * `muvRenderChoices()`，本函数留给酒馆渲染器与 HTML 生成用。
+     * @param {string} text
+     * @returns {string}
+     */
+    function replaceChoices(text) {
+      return String(text || '').replace(/<choices?>([\s\S]*?)<\/choices?>/gi, function (_, content) {
+        var opts = parseChoiceOptions(content)
+        if (!opts.length) return '<div class="muv-choices">' + escHtmlBasic(content) + '</div>'
+        var html = '<div class="muv-choices">'
+        for (var oi = 0; oi < opts.length; oi++) {
+          html += '<button class="muv-choice-btn" data-opt="' + String.fromCharCode(65 + oi) + '"><span class="muv-choice-letter">' + String.fromCharCode(65 + oi) + '</span>' + escHtmlBasic(opts[oi]) + '</button>'
+        }
+        html += '</div>'
+        return html
+      })
+    }
+

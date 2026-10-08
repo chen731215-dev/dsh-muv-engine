@@ -3,8 +3,33 @@
   "linesNote": "各分片 lines 之和 = 产物 split('\\n') 的长度；产物的 \\n 个数比它少 1（末行无尾随换行）。",
   "artifact": {
     "path": "lib/client.js",
-    "bytes": 557028,
-    "sha256": "f96873d792d879306e59f9f1b6c2ffa43864fe0af6624531346ea5781b8509c1"
+    "bytes": 557144,
+    "sha256": "bab685647728f9322a82349cd2015a98e5fc111df7d3fdfa9f5c737f12c73070"
+  },
+  "modules": {
+    "src/client/mod-text.js": {
+      "functions": {
+        "splitArgs": "717ccc3bc5782d496a8d276d4c8e1bddd5351987601f041a997370be39fb477d",
+        "findClosingFence": "7080d70289dae6654e3ac8c9b7d119fb8f13a739fad6324349d96ec0eff40270",
+        "readStartTag": "2ce276bd35a7803a04831095803a784421ba742cf746a9563037d3f87587673b"
+      }
+    },
+    "src/client/mod-vr-ui.js": {
+      "functions": {
+        "vrSidebarRoot": "7eddb2a076e43f59cb830bb85a6b7cac250ef16e969af2d13cf34fb086bd0e8f",
+        "vrNewSessionButton": "9968016b14c6a4a446f8a41e070acc73d9a970788d31d329634c5de854f7a288",
+        "vrCreateEntry": "70f72f8f685e590cf6be8e26c453a4044d93f94451fd7b7fc4a5987b4a8d36fc",
+        "vrCreatePanel": "f7238f772d98305c10c9cc2ad2f22b4ba8f29d50e659b4f5bbe8109f4df49cd4"
+      }
+    },
+    "src/client/mod-dom-utils.js": {
+      "functions": {
+        "sizeFrame": "a7af2bb255b94c80ba7a6e32b6fb44314fb8e0eddf8e20fbdf6af9d7335300a8",
+        "insertIntoInput": "f1885722ec50f866aa13aff842559671ee62b1438f9b8536449548d50a6a54c0",
+        "messageRootOf": "a18c4bf05c97dee1cce9e26861e102325caf271a3bcdcaa19e8779132995d9d9",
+        "muvIsVisibleInDom": "603dd923448ae07fc4ec8551db2f8c3023e2a742e78b76a10e7e8f6f269c53aa"
+      }
+    }
   },
   "parts": [
     {
@@ -30,117 +55,127 @@
     {
       "path": "src/client/part-02.js",
       "startLine": 61,
-      "endLine": 749,
-      "lines": 689,
-      "bytes": 41018,
-      "sha256": "ca643ad4c8ad1a0607b2cf6ff03e6bd9ca8e20b71e73a5415a0aff943caea07c",
+      "endLine": 781,
+      "lines": 721,
+      "bytes": 42546,
+      "sha256": "7209cd9d24e45c53009e4b542f88ed8e7530d9601db91bbb74020c8736f1da09",
       "depthAtStart": 2,
-      "depthAtEnd": 3
+      "depthAtEnd": 2
     },
     {
       "path": "src/client/part-03.js",
-      "startLine": 750,
-      "endLine": 1362,
-      "lines": 613,
-      "bytes": 36869,
-      "sha256": "eadfaaa5f75b342a897e0afbb6bb13a0504eec6d699bc0729883170f9a59871c",
-      "depthAtStart": 3,
+      "startLine": 782,
+      "endLine": 1634,
+      "lines": 853,
+      "bytes": 59460,
+      "sha256": "6e95ef48d0e6b40cfd072c1e6df0aa30d11fb55aac8acb8e236ba50ca4782a2a",
+      "depthAtStart": 2,
       "depthAtEnd": 2
     },
     {
       "path": "src/client/part-04.js",
-      "startLine": 1363,
-      "endLine": 2132,
-      "lines": 770,
-      "bytes": 59562,
-      "sha256": "6eb123ec0929fcbeea5641d12bb11b81a019664fe054cf8fbb942cad5302addd",
+      "startLine": 1635,
+      "endLine": 2234,
+      "lines": 600,
+      "bytes": 41787,
+      "sha256": "7dc175503a80019ac298a21ef1ad2b71768cc3deb0c01b00f560c0832530a95b",
       "depthAtStart": 2,
       "depthAtEnd": 2
     },
     {
       "path": "src/client/part-05.js",
-      "startLine": 2133,
+      "startLine": 2235,
       "endLine": 2684,
-      "lines": 552,
-      "bytes": 33777,
-      "sha256": "b426aee1d37c4bde4815f0895c79fad14dc8e028be96cda13eb501e8c9ed9333",
+      "lines": 450,
+      "bytes": 27433,
+      "sha256": "70575e15d5eb2a113b27160add628de4071bdbc8c778a25a783106f2a73368b4",
       "depthAtStart": 2,
       "depthAtEnd": 2
     },
     {
       "path": "src/client/part-06.js",
       "startLine": 2685,
-      "endLine": 3515,
-      "lines": 831,
-      "bytes": 72577,
-      "sha256": "ea0448265002952b03e5c7c9272633b7b911199bcea23003e5a7a92813eee887",
+      "endLine": 3691,
+      "lines": 1007,
+      "bytes": 83547,
+      "sha256": "1a7dfc9af08cbb958ea08c29aae9707e5a7c609e475c4503f12e3efafc9a36a5",
       "depthAtStart": 2,
-      "depthAtEnd": 2
+      "depthAtEnd": 4
     },
     {
       "path": "src/client/part-07.js",
-      "startLine": 3516,
-      "endLine": 4191,
-      "lines": 676,
-      "bytes": 36688,
-      "sha256": "7761a62df486c83c690d3ce516f4cb1ff7edf8dc2554107d848a462220205914",
-      "depthAtStart": 2,
+      "startLine": 3692,
+      "endLine": 4412,
+      "lines": 721,
+      "bytes": 37749,
+      "sha256": "cfa6ff73526deca87b6d99cd1a748cedda64b2ba7ff332dca775661af938bac9",
+      "depthAtStart": 4,
       "depthAtEnd": 4
     },
     {
       "path": "src/client/part-08.js",
-      "startLine": 4192,
-      "endLine": 4871,
-      "lines": 680,
-      "bytes": 35381,
-      "sha256": "ed915cd54b5a52414467b0365a02725850e0596fa37aeb6f68cadd94ca1c0259",
+      "startLine": 4413,
+      "endLine": 5128,
+      "lines": 716,
+      "bytes": 37959,
+      "sha256": "a1b4fad21fe550495d8a2484faa85aa3c31094b7d191218f2b61934621ba51b5",
+      "depthAtStart": 4,
+      "depthAtEnd": 2
+    },
+    {
+      "path": "src/client/part-09.js",
+      "startLine": 5129,
+      "endLine": 5856,
+      "lines": 728,
+      "bytes": 45359,
+      "sha256": "7a28f5e5167c25a48b084160401f182380269c30289915255f58660468fe6660",
+      "depthAtStart": 2,
+      "depthAtEnd": 4
+    },
+    {
+      "path": "src/client/part-10.js",
+      "startLine": 5857,
+      "endLine": 6547,
+      "lines": 691,
+      "bytes": 48417,
+      "sha256": "0f0005247afb1270579ece738efa81d65e1e77a8f8d6c8e2ef648fea2fb6a8fd",
       "depthAtStart": 4,
       "depthAtEnd": 3
     },
     {
-      "path": "src/client/part-09.js",
-      "startLine": 4872,
-      "endLine": 5549,
-      "lines": 678,
-      "bytes": 40779,
-      "sha256": "9ca43ffab5e66871c5a2704fdb9d100a60166c758c69b52c7b9e5b32986f443e",
-      "depthAtStart": 3,
-      "depthAtEnd": 3
-    },
-    {
-      "path": "src/client/part-10.js",
-      "startLine": 5550,
-      "endLine": 6250,
-      "lines": 701,
-      "bytes": 53992,
-      "sha256": "f3f7b363a3ac0e34e686e6f6c60a1ca12bb0e398fa4324f2642ec7e56cd5cdca",
+      "path": "src/client/part-11.js",
+      "startLine": 6548,
+      "endLine": 7316,
+      "lines": 769,
+      "bytes": 51913,
+      "sha256": "a37f36b6d229b69f65e0f3eb60723a234089b34c73f946c66dc38b21801c2ce8",
       "depthAtStart": 3,
       "depthAtEnd": 4
     },
     {
-      "path": "src/client/part-11.js",
-      "startLine": 6251,
-      "endLine": 6940,
-      "lines": 690,
-      "bytes": 34842,
-      "sha256": "9318da1b3281e939a42255095ca0ae5af734cab4465a8042c66623ed24ac59e9",
+      "path": "src/client/mod-dom-utils.js",
+      "startLine": 7317,
+      "endLine": 7367,
+      "lines": 51,
+      "bytes": 2109,
+      "sha256": "d94858a475dea62f1af938f10f883705048d708baec8a56d4b0173a50372744c",
       "depthAtStart": 4,
       "depthAtEnd": 4
     },
     {
       "path": "src/client/part-12.js",
-      "startLine": 6941,
-      "endLine": 7623,
-      "lines": 683,
-      "bytes": 42706,
-      "sha256": "4bc196847d3e08d65dff9f5eba7e684f1efe166ec1395692a3700c0e76f25c1b",
+      "startLine": 7368,
+      "endLine": 7651,
+      "lines": 284,
+      "bytes": 11112,
+      "sha256": "f4d1845146be3b8c4bf01d0b4b0f14c9abdaf632d13e3a5625f67199e7eb768f",
       "depthAtStart": 4,
       "depthAtEnd": 4
     },
     {
       "path": "src/client/mod-vr-ui.js",
-      "startLine": 7624,
-      "endLine": 7677,
+      "startLine": 7652,
+      "endLine": 7705,
       "lines": 54,
       "bytes": 5203,
       "sha256": "4b07c4d2d6ed43a40c6ee38329223eb6577a04a7aa2e89cbd5e9147d8b286ad5",
@@ -149,40 +184,23 @@
     },
     {
       "path": "src/client/part-13.js",
-      "startLine": 7678,
-      "endLine": 8229,
-      "lines": 552,
-      "bytes": 27510,
-      "sha256": "45dc82f6cc218299805d3e63377b69e6eac31a25d93572d9399a7f7dcd65fe24",
+      "startLine": 7706,
+      "endLine": 8233,
+      "lines": 528,
+      "bytes": 26426,
+      "sha256": "2f349acbd111b1b0f4f21fb983967b625f53a96abb374598898c8e30ffecefd8",
       "depthAtStart": 4,
       "depthAtEnd": 4
     },
     {
       "path": "src/client/part-14.js",
-      "startLine": 8230,
-      "endLine": 8836,
+      "startLine": 8234,
+      "endLine": 8840,
       "lines": 607,
       "bytes": 34146,
       "sha256": "84aaa535df89284c60251cc42f5c3225970969ccbb1f3f5226f2e3abfaeb5f9b",
       "depthAtStart": 4,
       "depthAtEnd": 0
     }
-  ],
-  "modules": {
-    "src/client/mod-text.js": {
-      "functions": {
-        "splitArgs": "717ccc3bc5782d496a8d276d4c8e1bddd5351987601f041a997370be39fb477d",
-        "findClosingFence": "7080d70289dae6654e3ac8c9b7d119fb8f13a739fad6324349d96ec0eff40270",
-        "readStartTag": "2ce276bd35a7803a04831095803a784421ba742cf746a9563037d3f87587673b"
-      }
-    },
-    "src/client/mod-vr-ui.js": {
-      "functions": {
-        "vrSidebarRoot": "7eddb2a076e43f59cb830bb85a6b7cac250ef16e969af2d13cf34fb086bd0e8f",
-        "vrNewSessionButton": "9968016b14c6a4a446f8a41e070acc73d9a970788d31d329634c5de854f7a288",
-        "vrCreateEntry": "70f72f8f685e590cf6be8e26c453a4044d93f94451fd7b7fc4a5987b4a8d36fc",
-        "vrCreatePanel": "f7238f772d98305c10c9cc2ad2f22b4ba8f29d50e659b4f5bbe8109f4df49cd4"
-      }
-    }
-  }
+  ]
 }

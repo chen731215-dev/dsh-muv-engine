@@ -1,35 +1,3 @@
-      return opts
-    }
-
-    /**
-     * Turn `<choices>…</choices>` (and the singular `<choice>`) into option
-     * buttons.
-     *
-     * Extracted from `muvCleanText` so the message decorator can apply it to a
-     * message that contains *only* an options block. `beautifyMuv` routes such
-     * a message straight back out — it has no `<Status_block>` for the cascade
-     * to replace — so before this was shared, a prose-plus-options reply
-     * rendered no buttons at all.
-     *
-     * ⚠️ 这是**字符串**路径：它只有在调用方把结果整串写回 DOM 时才生效。而整串写回
-     * 会吃掉 markdown（`_decorateOne` 用的是 `innerText`）。原生路径现在改走 DOM 层的
-     * `muvRenderChoices()`，本函数留给酒馆渲染器与 HTML 生成用。
-     * @param {string} text
-     * @returns {string}
-     */
-    function replaceChoices(text) {
-      return String(text || '').replace(/<choices?>([\s\S]*?)<\/choices?>/gi, function (_, content) {
-        var opts = parseChoiceOptions(content)
-        if (!opts.length) return '<div class="muv-choices">' + escHtmlBasic(content) + '</div>'
-        var html = '<div class="muv-choices">'
-        for (var oi = 0; oi < opts.length; oi++) {
-          html += '<button class="muv-choice-btn" data-opt="' + String.fromCharCode(65 + oi) + '"><span class="muv-choice-letter">' + String.fromCharCode(65 + oi) + '</span>' + escHtmlBasic(opts[oi]) + '</button>'
-        }
-        html += '</div>'
-        return html
-      })
-    }
-
     /**
      * 找到围栏的收尾行：**至少和开围栏一样长**的一串反引号，且独占一行。
      *
@@ -611,3 +579,275 @@
       return { min: 160, max: 12000 }
     }
 
+    /**
+     * 注入到每个卡 HTML iframe 尾部的引导脚本。
+     *
+     * 两条硬约束都是踩过的坑：
+     *  - **不含反引号**，且**字符串里不出现裸的 `</script>`**：插件客户端代码可能被
+     *    宿主内联进 `<script>` 标签，那样的字面量会当场把标签截断、整个插件报废。
+     *    收尾标签用 `'</' + 'script>'` 拼出来。
+     *  - **只发一个数字**，不发 HTML、不发卡内任何内容——父页因此永远不需要相信
+     *    卡里的东西，收到多少都只是"多高"。
+     *
+     * ★ 量什么：**内容包围盒**，不是 `scrollHeight`。
+     * 这些卡普遍写着 `html,body{height:100%}`，实测 `documentElement.scrollHeight` 与
+     * `body.scrollHeight` **都等于视口高**（也就是 iframe 当前高度）。拿它当结果报回去
+     * 是个**不动点**：起始 600 报 600、起始 900 报 900。实测「正文美化」的内容只有
+     * ~241px，却被永远留在起始值上（起始 600/900/1500 → 报 600/900/1500，逐行相等）。
+     * 所以这里遍历 body 后代算 `top + max(height, scrollHeight)` 的最大值：
+     *  - 排除 `fixed` / `sticky`（视口相关，会把视口高算成内容高）；
+     *  - 排除 display:none / visibility:hidden / 零尺寸元素；
+     *  - 每个元素取 `max(rect.height, el.scrollHeight)`，这样被父级 `overflow` 裁掉的
+     *    静态子元素也被算进去（这正是当初想用 `body.scrollHeight` 兜的那一类）。
+     * 包围盒量不出来（`extent()===0`，例如主视觉全是 `position:fixed`）时**不报任何值**、
+     * 帧高保持不动 —— **不用 `body.scrollHeight` 兜底**，那是视口回声（§15.3 第 2 条禁用它）。
+     * 见 `muvFrameBootstrap` 里 `function m()` 上方的长注释。
+     * 起始高度 600/900/1500 三档实测收敛到同一值，见 verify-frame-height.mjs。
+     *
+     * 遍历放在 150ms 去抖后的 setTimeout 里（不在 ResizeObserver 回调里同步跑），
+     * 卡再大也不会把滚动/改高的那帧拖住。
+     *
+     * 重测触发面：`load` / `DOMContentLoaded` / `ResizeObserver(documentElement)` /
+     * 700·1600ms / 四次低频补量（到 10.9s）/ **媒体落定事件**（img `load`·`error`、
+     * video `loadedmetadata`·`loadeddata`·`durationchange`）。
+     * 最后那一类带一枚一次性令牌，让这次测量可以走**测量修正通道**（棘轮一次丢弃、报真实值）
+     * —— 语义、边界与实测数字见 `extent()` 里「测量修正通道」那段注释。
+     * @returns {string}
+     */
+    function muvFrameBootstrap() {
+      return '<script>(function(){' +
+        'if(window.__muvH)return;window.__muvH=1;' +
+        'var t=0;' +
+        // ★ 棘轮的"首帧已过"闸。为什么要它：`load` 之前 `getBoundingClientRect()` 对未 decode
+        //   的远程插图返回 0 或占位高，此时记下的值就是坏读数，而 reset 是
+        //   `overflow:hidden!important` ⇒ 坏读数会变成**永久裁切**。
+        //
+        //   ★★ 但闸门**也不能放宽**。试过两版"更宽容"的闸，**都实测更差**：
+        //     `document.readyState!=="loading"`（`interactive` 就记账）
+        //        → `verify-frame-size` 稳定 **30 通过 / 2 失败**（3 次以上复现）
+        //     同一版再加"6 秒超时提闸"
+        //        → **31 通过 / 1 失败**、**30 通过 / 2 失败**（两次）
+        //     只有回到 `==="complete"` 才是 **32 通过 / 0 失败**。
+        //   所以**记账的判据就是 `complete`**，不加例外、不加超时。
+        //
+        //   ★★★ "complete 永远不到"那个担忧**没有实测支持**：真卡（含 7 处远程插图 +
+        //   一支 28.5MB 的 PV）在夹具里都能到 `complete`。既然放宽有代价、而收益未被观测到，
+        //   就不放 —— 宁可某张卡一直不记账（帧高停在报告值上，只是不高），
+        //   也不要记一个**偏小的**值把内容永久裁掉（reset 是 `overflow:hidden!important`）。
+        //   写成函数、每次测量时**现读**（不是启动时算一次的快照）——读不到 `readyState`
+        //   的环境（逐字提取执行的门禁里的假 document）按"已过闸"处理，保持旧行为。
+        'function RL(){try{return String(document.readyState)==="complete"}catch(e){return true}}' +
+        // ★★ 媒体落定判据 `MS()`：这张卡里**所有**媒体都已"内容尺寸定死"了吗？
+        //   它是「测量修正通道」的**前置条件**（见下面 extent() 里那段长注释），只在这一条
+        //   通道上用，别的路径一概不看它。
+        //   - `img.complete`：图已 load 或已 error（**无 src / 尚未取源的 lazy 图是 false**）；
+        //   - `video.readyState>=1`：已 HAVE_METADATA（拿到时长/尺寸）。
+        //   有意**不看** `naturalHeight>0`：404 的图 `complete===true` 且 `naturalHeight===0`，
+        //   它的盒子会塌成 0 高 —— 那正是需要被修正的一种形态，不能把它排除在外。
+        //   读不到（假 document、异常）一律按"未落定"处理 ⇒ 退回老的 3 次观测语义，宁保守。
+        //   ★ 已知的**收窄**（有意接受，不是遗漏）：`preload="none"` 的 video 永远到不了
+        //   `readyState>=1`、`loading="lazy"` 且从未取源的 img `complete===false`
+        //   ⇒ 这类卡上这条通道**一直关闭**，行为与 `2026-09-22t` 完全一致（只是没修好，
+        //   不会更坏）。宁可少修几张卡，也不要放宽判据去动收缩方向的语义。
+        'function MS(){try{' +
+        'var a=document.getElementsByTagName("img");' +
+        'for(var i=0;i<a.length;i++){if(!a[i].complete)return false}' +
+        'var v=document.getElementsByTagName("video");' +
+        'for(var j=0;j<v.length;j++){if(!(v[j].readyState>=1))return false}' +
+        'return true}catch(e){return false}}' +
+        'function extent(mf){' +
+        'var body=document.body;if(!body)return 0;' +
+        'var de=document.documentElement;' +
+        'var all=body.getElementsByTagName("*"),y=window.scrollY||0,maxB=0;' +
+        'for(var i=0;i<all.length;i++){var el=all[i],cs=getComputedStyle(el);' +
+        'if(cs.position==="fixed"||cs.position==="sticky")continue;' +
+        'if(cs.display==="none"||cs.visibility==="hidden")continue;' +
+        // ★ 透明浮层不贡献"可见"高度（2026-09-23 苍玄界实测）：`.cx-detail-page` 是
+        //   opacity:0 **且** pointer-events:none 的隐藏详情浮层，内含 max-width:850px 大盒子 ——
+        //   不跳过它，内容包围盒被撑大 ~400px，封面下方一大片白。
+        //   判据必须**两条件同时满足**：只看 opacity==="0" 会误伤"入场动画前的内容"
+        //   （vh-E 真卡实测被误伤 79px）；加 pointer-events:none（隐藏浮层标配）后只命中真浮层。
+        //   ★★ 2026-09-24 第二层实锤：**祖先链**。苍玄界「开局」弹窗
+        //   `.cx-modal{position:absolute;inset:0;opacity:0;pointer-events:none}` 里装着
+        //   1575px 的角色创建表单（.cx-modal-box）—— **opacity 不继承**，子元素自身
+        //   computed opacity=1，逐元素检查放过了整棵被祖先隐藏的子树 ⇒ 幽灵高度撑满
+        //   视口 ⇒ iframe 永远等于视口高。改用 `checkVisibility({checkOpacity:true,
+        //   checkVisibilityCSS:true})`（沿祖先链累计，Chromium 105+），老浏览器回退到
+        //   元素自身双条件判断。
+        'if(el.checkVisibility?!el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}):(cs.opacity==="0"&&cs.pointerEvents==="none"))continue;' +
+        'var r=el.getBoundingClientRect();' +
+        'if(r.height===0&&r.width===0)continue;' +
+        'var b=r.top+y+Math.max(r.height,el.scrollHeight||0);' +
+        'if(b>maxB)maxB=b}' +
+        // ★① body / html **自己**的 `min-height`：卡把 `min-height:100vh` 写在 body 上（我们已在
+        //   rewriteVhMinHeight 里改写成 px），而上面那个循环是 `body.getElementsByTagName("*")`，
+        //   **不含 body 自己** ⇒ 整卡被报矮到内容高度、再被 body 的 min-height 撑开 ⇒ 永远是内部
+        //   滚动条（实测：正文美化 报 251 / 文档 1198）。只取 **px** 值：`100vh` 那种视口相对
+        //   阈值正是刚消掉的东西，拿它当结果会把不动点带回来。
+        'var bmh=parseFloat(getComputedStyle(body).minHeight);' +
+        'if(isFinite(bmh)&&bmh>maxB)maxB=bmh;' +
+        'var hmh=de?parseFloat(getComputedStyle(de).minHeight):0;' +
+        'if(isFinite(hmh)&&hmh>maxB)maxB=hmh;' +
+        // ★② 溢出学习：观测到文档滚得动时，记下当时的 scrollHeight 当作高度下界。收掉两类任何
+        //   DOM 遍历都看不见的溢出：CSS 伪元素（`::after` 撑出去的），以及子元素 margin 折叠出
+        //   body 的（实测 正文美化 差 118px、开场白 差 5px、开场白2 差 20px。逐个 CSS 开关的隔离
+        //   实验见 verify-frame-gap.mjs）。`extent()` 取每个元素的 `max(rect, scrollHeight)`
+        //   只覆盖能遍历到的元素；伪元素与折叠 margin 生成的溢出没有对应元素，只有滚动区自己知道。
+        //
+        //   为什么要"记住"而不是每次现算：**不溢出时 scrollHeight 等于视口高**，现算会得到
+        //   「内容高 → 收缩 → 又溢出 → 再长高」的来回振荡（振幅就是那 118px，一眼可见的抽动）。
+        //
+        // ★ 但这把尺子**必须能降**（原来不能，是一把只增不减的棘轮，两个真实反例）：
+        //   ① 内容缩小后帧高永不回落：棘轮记下 1200 → 用户折叠了卡里面板、内容只剩 300 →
+        //      `bOver` 为假、`__muvHFit` 仍是 1200 ⇒ 卡片底下常年一大片死白。
+        //   ② 一次坏读数把高度锁死（更危险）：`load` 之前远程插图还没 decode、
+        //      `getBoundingClientRect()` 高度是 0 或占位高，首帧就记下一个偏小值；而 reset 是
+        //      `overflow:hidden!important` ⇒ 内容被**永久裁掉**，且此后再没有降回路径。
+        //   所以记的三个条件缺一不可：**只在「首帧已过」之后记**（见下面 `RL` 那道闸）、
+        //   连续 3 次「不溢出且内容比已学值小 24px 以上」才清零重学并用 24px 滞回防抖、
+        //   判据用 `extent()`（真实内容高，见③）而不是 `body.scrollHeight`。
+        //   收缩方向的门禁见 verify-frame-height.mjs（内容缩小后报数必须回落）。
+        //
+        //   ★★ 滞回**只作用在收缩方向**。只要 `bOver||dOver` 为真（**观测到**溢出），
+        //   `need > fit` 就**无条件**提升 —— 没有阈值、没有等待、没有"下次再说"。
+        //   这是硬要求：reset 是 `overflow:hidden!important`，溢出的那几像素如果没被
+        //   立刻补上就是**永久裁掉**（实测 `ERA 状态栏` 内容 929 / 帧高 923，差 5px）。
+        //   反过来，这 5px 也是"棘轮为什么必须存在"的活例子：`extent()` 量到 923 而真实
+        //   内容要 929，只有滚动区自己（body 溢 5px）看得见。
+        //
+        // ★ body 与 html **两个**滚动区都要看：reset 把两者都啃成了 `overflow:hidden!important`
+        //   （照 ST），于是 body 是独立滚动容器，它的溢出**不再传导**到
+        //   `documentElement.scrollHeight` —— 只看 html 会漏（实测 ERA 状态栏：html 报 923、
+        //   body 自己滚到 929）。`overflow:hidden` 只是不显示滚动条，**`scrollHeight` 依旧报告
+        //   溢出距离**，所以这两个比较照旧有效。而"有没有溢出"这个**前提**仍然是必须的：body
+        //   若是 `height:100%`，`body.scrollHeight` 就等于视口高，无条件采用它就回到不动点。
+        'var bOver=body.scrollHeight>body.clientHeight+1;' +
+        'var dOver=de?(de.scrollHeight>de.clientHeight+1):false;' +
+        'var need=Math.max(body.scrollHeight,de?de.scrollHeight:0);' +
+        'var fit=window.__muvHFit||0;' +
+        'if(RL&&(bOver||dOver)){if(need>fit){window.__muvHFit=need;fit=need}window.__muvHReset=0}' +
+        'else if(RL&&fit>0&&maxB>0&&(fit-maxB)>24){' +
+        // ★★★ 测量修正通道（2026-09-22u）。与上面那条"内容增长"的棘轮**语义并列、互不干扰**：
+        //
+        //   · **内容增长**（棘轮，铁律不动）：只要**观测到**溢出（`bOver||dOver`）就无条件提升，
+        //     没有阈值、没有等待 —— 因为 reset 是 `overflow:hidden!important`，溢出的那几像素
+        //     不立刻补上就是**永久裁掉**。上面那个分支一个字符没变。
+        //   · **测量修正**（本条）：媒体**全部落定**（`MS()`）+ 「首帧已过」（`RL`）+ **没有**
+        //     观测到溢出 + 已学值比实测内容高 24px 以上 ⇒ 这次收缩是**修正一次坏读数**，不是
+        //     内容真的缩了，所以**一次就够**，直接把棘轮丢掉、报真实内容高。
+        //
+        //   为什么必须有这条（真卡/合成取证见 HANDOFF §34，数字是实测的）：
+        //   收缩方向的常规路径要求**连续 3 次**观测（下面 `rc>=3`）才清零重学，而媒体落定
+        //   引起的收缩常常**只有一次**观测机会 —— 引导脚本的定时补量到 10.9s+150ms 就停了，
+        //   而 RO 只在**盒子**尺寸变化时 fire（本节上文已记：媒体引起的包围盒变化可以完全
+        //   不动任何盒子）。合成夹具实测（img 用 `width/height` 属性预留 600×2000 的高盒子、
+        //   真实图片是 600×200 的扁图、src 在 11.5s 才设）：
+        //     帧高先被撑到 **2300**（内容确实是 2300，没记错），图片到位后内容缩到 **500**，
+        //     此后**再也没有第二次观测** ⇒ 帧高永久停在 2300 ⇒ **1800px 死白**
+        //     （同一文档把 src 提前到 400ms → 靠 2500/5300/8100 三次补量能凑够 3 次 → 正常回落）。
+        //   ⇒ 这条通道不是把滞回拆掉，是**给"媒体落定"这个终态信号补上一次它本来就该有的修正**：
+        //     媒体事件是浏览器给的"这个元素的内容尺寸定了"的同步信号，落定之后不会再有一次
+        //     **由媒体引起**的重排，等第 2、第 3 次观测就是等一个不会再来的事件。
+        //
+        //   边界（缺一不可，任何一条不满足都退回老的 3 次语义）：
+        //   ① `mf` —— 本次测量必须由**媒体事件**触发（`sf()` 挂的一次性令牌）。定时补量、
+        //      RO、卡自己的 JS 引起的测量都不带它 ⇒ **非媒体**的异步收缩照旧 3 次确认；
+        //   ② `MS()` —— 媒体全部落定；只要还有一张图在加载（含 lazy 未取源），这条通道关闭；
+        //   ③ `RL` + `!bOver && !dOver` —— 与老路径同一条闸门：**观测到溢出就绝不收缩**；
+        //   ④ 只有**收缩**方向有这条通道，增长方向一个字没动。
+        //
+        //   修正之后的**安全复核**：`sf()` 在 +700ms 还会再挂一次令牌重量一次（见 `sf` 的注释）
+        //   —— 万一这次修正量偏小（内容其实还要更多），那一次会走增长分支无条件补上，
+        //   不会因为这条通道把内容永久裁掉。
+        'if(mf&&MS()){window.__muvHFit=0;fit=0;window.__muvHReset=0}else{' +
+        'var rc=(window.__muvHReset||0)+1;' +
+        'if(rc>=3){window.__muvHFit=0;fit=0;window.__muvHReset=0}else{window.__muvHReset=rc}}}' +
+        'else{window.__muvHReset=0}' +
+        'if(fit>maxB)maxB=fit;' +
+        'return Math.ceil(maxB)}' +
+        // ★ 量不出来（`extent()===0`）时**什么都不报**，帧高保持不动。
+        //
+        // 原来这里回退到 `document.body.scrollHeight` —— 那正是 HANDOFF §15.3 第 2 条
+        // **明确禁用**的值：卡普遍写着 `html,body{height:100%}`，此时 body.scrollHeight
+        // **等于 iframe 当前高度**（视口回声）。拿它当结果报回去就是把起始值当答案，
+        // 而且它会和下一轮"按内容改高度"打架 ⇒ 帧高在 视口高 ↔ 内容高 之间来回跳。
+        //
+        // 这条路径不是理论上的：`extent()` 会跳过 `position:fixed/sticky` 的元素
+        // （它们是视口相关的，算进去会把视口高当成内容高），而真卡 `_足控天堂2` 的
+        // ERA 状态栏里有 **9 处 `position:fixed`**。所以「整卡主视觉都是 fixed」时
+        // `extent()` 就是 0 —— 正是最容易踩到它的卡。
+        //
+        // `h>0` 这个条件本来就在（原来写的是 `var h=e>0?e:(…scrollHeight)`，把 0 换成了猜测）。
+        // 现在 0 就是 0：**不报**。帧高停在已有值上，等下一次（700ms / 1600ms / RO / load）
+        // 量出来再改。宁可暂时矮/高一点，也不写一个错的、会自我放大的值进去。
+        //   ★ 记账只在 `readyState==='complete'` 之后（`load` 已触发、远程插图已 decode）：
+        //   `load` 之前 `getBoundingClientRect()` 对未 decode 的插图返回 0 或占位高，此时记下的
+        //   任何值都是坏读数 —— 而 reset 是 `overflow:hidden!important`，坏读数会变成永久裁切。
+        //   ★ 记账只在「首帧已过」（`RL`，见上面那段）之后；`m()` 仍然照报 ——
+        //   早报一次能让帧高尽快贴近内容，只是那一次**没有棘轮可记**。
+        'function m(){try{' +
+        // ★ 一次性令牌：本次测量是不是由**媒体落定事件**触发的？
+        //   读走就清（consume-once）—— 下一个定时/RO 触发的测量绝不会继承它，
+        //   否则"测量修正"会退化成"任何测量都能一次收缩"，那正是要避免的语义漂移。
+        'var mf=window.__muvHMediaFix?1:0;window.__muvHMediaFix=0;var e=extent(mf);' +
+        'if(e>0)window.parent.postMessage({__muvFrameHeight:e},"*");' +
+        // ★ 注入判据用的**专属 token**（见 withFrameHeightBootstrap 的守卫注释）：
+        //   它只出现在引导脚本里，卡自己的 `window.__muvH=1` 或 `__muvHello` 都**不含**它，
+        //   所以"注入了几次"数这个才数得准（数 `window.__muvH=1` 会被卡自己的拷贝污染，
+        //   断言会**因为错误的原因通过**）。它是 `postMessage(…)` 语句的一部分，任何
+        //   `"*"` 结尾的 postMessage 断言照旧成立。
+        'window.__muvHFitProbe=1;' +
+        '}catch(err){}}' +
+        'function s(){if(t)clearTimeout(t);t=setTimeout(m,150)}' +
+        'window.addEventListener("load",function(){m();s()});' +
+        'document.addEventListener("DOMContentLoaded",s);' +
+        'try{if(window.ResizeObserver)new ResizeObserver(s).observe(document.documentElement)}catch(e){}' +
+        // ★ 媒体事件重测（2026-09-22p）。为什么 RO 不够（取证见 HANDOFF §29）：
+        //   RO 只在**盒子**（边框盒）尺寸变化时 fire，而媒体引起的**包围盒**变化可以完全不
+        //   动任何盒子 —— 两种真实形态（真卡 _足控天堂2「主页」两条都占）：
+        //   ① 媒体元素自身 position:absolute（该卡画廊 `.polaroid img{position:absolute;inset:0}`，
+        //      父盒用 aspect-ratio 预留尺寸）：媒体加载只改绝对定位元素自己的盒子，
+        //      html/body 的盒子纹丝不动 ⇒ RO 一次都不 fire；而 `extent()` 对绝对定位元素
+        //      单独取 `rect.top + height`，媒体到位后包围盒**确实变大** —— 帧高却不跟。
+        //   ② 卡的 JS 在 load 之后才把 img 插进 DOM（该卡画廊就是运行时拼的）：
+        //      固定补量到 10.9s 就停，之后插入的媒体没有任何触发器。
+        //   媒体事件是浏览器给「这个元素的内容尺寸定了/变了」的同步信号（error 也算——
+        //   404 的图会塌成 0 高，包围盒同样要重量），接到就 sf() 走 150ms 去抖。
+        //   对已有元素挂一遍；卡运行时再插入的媒体由 MutationObserver 兜底补挂
+        //   （只挂事件，不额外测量 —— 测量仍由 s() 统一去抖）。
+        //
+        //   ★★ 为什么走 `sf()` 而不是直接 `s()`（2026-09-22u）：媒体事件触发的这一次测量
+        //   要带上一枚**一次性令牌** `__muvHMediaFix`，让 extent() 知道"这次读数来自媒体落定、
+        //   可以走一次测量修正"（语义与边界见 extent() 里那段长注释）。令牌由 m() 读走即清。
+        //   `sf()` 另外还在 **+700ms** 补挂一次同样的令牌重量一次：这一次是**修正的安全复核**
+        //   —— 落定瞬间的布局若还没走完（transition/字体替换），修正量可能偏小，那次复核会走
+        //   增长分支把它补回来。定时器用同一个句柄去重，媒体再多也只留一个待复核。
+        'function sf(){window.__muvHMediaFix=1;s();' +
+        'if(window.__muvHMediaT)clearTimeout(window.__muvHMediaT);' +
+        'window.__muvHMediaT=setTimeout(function(){window.__muvHMediaFix=1;s()},700)}' +
+        'function mw(el){try{' +
+        'if(el.tagName==="IMG"){el.addEventListener("load",sf);el.addEventListener("error",sf)}' +
+        'else if(el.tagName==="VIDEO"){el.addEventListener("loadedmetadata",sf);el.addEventListener("loadeddata",sf);el.addEventListener("durationchange",sf)}' +
+        '}catch(e){}}' +
+        'try{var mqs=document.getElementsByTagName("img"),mqvv=document.getElementsByTagName("video");' +
+        'for(var mqi=0;mqi<mqs.length;mqi++)mw(mqs[mqi]);' +
+        'for(var mqv=0;mqv<mqvv.length;mqv++)mw(mqvv[mqv])}catch(e){}' +
+        'try{if(window.MutationObserver)new MutationObserver(function(mrs){' +
+        'for(var mra=0;mra<mrs.length;mra++){var mrn=mrs[mra].addedNodes||[];' +
+        'for(var mrb=0;mrb<mrn.length;mrb++){var mre=mrn[mrb];if(mre.nodeType!==1)continue;' +
+        'if(mre.tagName==="IMG"||mre.tagName==="VIDEO")mw(mre);' +
+        'if(mre.querySelectorAll){var mrq=mre.querySelectorAll("img,video");for(var mrc=0;mrc<mrq.length;mrc++)mw(mrq[mrc])}}}})' +
+        '.observe(document.documentElement,{childList:true,subtree:true})}catch(e){}' +
+        'setTimeout(m,700);setTimeout(m,1600);' +
+        // ★ 后期补量（有限次，到点就停）。为什么需要：内容**在最后一次测量之后**还在长高时
+        //   （远程插图 decode 完、字体替换、卡自己的定时器改 DOM），棘轮就一次都没观测到那次
+        //   溢出，而 reset 是 `overflow:hidden!important` ⇒ 那几像素**永久裁掉**，表现为
+        //   「同一张卡、同一份源码，跑两次一次红一次绿」的间歇性失败
+        //   （实测 `ERA 状态栏` 内容 929 / 帧高 923，差 5px，只在部分运行里出现）。
+        //   700/1600 两次太早：真卡的主视觉要 2~3 秒才落定。这里补四次低频补量覆盖到 11 秒；
+        //   RO 已经覆盖"内容一长高就报"，所以这四次只是**兜底**，不是主路径。
+        //   有意不写成 `setInterval`：稳态之后每秒重扫整棵子树是纯浪费，而棘轮已经收敛，
+        //   没有新信息可拿。
+        'for(var i=0;i<4;i++)setTimeout(m,2500+i*2800);' +
+        '})();</' + 'script>'
+    }

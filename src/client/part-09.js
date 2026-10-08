@@ -1,260 +1,3 @@
-      if (!key || key.length > MUV_KV_MAX_KEY) return
-
-      // ★ 用户消息桥（卡 → DSH 输入框）：每帧节流，防卡循环连发把输入框打爆。
-      if (isUserSend) {
-        var us = data.__muvUserSend
-        var txt = (us && typeof us.text === 'string') ? us.text : ''
-        if (!txt || txt.length > 20000) return
-        var nowU = Date.now()
-        var lastU = muvUserSendAt[key] || 0
-        if (lastU && (nowU - lastU) < MUV_USERSEND_MIN_GAP) return
-        muvUserSendAt[key] = nowU
-        muvDeliverUserText(txt, us.mode === 'fill' ? 'fill' : 'send')
-        return
-      }
-
-      // ★ MVU 数据请求（卡内 `Mvu.getMvuData()` 的首次调用）：节流 + 回送一帧。
-      //   与 `muvEraAnswer` 同一口径：认不出会话就**如实回空**（不猜一张卡的数据塞给另一张）。
-      if (isMvuReq) {
-        var nowM = Date.now()
-        var lastM = muvMvuReqAt[key] || 0
-        if (lastM && (nowM - lastM) < MUV_MVUREQ_MIN_GAP) return
-        muvMvuReqAt[key] = nowM
-        muvMvuReply(frame)
-        return
-      }
-
-      // ★ 变量写（卡的写 API）：节流 + 落库 + 作废缓存 + 多档重推（见 muvVarWriteFromCard）。
-      if (isVarWrite) {
-        var nowW = Date.now()
-        var lastW = muvVarWriteAt[key] || 0
-        if (lastW && (nowW - lastW) < MUV_VARWRITE_MIN_GAP) return
-        muvVarWriteAt[key] = nowW
-        muvVarWriteFromCard(frame, data.__muvVarWrite)
-        return
-      }
-
-      if (!key || key.length > MUV_KV_MAX_KEY) return
-      // ★ 会话栅栏 + LRU 触碰：真正落库的命名空间是 `<卡键>@<会话 id>`（见 muvKvKeyOf）。
-      //   这一步对所有 op 都做 —— 否则"只发 remove/clear 的帧"永远不进 LRU 账本，
-      //   那些命名空间会一直是 LRU 里的最冷项而被误淘汰。
-      var ns = muvKvTouch(key)
-
-      if (isHello) {
-        // ★ 每帧节流：见 muvHelloAt 的注释。首次（时间戳为 0）无条件放行。
-        //   键用**卡键**（不是 ns）：节流是"这个 iframe 太久没被回送过"，与会话无关。
-        var now = Date.now()
-        var lastAt = muvHelloAt[key] || 0
-        if (lastAt && (now - lastAt) < MUV_HELLO_MIN_GAP) return
-        muvHelloAt[key] = now
-        muvReplyToFrame(frame, key)
-        muvEraPrewarm()
-        return
-      }
-
-      if (isEventOut) {
-        var nm = data.__muvEventOut.name
-        if (typeof nm !== 'string' || !nm || nm.length > 64) return
-        muvEraAnswer(frame, key, nm)
-        return
-      }
-
-      var op = data.__muvKv
-      // 三个 op 落完内存都同步过一遍持久层（写通，不留异步窗口）：持久键 = 前缀 + ns，
-      // 会话栅栏原样带进持久层；失败（quota/隐私模式）退化为纯内存，不比修复前差。
-      if (op === 'clear') {
-        muvKv[ns] = {}
-        muvKvPersistRemove(ns)
-        return
-      }
-      if (op !== 'set' && op !== 'remove') return
-      var k = data.k === undefined ? '' : String(data.k)
-      if (!k || k.length > MUV_KV_MAX_KEY) return
-      if (!Object.prototype.hasOwnProperty.call(muvKv, ns)) muvKv[ns] = {}
-      var st = muvKv[ns]
-      if (op === 'remove') {
-        try { delete st[k] } catch (_) {}
-        muvKvPersistWrite(ns, st)
-        return
-      }
-      var v = data.v === undefined ? '' : String(data.v)
-      if (v.length > MUV_KV_MAX_VAL) return
-      var count = 0
-      var total = 0
-      for (var k2 in st) {
-        if (!Object.prototype.hasOwnProperty.call(st, k2)) continue
-        count++
-        total += String(st[k2]).length
-      }
-      var exists = Object.prototype.hasOwnProperty.call(st, k)
-      if (!exists && count >= MUV_KV_MAX_ITEMS) return
-      if (total - (exists ? String(st[k]).length : 0) + v.length > MUV_KV_MAX_TOTAL) return
-      try { st[k] = v } catch (_) {}
-      muvKvPersistWrite(ns, st)
-      // ★ 写入之后再过一次 LRU：命名空间**总数**原先无上限（键 = 内容散列 + 长度，
-      //   内容一变就是新键），页面级生命周期下会累积到几十 MB（brief P2）。
-      muvKvEvict()
-    }
-
-    /**
-     * 父页记账的**注入链缓存** —— P0-2「幂等守卫查子串」那一条的**根治手段**。
-     *
-     * 类是什么：三处注入（reset / compat / 高度引导）原先各自靠"在卡原文里查一个子串"判断
-     * 有没有注入过。卡的 HTML 里只要出现那个串（模型跑题、作者抄别家 shim、卡里内嵌文档），
-     * **整段脚本就被静默跳过** —— 卡的 `localStorage` / `getContext().chat` / 高度上报全塌，
-     * 没有任何日志。三处同形、同一种静默失效模式。
-     *
-     * 根治办法（brief P0-2 第 1 条）：**幂等状态放父页** —— 同一个 `raw` 只在这里组装一次
-     * 注入链，结果缓存进这个 `Map`；子文档只执行、不自我判断。这一改直接消掉整个类：
-     * 卡原文再也决定不了"要不要注入"。
-     *
-     * 键 = `muvCompatKey(raw)`（32 位散列 + 长度）。**故意不用 `raw` 本身当键**：真卡的围栏
-     * 正文一份就有 210KB，几十条消息就是几十 MB 的 Map。散列键只有十几字节，且与
-     * `data-muv-kv` 用的是同一个键函数（同一张卡在整条链上只有一个身份）。
-     * 故意**声明成纯对象字面量**（理由同 `muvEraVars`：逐字提取的门禁要能内联它）。
-     * @type {Object<string, string>}
-     */
-    var muvInjectCache = {}
-    /** 注入链缓存的条目上限（LRU）。一张卡一份 srcdoc，几十条消息的卡也就是个位数。 */
-    var MUV_INJECT_MAX = 8
-
-    /**
-     * 组装一条卡文档的完整注入链，**并在父页记账**。
-     *
-     * 顺序（内层先跑，外层看到的是内层已改过的文档）：
-     *   `rewriteVhMinHeight(raw)` → `withCardCompat` → `withCardReset` → `withCardLibs`
-     *   → `withFrameHeightBootstrap` → **`withCardScripts`（最外层）**
-     * 理由见 `cardHtmlIframe` 的长注释。（`withCardLibs` 的落点是 head 末尾，
-     * 与 compat / reset 的 `<head>` 锚点不冲突，所以它排在哪一层都不改变位置。）
-     *
-     * ★ 缓存只在 `hostH` 相同时命中：`hostH` 会进 `min-height:<N>px` 与
-     *   `--TH-viewport-height`，窗口尺寸变了必须重算（否则卡被钉死在旧的视口高上）。
-     *   `hostH` 只是标识，真正的 vh 由 `rewriteVhMinHeight` 自己取（它不收形参）。
-     * @param {string} raw 注入前的卡文档
-     * @param {number} hostH 宿主视口高（缓存标识）
-     * @param {string} ck 卡键（`muvCompatKey(raw)`，调用方已经算过，省一次 O(n) 散列）
-     * @param {Array<{name?:string, id?:string, content?:string}>} [scripts] 卡的 enabled 脚本
-     * @returns {string} 注入后的完整文档
-     */
-    function muvInjectDoc(raw, hostH, ck, scripts) {
-      var key = String(ck || '') + '@' + String(hostH || 0) + '#' + muvCardScriptsSig(scripts)
-      try {
-        if (Object.prototype.hasOwnProperty.call(muvInjectCache, key)) return muvInjectCache[key]
-      } catch (_) {}
-      // ★ `withCardScripts` 必须在**最外层**：它是往 `</body>` 里插东西的，放在里面的话
-      //   后面几层（含 bootstrap）再去数 `<script>` 区间时会把卡的脚本当成"卡自己的"，
-      //   让它们各自的落点判定跟着偏移。
-      var doc = withCardScripts(
-        withFrameHeightBootstrap(
-          withCardLibs(withCardReset(withCardCompat(rewriteVhMinHeight(raw), hostH), hostH))),
-        scripts)
-      // ★ 图片开销评估结论（2026-09-24，实测后**不改**）：
-      //   ① CDP 真机取证：切回会话时 iframe 内图片 **0 次网络重取**（memory cache
-      //      直接命中，连 fromDiskCache 事件都不产生）——"重新加载图片"在网络层
-      //      本来就不发生，懒加载没有收益；
-      //   ② 卡文档逐字节 parity 是 verify-visual 的硬契约（剥掉注入运行时后必须与
-      //      卡原文逐字相等，ST 保真度边界）——往卡文档里加 `loading="lazy"` 立刻
-      //      打红 14+ 项（实测）；
-      //   ③ iframe 内 lazy 与高度棘轮存在理论冲突（离屏图永不触发加载 ⇒ 高度卡死）。
-      //   ⇒ img/iframe lazy 都不启用，图片开销维持浏览器原生 memory cache 行为。
-      try {
-        muvInjectCache[key] = doc
-        var names = []
-        for (var k in muvInjectCache) {
-          if (Object.prototype.hasOwnProperty.call(muvInjectCache, k)) names.push(k)
-        }
-        while (names.length > MUV_INJECT_MAX) {
-          var gone = names.shift()
-          if (gone === key) { names.push(gone); continue }
-          try { delete muvInjectCache[gone] } catch (_) {}
-        }
-      } catch (_) {}
-      return doc
-    }
-
-    /**
-     * 构造承载「卡自带整页 HTML」的 iframe —— 所有这类 iframe 的唯一出口。
-     *
-     * 统一成一个出口的好处：沙箱常量只有一处（MUV_CARD_SANDBOX）、高度测量只有一处
-     * 注入点、默认尺寸只有一处。默认高度只在收到子文档报数之前生效；子文档没报数
-     * （脚本被卡里别的错误挡住等）就维持默认值，**不会比修之前更差**。
-     *
-     * ★ 默认高度 600px → 900px：真卡实测高度是 251 / 349 / 675 / 895 / 1636px，600px 明显偏矮，
-     *   用户看到的是"别人的窗口非常大，DSH 里又小又小"。900px 更接近常见卡的高度；收到
-     *   子文档报的内容包围盒就覆盖它（onMuvFrameHeightMessage），所以这只是兜底值。
-     *   故意**不设** max-height / max-width 上限。
-     *
-     * ★ 链的**顺序**是有讲究的（内层先跑，外层看到的是内层已改过的文档）：
-     *   `rewriteVhMinHeight` → `withCardCompat` → `withCardReset` → `withCardLibs`
-     *   → `withFrameHeightBootstrap` → `withCardScripts`
-     *  - vh 重写必须在最内层：它要**只**处理卡自己的 `min-height`，不碰我们注入的东西；
-     *  - compat 垫片要尽可能靠前（解析期就生效），且必须排在 reset 之前才能在
-     *    `<head>` 锚点上落在 reset 的 `<style>` 之后（两者都插在同一锚点，后跑的排前面）；
-     *  - 前端库（`withCardLibs`）插在 `</head>` 之前：仍在 body 之前（卡的脚本拿得到
-     *    `jQuery`/`Vue`，与 ST 一致），但排在 compat/reset **之后** ⇒ CDN 出问题时
-     *    不会连带推迟我们自己那两段；
-     *  - 高度引导脚本在前端库之后、卡脚本之前（它也是插在"最后一个 `</body>` 之前"，
-     *    早插会被后面的 head 注入打乱）；
-     *  - **卡的 TavernHelper 脚本在最外层**（`withCardScripts` 的一组
-     *    `<script type="module">`）：module 天生 defer ⇒ 执行一定排在 compat 垫片 /
-     *    reset / 前端库 / 引导这些**经典脚本之后**，位置不决定顺序，所以把它放在
-     *    文档最后（不影响前面任何一个锚点的搜索）。
-     * @param {string} html 卡自带的整页 HTML
-     * @returns {string}
-     */
-    function cardHtmlIframe(html) {
-      ensureFrameHeightListener()
-      ensureCardCompatListener()
-      ensureCardMask()
-      var raw = String(html == null ? '' : html)
-      // ★ 首屏遮蔽的判据（见 `ensureCardMask` 与宿主样式里那条注释）：文档**自带初始主题
-      //   属性**（`<body data-theme="night">` 这类）才有"先画默认主题、等卡初始化才换"的
-      //   错色期。没有这个属性的卡文档**照旧不遮蔽** —— 波及面刻意收窄到"真的会错色"的那一类。
-      var mask = /<(?:body|html)\b[^>]*\sdata-theme\s*=/i.test(raw) ? ' data-muv-mask="1"' : ''
-      var hostH = muvHostViewportHeight(0)
-      // ★ `rewriteVhMinHeight` 只收一个形参（注入前的卡文档）。这里原来多传了一个 `hostH`
-      //   —— 函数内是自取 `window.innerHeight` 的，多出来的实参被静默丢掉。功能无害，
-      //   但它**遮蔽了真实契约**（读调用点的人会以为 vh 是由调用方决定的）。删掉实参。
-      var doc = muvInjectDoc(raw, hostH, muvCompatKey(raw), muvCardScriptsNow())
-      // ★ 种子现算覆盖（见 muvKvSeedFill）：产物可能来自缓存（内存/上游持久），里面的
-      //   KV 种子是构建时的冻结快照 —— 出口上用当前账本（含持久层回捞）重算一遍，
-      //   卡的解析期同步读才能拿到跨刷新/跨会话的真实值，不靠 hello 回填的异步竞速。
-      doc = muvKvSeedFill(doc, muvCompatKey(raw))
-      return '<iframe class="muv-iframe" data-muv-kv="' + escAttr(muvCompatKey(raw)) + '"' + mask +
-        ' srcdoc="' + escAttr(doc) +
-        '" sandbox="' + MUV_CARD_SANDBOX +
-        '" style="display:block;width:100%;height:900px;border:none;border-radius:8px;background:transparent"></iframe>'
-    }
-
-    /**
-     * 这张卡里有没有一条正则脚本会去消费 `<StatusPlaceHolderImpl/>`？
-     *
-     * 判据刻意做得**很窄**（只有在 findRegex 里逐字出现 `StatusPlaceHolderImpl` 才算），
-     * 因为它决定我们要不要往每条消息尾部追加一个占位符 —— 猜错的代价是给一张不认这个
-     * 标记的卡塞进一段它渲染不出来的文本。
-     *
-     * 三种卡形态都要认：`{regexScripts:[…]}`（muv-table 的规范化产物，门禁夹具用的就是它）、
-     * 裸 chara_card_v3（`data.extensions.regex_scripts`）、以及顶层的 `regex_scripts`
-     * —— 与 `regex-engine.js:regexScriptsOf` 认的那三种保持一致，别只认一种。
-     * @param {object|null} cardJson
-     * @returns {boolean}
-     */
-    function cardWantsStatusPlaceholder(cardJson) {
-      try {
-        if (!cardJson || typeof cardJson !== 'object') return false
-        var list = cardJson.regexScripts
-        if (!list && cardJson.data && cardJson.data.extensions) list = cardJson.data.extensions.regex_scripts
-        if (!list) list = cardJson.regex_scripts
-        if (!list || !list.length) return false
-        for (var i = 0; i < list.length; i++) {
-          var s = list[i]
-          if (!s || s.disabled) continue
-          if (String(s.findRegex || '').indexOf('StatusPlaceHolderImpl') >= 0) return true
-        }
-      } catch (_) {}
-      return false
-    }
-
     /**
      * ★★ 补齐 `<StatusPlaceHolderImpl/>` —— 这一条救回的是整张卡的 ERA 状态栏。
      *
@@ -675,4 +418,311 @@
         var muvHit = muvDecorCacheGet(muvCk)
         if (muvHit != null) { muvBeautifyTrace('cache-hit', depth, 'len=' + String(muvHit).length); return muvHit }
       }
+
+      const normalized = normalizeStatusHeader(text)
+
+      try {
+        // Get card data for regex scripts
+        const cardJson = await fetchTavernCard()
+        muvBeautifyTrace('card', opts && opts.depth, cardJson ? ('ok name=' + (cardJson.cardName || cardJson.name)) : ('NULL inconclusive=' + muvCardFetchInconclusive))
+
+        if (cardJson) {
+          // ★ 卡脚本（TavernHelper / 酒馆助手）：MVU 的状态栏 HUD 那一类 UI 是它们
+          //   在运行时画的（不是正则产物），必须在 `cardHtmlIframe` 之前到位 ——
+          //   那个函数是**同步**的，所以这里趁 `_decorateOne` 本来就在 await 先取回来。
+          //   同一张卡全站只飞一次网络（见 `muvLoadCardScripts` 的按卡缓存）。
+          muvCardScripts = await muvLoadCardScripts(cardJson)
+          // ★★ 补齐「酒馆助手」脚本会追加的那个占位符（见 withStatusPlaceholder 的长注释）。
+          //   必须在**取卡之后**做：要不要补，取决于这张卡有没有一条消费占位符的正则。
+          const regText = withStatusPlaceholder(normalized, cardJson)
+          // Apply regex scripts
+          const r = await fetch('/api/muv-engine/apply-regex-card', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: regText, cardJson, depth: depth })
+          })
+          const d = await r.json()
+          muvBeautifyTrace('apply', opts && opts.depth, 'ok=' + d.ok + ' textLen=' + String(d.text || '').length + ' applied=' + d.applied)
+          // ★ 开场白 depth 兜底（2026-09-24，苍玄界全程实锤）：
+          //   社区卡开场白正则普遍 `maxDepth: 0`。ST 播种路径对 first_mes 不传深度
+          //   （script.js:7660）⇒ 开场白永远渲染；而 DSH 重渲染旧会话时首楼 depth>0
+          //   ⇒ 开场白替换被服务端 depth 检查拒掉 ⇒ **原样返回** ⇒ 楼被钉成裸占位符。
+          //   竞态使它更隐蔽：React 渲染后续楼时会重建首楼元素，已写入的 iframe 被清，
+          //   扫摆重装饰时 depth 已 >0 ——「开头时有时无」的真相。
+          //   兜底：服务端**实质原样返回**（响应仍是微小文本 —— 成功的开场白替换
+          //   产物是 90KB+，微小即说明 depth 拒了替换；注意不能跟 normalized 逐字比，
+          //   因为 applied 的隐藏类脚本会删掉 `<StatusPlaceHolderImpl/>`，字面必不相等）
+          //   且文本是短占位符（≤300）⇒ 内部用 depth 0 重打一次（等价 ST 播种语义）。
+          //   只对短占位符生效，长正文零成本；`[8]`类 minDepth 脚本不受影响。
+          if (d.ok && String(d.text || '').length <= 400 && depth > 0 && muvTrimmedLen <= 300) {
+            try {
+              const r2 = await fetch('/api/muv-engine/apply-regex-card', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ text: regText, cardJson, depth: 0 })
+              })
+              const d2 = await r2.json()
+              if (d2.ok && d2.text && d2.text !== normalized) {
+                muvBeautifyTrace('retry-depth0', depth, 'textLen=' + String(d2.text).length)
+                d.text = d2.text
+              }
+            } catch (_) {}
+          }
+          if (d.ok) {
+            let result = d.text
+            // ★ 状态栏级联：卡片自带 HTML → 结构化解析（YAML/👤/自由形态）→ 变量模板
+            //   第 1 级（card）与第 2~4 级（yaml/free/loose）都在服务端算；
+            //   第 5 级（变量模板）留在本地，因为它和 CSS 在一起。
+            let sbHtml = d.statusBarHtml
+            if (!sbHtml && STATUS_PH_TEST.test(result)) sbHtml = buildDefaultStatusBar(regText)
+            // 占位符还在才构造：卡自己的正则往往已经把占位符换掉了，那时下一页
+            // 210 KB 的 escAttr 会被下面的 replace 直接丢掉——纯浪费。
+            // 占位符在、但没有任何数据可展示时给个空状态：绝不把 `<StatusPlaceHolderImpl/>`
+            // 原文露给用户。
+            if (STATUS_PH_TEST.test(result)) {
+              ensureStatusCss()
+              const builtin = /^\s*<div class="muv-sb"/.test(sbHtml || '')
+              const frame = builtin ? sbHtml : (sbHtml ? cardHtmlIframe(sbHtml) : emptyStatusBar())
+              // ★★ 函数式替换（不是字符串替换）—— 见 muvFrameBlock 的长注释：
+              //   frame 里有卡自己的 JS，字符串替换会把 `$&` / `$'` / `` $` `` 当引用解析掉，
+              //   卡的脚本会被打坏（界面照常显示、功能全废）。
+              result = result.replace(STATUS_PH_ALL, function () { return muvFrameBlock(frame) })
+            }
+            // 卡片用 <Status_block> 而非占位符时走结构化级联
+            result = await cascadeStatusBlock(result, cardJson)
+            // ★★ 第 35 轮：**文本级状态栏兜底**。优先级最低 —— 占位符 / 卡自带皮肤 /
+            //    `<Status_block>` 任一命中就完全不参与（判据在 muvStatusAlreadyRendered）。
+            //    命中时把正文开头那串裸 `[键:值]` 换成状态栏卡片、把 `<details>` 状态
+            //    折叠块换成折叠 UI（内容仍出自既有 loose 级联）。
+            result = await muvApplyTextStatus(result, muvStatusAlreadyRendered(result, sbHtml))
+            // 卡里「主页 / 正文美化」这类正则产出的是被 markdown 围栏包住的整页 HTML，
+            // 必须在这里换成 iframe，否则 DSH 会把它当代码块渲染成几十 KB 文本。
+            return muvDecorStore(muvCk, text, renderFencedHtml(result))
+          }
+        }
+      } catch (e) {
+        // ★ 不许静默（2026-09-24 苍玄界实锤）：取卡成功、服务端把 `【GameStart】`
+        //   正确替换成 91KB 封面 HTML，但这里的后处理链（级联/文本状态/iframe 化）
+        //   抛异常被吞 ⇒ 消息钉成"已装饰、无产物"，且零日志 —— 排查走了一整晚。
+        //   任何在这里被吞的异常都必须在控制台可见。
+        try { console.warn('[muv] 装饰后处理失败（取卡成功、替换产物处理抛错）：', e && (e.stack || e.message || e)) } catch (_) {}
+      }
+
+      // 拿不到卡片数据（没装 muv-table / 角色卡不是 MUV 格式）时，
+      // 仍然用内置模板把状态栏渲染出来 —— 只要求输出里有占位符和变量赋值即可
+      try {
+        if (STATUS_PH_TEST.test(normalized)) {
+          // 有变量就渲染出来；一个变量都没有也要给空状态，不能把占位符原文留在消息里。
+          const sb = buildDefaultStatusBar(normalized) || emptyStatusBar()
+          ensureStatusCss()
+          // ★★ 函数式替换：见 muvFrameBlock 的长注释
+          return muvDecorStore(muvCk, text, renderFencedHtml(normalized.replace(STATUS_PH_ALL, function () { return muvFrameBlock(sb) })))
+        }
+        // 没有卡片数据也要能出状态栏：级联不依赖卡片，只要能解析出结构
+        const cascaded = await cascadeStatusBlock(normalized, null)
+        if (cascaded !== normalized) return muvDecorStore(muvCk, text, renderFencedHtml(cascaded))
+        // ★ 第 35 轮：文本级状态栏兜底（同卡片分支；这里没有卡自带皮肤，sbHtml 传空）
+        const texted = await muvApplyTextStatus(cascaded, muvStatusAlreadyRendered(cascaded, ''))
+        if (texted !== normalized) return muvDecorStore(muvCk, text, renderFencedHtml(texted))
+      } catch (_) {}
+
+      // 即使没渲染出任何卡片，也把折叠好的表头交回去：模型拆行的问题不值得
+      // 让用户看到散落的『 』。
+      //
+      // ★ `<choices>` 不再在这里转成 HTML。
+      //
+      // 走到这一行说明：没有状态栏占位符、没有 `<Status_block>` 级联、没有围栏文档 ——
+      // 唯一可能要做的只有 `<choices>`。而以前这里是
+      //     return renderFencedHtml(replaceChoices(normalized))
+      // 一旦它和原文不同，`_decorateOne` 就会 `body.innerHTML = html` **整条替换**，
+      // 而那次替换的输入是 `innerText`（`**粗体**` 读出来是 `粗体`、`## 标题` 读出来是
+      // `标题`、``` 代码块读出来只剩裸代码）—— **markdown 被永久抹掉**，且没有任何
+      // 东西能再解析它。选项本来就不需要这条路：`muvRenderChoices()` 已经在 DOM 层
+      // 把它们渲染成按钮了（挂在 muvSanitizeNode 上，独立于本函数）。
+      //
+      // 所以：文本没被 normalizeStatusHeader 改过时**原样返回**（html === raw ⇒ 调用方
+      // 不做任何替换 ⇒ markdown 完好、选项照旧出现）。
+      // 文本被改过（『📅…|⏰…|📍…』表头被折成一行）时仍然必须交回新文本 —— 那是
+      // 状态栏那一路，属于下一类要处理的迁移，本次不动。
+      if (normalized === text) { muvBeautifyTrace('exit-unchanged', opts && opts.depth, 'len=' + muvTrimmedLen); return normalized }
+      return muvDecorStore(muvCk, text, renderFencedHtml(replaceChoices(normalized)))
+    }
+
+    /**
+     * ★ 装饰诊断留痕（2026-09-24，临时）：beautifyMuv 的进出与结局一览。
+     *   苍玄界开场白整晚排错的教训——这条链上任何静默分支都会把楼钉死且零日志。
+     *   用 console.debug（默认不可见，开 verbose 才有），量产后可删。
+     */
+    function muvBeautifyTrace(tag, depth, detail) {
+      try { console.debug('[muv-trace]', tag, 'depth=' + depth, detail) } catch (_) {}
+    }
+
+    /**
+     * Replace a `<Status_block>…</Status_block>` with the card rendered by the
+     * server-side cascade (stages 1-4 of the status strategy).
+     *
+     * Kept as a separate step because it is orthogonal to regex application:
+     * the scripts decide *what text survives*, this decides *how the status
+     * area looks*. Returns the input untouched when nothing matched, so a card
+     * we do not understand is never silently blanked.
+     * @param {string} text
+     * @param {object|null} cardJson
+     * @returns {Promise<string>}
+     */
+    async function cascadeStatusBlock(text, cardJson) {
+      if (!text || !/<\s*Status_block\s*>/i.test(text)) return text
+      try {
+        const r = await fetch('/api/muv-engine/render-status', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ text, cardJson })
+        })
+        const d = await r.json()
+        if (!d || !d.ok || !d.html) return text
+        ensureStatusCss()
+        // The card's own HTML is a self-contained document (styles + markup), so
+        // it goes into a sandboxed iframe; our structural renders are inline.
+        // 卡的整页 HTML 一律走 cardHtmlIframe（带高度测量引导脚本）。
+        const isCardHtml = d.stage === 'card'
+        const frame = isCardHtml ? cardHtmlIframe(d.html) : d.html
+        // ★★ 函数式替换：见 muvFrameBlock 的长注释（卡 HTML 里有 `$&` / `$'` 会被吃掉）
+        return text.replace(/<\s*Status_block\s*>[\s\S]*?<\s*\/\s*Status_block\s*>/gi,
+          function () { return muvFrameBlock(frame) })
+      } catch (_) {
+        return text
+      }
+    }
+
+    /**
+     * 把一整页卡 HTML 包进状态栏容器。**必须配 `replace(re, function () {…})` 用。**
+     *
+     * ★★ 为什么不能写成 `text.replace(re, '<div …>' + frame + '</div>')`（踩过，必修）：
+     *   `String.replace` 的**字符串替换**里，`$&`（整个匹配）、`` $` ``（匹配前）、
+     *   `$'`（匹配后）、`$$`、`$1…$99`、`$<name>` 都是**引用语法**，会从 frame 里被解析掉。
+     *   而 frame 里装的是**卡自己的 JS**，真出现这些序列：
+     *     卡的 ERA 脚本里有 `function isTemplate(key){return key&&key.charAt(0)===&#39;$&#39;}`
+     *     —— `$` 后面紧跟 `&`（`&#39;` 的实体首字符）⇒ 被当成 `$&` ⇒ 那行变成
+     *     `===&#39;<<StatusPlaceHolderImpl/>#39;}` ⇒ **卡的脚本当场语法错误**。
+     *   后果极难查：**HTML/CSS 照常渲染**（界面看着好好的），只是卡的 JS 全废：
+     *   选项空白、数值不更新、tab 点不动，而控制台里只有卡内那条 `about:srcdoc` 报错。
+     *   ⇒ 与服务端第 4 轮修掉的那个 `$'` bug 是**同一个坑的两端**，铁律一样：
+     *     **凡是把"别人的一大段文本"拼进替换串，一律用函数式替换。**
+     * @param {string} frame 已经构造好的 iframe/内置状态栏 HTML
+     * @returns {string}
+     */
+    function muvFrameBlock(frame) {
+      return '<div class="muv-statusbar-wrap">' + frame + '</div>'
+    }
+
+    function escAttr(s) {
+      return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    }
+
+    // ★ 客户端宏展开：{[random::]} / {[pick::]} / {[roll::]}
+    var _pickCache = {};
+    function _expandMacros(text) {
+      if (!text) return text;
+      var result = text;
+      // random: {[random::opt1::opt2::...]}
+      result = result.replace(/\{\[random::([\s\S]*?)\]\}/g, function(_, options) {
+        var opts = options.split('::').map(function(s) { return s.trim(); }).filter(Boolean);
+        if (opts.length === 0) return '';
+        return opts[Math.floor(Math.random() * opts.length)];
+      });
+      // pick: {[pick::cacheKey::opt1::opt2::...]}
+      result = result.replace(/\{\[pick::([^:]+)::([\s\S]*?)\]\}/g, function(_, key, options) {
+        var cacheKey = 'pick_' + key.trim();
+        if (_pickCache.hasOwnProperty(cacheKey)) return _pickCache[cacheKey];
+        var opts = options.split('::').map(function(s) { return s.trim(); }).filter(Boolean);
+        if (opts.length === 0) return '';
+        var picked = opts[Math.floor(Math.random() * opts.length)];
+        _pickCache[cacheKey] = picked;
+        return picked;
+      });
+      // roll: {[roll::NdM]} 或 {[roll::NdM+K]}
+      result = result.replace(/\{\[roll::(\d+)d(\d+)(?:([+-])\s*(\d+))?\]\}/g, function(_, n, m, op, mod) {
+        var count = parseInt(n, 10) || 1;
+        var sides = parseInt(m, 10) || 6;
+        var total = 0;
+        for (var i = 0; i < count; i++) total += Math.floor(Math.random() * sides) + 1;
+        if (op && mod) {
+          total = op === '+' ? total + parseInt(mod,10) : total - parseInt(mod,10);
+        }
+        return String(total);
+      });
+      return result;
+    }
+    // 全局暴露：reroll pick
+    window._tavernRerollPick = function(key) {
+      var cacheKey = 'pick_' + key;
+      delete _pickCache[cacheKey];
+    };
+    window._tavernListPicks = function() {
+      var entries = [];
+      for (var k in _pickCache) {
+        if (_pickCache.hasOwnProperty(k) && k.indexOf('pick_') === 0) {
+          entries.push({ key: k.replace(/^pick_/, ''), value: _pickCache[k] });
+        }
+      }
+      return entries;
+    };
+    window._tavernExpandMacros = _expandMacros;
+
+    // Expose beautify function globally for the tavern renderer to use
+    if (typeof window !== 'undefined') {
+      window.MuvEngine = {
+        // ★ 构建标记：**页面加载的那一份**客户端代码是哪一版。
+        //
+        // 为什么要有它：DSH 重启只换服务端模块，浏览器里已经打开的标签页仍跑着**加载时**
+        // 注入的那一份客户端 bundle —— 用户"重启了但看起来没变"最常见的原因就是这个。
+        // 有这个标记，一句话就能分辨「代码没生效」还是「效果不对」：
+        //   console 里应能看到 `[muv-engine] client loaded <build>`；
+        //   控制台执行 `document.documentElement.dataset.muvEngine` 也能读到同一个串。
+        // 找不到 / 是旧串 ⇒ 页面没重新加载，硬刷新（Ctrl+Shift+R）即可。
+        build: MUV_BUILD,
+        beautify: beautifyMuv,
+        expandMacros: _expandMacros,
+        // hooks the tavern panel calls to hand decoration over to this plugin
+        decorateMessage: function (el, depth) {
+          try { if (_decorateOneHook) _decorateOneHook(el, depth) } catch (_) {}
+        },
+        scheduleDecorate: function () {
+          try { if (_scheduleDecorateHook) _scheduleDecorateHook() } catch (_) {}
+        },
+      }
+      try { document.documentElement.setAttribute('data-muv-engine', MUV_BUILD) } catch (_) {}
+      try { console.log('[muv-engine] client loaded ' + MUV_BUILD) } catch (_) {}
+
+      // ★ 轻量 LaTeX 渲染
+      if (!window._tavernLatexInstalled) {
+        window._tavernLatexInstalled = true
+        window._tavernRenderLatex = function(text) {
+          if (!text || text.indexOf('\\(') === -1) return text
+          return text.replace(/\\\(([\s\S]*?)\\\)/g, function(_, latex) {
+            var html = latex
+              .replace(/\\scalebox\{[^}]*\}\{/g, '').replace(/\}\s*$/g, '')
+              .replace(/\\begin\{array\}\{[^}]*\}/g, '').replace(/\\end\{array\}/g, '')
+              .replace(/\\fcolorbox\{([^}]*)\}\{([^}]*)\}\{/g, function(_, border, bg) {
+                return '<div style="border:2px solid '+border+';background:'+bg+';border-radius:6px;padding:8px 10px;margin:6px 0">'
+              })
+              .replace(/\\colorbox\{([^}]*)\}\{([^}]*)\}/g, function(_, color, content) {
+                return '<span style="background:'+color+';padding:2px 8px;border-radius:4px;display:inline-block">'+content+'</span>'
+              })
+              .replace(/\\textcolor\{([^}]*)\}\{([^}]*)\}/g, function(_, color, content) {
+                return '<span style="color:'+color+'">'+content+'</span>'
+              })
+              .replace(/\\rule\{([^}]*)\}\{([^}]*)\}/g, function(_, w, h) {
+                return '<span style="display:inline-block;width:'+w+';height:'+h+';background:currentColor;border-radius:2px;vertical-align:middle"></span>'
+              })
+              .replace(/\\overline\{[^}]*\}/g, '<hr style="border:none;border-top:1px solid #c9a45c;margin:4px 0">')
+              .replace(/\\Large\s/g, '<span style="font-size:18px">').replace(/\\large\s/g, '<span style="font-size:16px">').replace(/\\footnotesize\s/g, '<span style="font-size:11px">')
+              .replace(/\\quad/g, ' &nbsp; ').replace(/\\textbf\{([^}]*)\}/g, '<b>$1</b>').replace(/\\bullet/g, '•')
+              .replace(/\\\\/g, '<br>').replace(/[\{\}]/g, '')
+            var opens = (html.match(/<div/g)||[]).length - (html.match(/<\/div>/g)||[]).length
+            var openSp = (html.match(/<span/g)||[]).length - (html.match(/<\/span>/g)||[]).length
+            while (opens-- > 0) html += '</div>'
+            while (openSp-- > 0) html += '</span>'
+            return '<div class="muv-latex-block">'+html+'</div>'
+          })
+        }
 

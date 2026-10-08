@@ -178,7 +178,7 @@
 
     // ── 装饰产物内存缓存（2026-09-24，「切回会话秒开」）─────────────────────
     //
-    // 取证（真机 CDP，`C:\deepseek harness\_probe-session-cache.mjs`）：切走→切回同一
+    // 取证（真机 CDP，开发机上的 `_probe-session-cache.mjs`；属易失产物，不在仓内）：切走→切回同一
     // 会话，每条楼都重跑 beautifyMuv 全链 —— 每次切回 2~3 次 `/apply-regex-card`
     // 服务端往返，首楼装饰 ~234ms。而产物其实是**纯函数**：给定（正文、depth、
     // fullpage 旗标、卡），输出恒定 —— 服务端 `/apply-regex-card` 与 `/render-status`

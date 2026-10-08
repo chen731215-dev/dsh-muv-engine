@@ -3,8 +3,8 @@
   "linesNote": "各分片 lines 之和 = 产物 split('\\n') 的长度；产物的 \\n 个数比它少 1（末行无尾随换行）。",
   "artifact": {
     "path": "lib/client.js",
-    "bytes": 557423,
-    "sha256": "9c0e36dedeb2ac9ba006cbdee43fbbb89264bba38ce8796e3613e80b0b66d614"
+    "bytes": 557452,
+    "sha256": "9acdcaac81882c0713ebb0ca3de0b5ce4a3bde3f4c499a312cb9aec293f1fd18"
   },
   "modules": {
     "src/client/mod-text.js": {
@@ -142,8 +142,8 @@
       "startLine": 5100,
       "endLine": 5820,
       "lines": 721,
-      "bytes": 44343,
-      "sha256": "42b0147ff618121a7d47012bd64cd4156e3abe97b926d25e7b182df6d3cabd81",
+      "bytes": 44372,
+      "sha256": "b95552f8fe30d31d6e9c3ee945b67523301a644c8e3e54610696164464e057cd",
       "depthAtStart": 2,
       "depthAtEnd": 3
     },

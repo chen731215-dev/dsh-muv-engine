@@ -2,6 +2,14 @@
 
 > 写于 2026-09-20。读者是「换电脑后的你自己」或接手的人。
 > 代码已推送到 GitHub，本地快照也在，两条路任选。
+> ⚠️ **命令口径（2026-10-08 之后）**：本文是**当时状态的快照** —— 文中出现的 `node verify-*.mjs` /
+> `node test-*.mjs` 是**分家之前**的写法。脚本现已分家：`tests/`（`test-*`）、
+> `tools/verify/`（`verify-*`）、`tools/repro/`（`repro-*`）。**现在的入口是**
+> `npm test`（只跑 `tests/`，逐文件独立判红、空跑即失败）、`npm run test:all`（加上 `tools/verify|repro`）、
+> `npm run check`（全仓语法）、`npm run check:hygiene`（仓库卫生）；单跑某个门禁用
+> `node tools/verify/<脚本名>`。
+> **下面的历史条目按当时写法保留、不逐条改写** —— 它们是快照（里面的路径与测试数字是当时的真实读数），
+> 改写成新口径反而会把历史记错。要照做时请把命令换成上面的入口。
 
 ---
 

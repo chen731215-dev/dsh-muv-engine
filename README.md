@@ -44,7 +44,7 @@ node diag.mjs --tests         # 附带跑回归
 node diag.mjs --preset <id> --msg-file msg.txt   # 测一条消息
 ```
 
-> 回归测试从 46 项增至 **84 项**（`node test-status-cascade.mjs`）。
+> 回归测试从 46 项增至 **84 项**（`tests/test-status-cascade.mjs`）。
 
 ## 是什么
 
@@ -96,6 +96,22 @@ AI 输出自动美化（`_tavernRenderTags` 钩子），支持**转义形态**�
 
 ### 🌠 LaTeX 渲染
 `\(...\)` 公式自动渲染（含 array/fcolorbox/colorbox/textcolor/rule 等）。
+
+## 🧪 开发与测试
+
+脚本按用途分家：`tests/`（可断言的测试）、`tools/verify/`（门禁）、`tools/repro/`（复现探针）。
+
+```bash
+npm test            # 逐文件独立跑 tests/，独立判红；**空跑即失败**（报告器在场却 0 项断言 ⇒ ❔）
+npm run test:all    # 再加上 tools/verify/ 与 tools/repro/（多数需要真卡 / 真会话 / 真浏览器）
+npm run check       # 全仓语法：lib/ + tests/ + tools/，按 ESM 解析
+npm run check:hygiene   # 仓库卫生：不许出现凭据 / 会话记录 / 本机路径 / 临时产物
+npm run ci:local        # 与 CI 工作流同一组命令、同一顺序
+node tools/verify/<脚本名>.mjs   # 单跑某个门禁
+```
+
+> 本机没装 `npm` 时，用等价命令：`node tools/run-each-test.mjs` / `node --no-warnings --experimental-vm-modules tools/check-syntax.mjs`。
+> 想启用提交前卫生检查（每个克隆做一次）：`git config core.hooksPath .githooks`。
 
 ## 安装
 

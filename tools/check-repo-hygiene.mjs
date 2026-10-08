@@ -64,6 +64,40 @@ const looksUtf16 = (b) =>
   (b.length > 1 && ((b[0] === 0xff && b[1] === 0xfe) || (b[0] === 0xfe && b[1] === 0xff))) ||
   (b.length > 3 && ((b[1] === 0 && b[3] === 0) || (b[0] === 0 && b[2] === 0)))
 
+/**
+ * ★ UTF-8 BOM（EF BB BF）：**形态维度**的违规，不是"文本扫不了"。
+ *   为什么要判它（真实理由，见 HANDOFF §44.11）：
+ *     ① 主因 = 「**预先批准逐字内容**」的形态保证会被破坏（本会话真的发生过一次：
+ *        探针提交被工具加了 BOM ⇒ 落地形态 ≠ 被批准的"只改一行"形态）；
+ *     ② 次因 = BOM 是**尚未纳入任何判据的形态维度**（本仓有几十个按源码文本做判据的消费者，
+ *        行首/逐字匹配在第 1 行会有不可见偏差）。今天无实际影响：check-syntax 走 Node 解析，Node 会剥 BOM。
+ *   ⚠️ 一条**已撤回**的旧论证：曾写"BOM 贴着 .gitignore 第一条模式 ⇒ 第 1 行规则静默失效"。
+ *      实测**未复现**（git 2.55.0.windows.3：带 BOM 与不带 BOM 的 .gitignore 命中结果一致）
+ *      ⇒ 凡引用它一律标"未复现（且与 git 版本相关）"。**不要照那条假前提设计判据。**
+ */
+const hasUtf8Bom = (b) => b.length >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf
+
+/**
+ * ★ **形态判据必须以 blob 为准**（与已立的 EOL 纪律一致：形态判据不许只看工作树）。
+ *   工作树可能被 `.gitattributes` / `autocrlf` / `working-tree-encoding` 改写，
+ *   而 blob 才是"真正提交进去的东西"。
+ *   实现：`git ls-files -s` 一次拿全部 blob sha（不逐文件求 sha），再逐个取 blob 的前 3 字节。
+ * @returns {Map<string, Buffer>|null} 仓库相对路径 -> 该文件 blob 的前 3 字节
+ */
+function blobHeads() {
+  const r = spawnSync('git', ['ls-files', '-s', '-z'], { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  if (r.status !== 0) return null
+  const out = new Map()
+  for (const rec of r.stdout.split('\0').filter(Boolean)) {
+    const m = /^\d+ ([0-9a-f]{40}) \d+\t([\s\S]*)$/.exec(rec)
+    if (!m) continue
+    const rel = m[2].replace(/\\/g, '/')
+    const b = spawnSync('git', ['cat-file', 'blob', m[1]], { cwd: REPO, maxBuffer: 64 * 1024 * 1024 })
+    if (b.status === 0 && b.stdout) out.set(rel, b.stdout.subarray(0, 3))
+  }
+  return out
+}
+
 function trackedFiles() {
   const r = spawnSync('git', ['ls-files', '-z'], { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
   if (r.status !== 0) return null
@@ -85,6 +119,9 @@ function stagedFiles() {
  * @returns {{issues: Array, skipped: Array<{file: string, kind: string, why: string}>}}
  */
 export function scanDetailed(files, { readFromIndex = false } = {}) {
+  // ★ 形态判据走 blob（见 blobHeads 注释）；取不到就**降级为空 Map 并出声**，不许静默
+  const BLOB_HEADS = blobHeads()
+  if (!BLOB_HEADS) console.error("⚠️ 拿不到 blob 头（git ls-files -s 失败）⇒ 本轮 BOM 判据**没在做事**")
   const issues = []
   const skipped = []
   for (const rel of files) {
@@ -100,6 +137,9 @@ export function scanDetailed(files, { readFromIndex = false } = {}) {
         buf = fs.readFileSync(path.join(REPO, norm))
       }
     } catch { skipped.push({ file: norm, kind: 'unreadable', why: '读不到工作树内容' }); continue }
+    if (BLOB_HEADS && BLOB_HEADS.has(norm) && hasUtf8Bom(BLOB_HEADS.get(norm))) {
+      issues.push({ file: norm, kind: 'form/utf8-bom', why: 'UTF-8 BOM（EF BB BF）——形态维度：会破坏「逐字批准」的形态核对，也让按源码文本做的判据在第 1 行有不可见偏差' })
+    }
     if (buf.length > MAX_SCAN) { skipped.push({ file: norm, kind: 'oversize', why: '> ' + Math.round(MAX_SCAN / 1024 / 1024) + ' MB（超扫描上限）' }); continue }
     if (looksUtf16(buf)) { skipped.push({ file: norm, kind: 'utf16', why: 'UTF-16（闸门只扫 UTF-8 文本）' }); continue }
     if (looksBinary(buf)) { skipped.push({ file: norm, kind: 'binary', why: '含 NUL（按二进制跳过）' }); continue }

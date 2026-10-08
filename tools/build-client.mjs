@@ -48,6 +48,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { tokenize } from './client-scope.mjs'
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 export const PARTS_DIR = path.join(REPO, 'src', 'client')
@@ -249,6 +250,55 @@ export function refreshedManifest({ parts, built, manifest }) {
   return out
 }
 
+/**
+ * ★ **层级纯度**判据（S2 ③ 的"搬迁前置检查"）。
+ *
+ * 为什么必须有一条：把函数搬到**不同嵌套深度**的模块里会**改变闭包** ——
+ * 深度 d 的代码能看到深度 ≥ d 的外层绑定；跨层搬 = 可见性变化 = 可能直接炸、
+ * 也可能静默改变行为（更糟）。段1 搬的三个都在工厂体（深度 2）；段2/3 的候选散在深度 3/4，
+ * **不能混搬**。
+ *
+ * 判据：每个 `mod-*.js` 模块内部的具名函数声明必须落在**同一个绝对深度**上
+ * （绝对深度 = 清单里该模块的 `depthAtStart` + 它在模块内的相对深度）。
+ * 它不检查"意图"，只检查一个**结构事实** —— 而跨层正是最危险的那类结构事实。
+ *
+ * @param {object} o
+ * @param {Array<{path:string, text:string}>} o.parts
+ * @param {object} o.manifest 提供每个模块的 `depthAtStart`
+ * @returns {{ok:boolean, problems:string[], modules:Array}}
+ */
+export function moduleLevelReport({ parts, manifest }) {
+  const declOf = new Map(((manifest && manifest.parts) || []).map((d) => [d.path, d]))
+  const problems = []
+  const modules = []
+  for (const p of parts) {
+    if (!/(^|\/)mod-[^/]+\.js$/.test(p.path)) continue
+    const decl = declOf.get(p.path)
+    const base = decl ? decl.depthAtStart : undefined
+    const toks = tokenize(p.text)
+    let d = 0
+    const found = []
+    for (let i = 0; i < toks.length; i++) {
+      const t = toks[i]
+      if (t.type === 'punct') { if (t.value === '{') d++; else if (t.value === '}') d--; continue }
+      if (t.type === 'ident' && t.value === 'function') {
+        const idt = toks[i + 1]
+        if (idt && idt.type === 'ident') found.push({ nm: idt.value, rel: d })
+      }
+    }
+    const abs = found.map((f) => (typeof base === 'number' ? base + f.rel : f.rel))
+    const layers = [...new Set(abs)]
+    modules.push({ path: p.path, base, layers, fns: found.map((f, i) => ({ nm: f.nm, rel: f.rel, abs: abs[i] })) })
+    if (layers.length > 1) {
+      problems.push(p.path + ' 内部函数**跨层**（绝对深度 ' + layers.join('/') + '）：'
+        + found.map((f, i) => f.nm + '@' + abs[i]).join(', ') + ' —— 跨层搬会改变闭包可见性')
+    }
+    if (found.length === 0) problems.push(p.path + ' 里没有任何具名函数声明（模块片的语义可疑）')
+  }
+  if (modules.length === 0) problems.push('没有任何 mod-* 模块片（层级纯度无从判定）')
+  return { ok: problems.length === 0, problems, modules }
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2)
 // ★ 入口判定必须用 `pathToFileURL`，**不能**手拼 `'file://' + argv[1]`：
@@ -265,6 +315,17 @@ if (isMain) {
         + '  ' + String(p.bytes).padStart(7) + ' 字节  深度 ' + p.depthAtStart + '->' + p.depthAtEnd)
     }
     console.log('产物：' + manifest.artifact.path + '  ' + manifest.artifact.bytes + ' 字节');
+  }
+  if (argv.includes('--levels')) {
+    const lv = moduleLevelReport({ parts, manifest })
+    for (const m of lv.modules) {
+      console.log('  ' + m.path.padEnd(26) + ' 基准深度 ' + m.base + '  绝对深度层 ' + JSON.stringify(m.layers)
+        + '   ' + m.fns.map((f) => f.nm + '@' + f.abs).join(', '))
+    }
+    if (lv.ok) { console.log('✅ 模块层级纯度：' + lv.modules.length + ' 个模块都是单层的'); process.exit(0) }
+    console.error('❌ 模块层级纯度不成立（跨层搬会改变闭包可见性）：')
+    for (const p of lv.problems) console.error('  · ' + p)
+    process.exit(1)
   }
   const report = freshnessReport({ parts, artifact, manifest })
   if (argv.includes('--check')) {

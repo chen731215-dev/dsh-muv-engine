@@ -14,7 +14,7 @@
 //
 // 运行：node tests/test-client-parts.mjs
 
-import { freshnessReport, loadFromDisk, assemble, refreshedManifest, EXPECTED_PARTS } from '../tools/build-client.mjs'
+import { freshnessReport, loadFromDisk, assemble, refreshedManifest, moduleLevelReport, EXPECTED_PARTS } from '../tools/build-client.mjs'
 import { tokenize } from '../tools/client-scope.mjs'
 
 /** 非空跑下限（实测：12 个分片 / 556776 字节）。低于它说明"什么都没分析到"。 */
@@ -320,6 +320,60 @@ console.log('\n⑤ 生成路径的"刷新清单"逻辑也被判据盯着（不�
   const snapshot = JSON.stringify(c.manifest)
   refreshedManifest({ parts: c.parts, built, manifest: c.manifest })
   check('刷新是纯函数（不改入参清单）', JSON.stringify(c.manifest) === snapshot)
+}
+
+console.log('\n⑥ 模块层级纯度（S2 ③ 的搬迁前置检查：跨层搬会改变闭包可见性）')
+{
+  const lv = moduleLevelReport({ parts, manifest })
+  check('★ 真实仓库：每个 mod-* 模块内部函数都是**单层**的', lv.ok, lv.problems.join(' | '))
+  check('至少存在 1 个模块片（否则"层级纯度"是空判定）', lv.modules.length >= 1, String(lv.modules.length))
+  const mt = lv.modules.find((m) => m.path.endsWith('mod-text.js'))
+  check('mod-text.js 的基准深度 = 2 且三个函数绝对深度全为 2（段1 是同层搬迁）',
+    !!mt && mt.base === 2 && mt.layers.length === 1 && mt.layers[0] === 2,
+    JSON.stringify(mt && { base: mt.base, layers: mt.layers }))
+  check('mod-text.js 里认出了 3 个函数（splitArgs / findClosingFence / readStartTag）',
+    !!mt && mt.fns.length === 3, mt ? mt.fns.map((f) => f.nm).join(',') : 'missing')
+
+  // 反证 ①：模块内部**跨层** ⇒ 必须红并点名
+  {
+    const mixed = [
+      '// mod-x',
+      'function topLevelA() { return 1 }',
+      'function wrapper() {',
+      '  function innerB() { return 2 }',
+      '  return innerB()',
+      '}',
+    ].join('\n')
+    const r = moduleLevelReport({
+      parts: [{ path: 'src/client/mod-x.js', text: mixed }],
+      manifest: { parts: [{ path: 'src/client/mod-x.js', depthAtStart: 2 }] },
+    })
+    check('反证：模块内部跨层（topLevelA@2 与 innerB@3）⇒ 红并点名两个层',
+      r.ok === false && r.problems.some((p) => p.includes('跨层') && p.includes('innerB@3')), r.problems.join(' | '))
+  }
+  // 反证 ②：模块里没有函数声明 ⇒ 语义可疑，必须红
+  {
+    const r = moduleLevelReport({
+      parts: [{ path: 'src/client/mod-y.js', text: 'var onlyAVar = 1\n' }],
+      manifest: { parts: [{ path: 'src/client/mod-y.js', depthAtStart: 2 }] },
+    })
+    check('反证：模块里没有具名函数声明 ⇒ 红（语义可疑）',
+      r.ok === false && r.problems.some((p) => p.includes('没有任何具名函数声明')), r.problems.join(' | '))
+  }
+  // 反证 ③：一个模块都没有 ⇒ 不许空绿
+  {
+    const r = moduleLevelReport({
+      parts: [{ path: 'src/client/part-01.js', text: 'function a() {}\n' }], manifest: { parts: [] },
+    })
+    check('反证：没有任何 mod-* 模块 ⇒ 红（不许"没得判"当绿）',
+      r.ok === false && r.problems.some((p) => p.includes('没有任何 mod-* 模块片')), r.problems.join(' | '))
+  }
+  // 反向自证：单层模块必须过（判据没被收废）
+  check('反向自证：单层模块能过（判据没被收废）',
+    moduleLevelReport({
+      parts: [{ path: 'src/client/mod-z.js', text: 'function a() {}\nfunction b() {}\n' }],
+      manifest: { parts: [{ path: 'src/client/mod-z.js', depthAtStart: 4 }] },
+    }).ok === true)
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)

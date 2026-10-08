@@ -3505,3 +3505,39 @@ package.json 声明 dsh-muv-table: ^0.2.2（dependencies + peerDependencies）�
 ⇒ CI 绿只能说明"与那个 sha 的组合可跑"，**不能认证**"用户从 npm 装到的组合可跑"。
    不要求改设计（本地开发树也是这个模型），但别把 CI 绿当成发布组合的证书。
 ```
+
+### 44.10 `%TEMP%` 下的临时目录：口径与归属（task-11）
+
+**口径（要记的结论）**：本仓测试/门禁在运行时会在 `%TEMP%` 下造临时目录，**它们属易失产物**，
+可随时删。**不要**把它当成"仓库残留"或"门禁缺陷"的证据 —— 本会话已因这件事发生过两次归属误判。
+
+**muv 侧的实测（不是推测）**：本仓 12 个会 `mkdtempSync` 的文件
+（`tools/verify/` 11 个 + `tools/repro/` 1 个）**全部自带清理**（逐文件核过 `rmSync` 存在）。
+`%TEMP%` 下 `muv-*` 的实际残留是 **5 个、每个前缀各 1 个**（来自被中断/被杀的那几次运行），
+**不是堆积形态** —— 堆积会表现为"同一前缀几十上百个"。
+
+**★ 归属更正（重要）**：真正会快速堆积的 `golden` 类**不在本仓**，而在 `dsh-tavern-v2`：
+
+```
+dsh-tavern-v2/tests/golden-prompt.test.js:34               → %TEMP%/dsh-golden-*       实测 175 个
+dsh-tavern-v2/tests/golden-host-assembly.test.js:41        → %TEMP%/dsh-host-golden-*  实测 192 个
+dsh-tavern-v2/tests/golden-host-assembly-rich.test.js:34   → %TEMP%/dsh-golden-rich-*  实测 101 个
+dsh-tavern-v2/tools/check-golden-origin.mjs:161            → %TEMP%/golden-origin-*    实测 0 个（会被清）
+⇒ 合计 468 个（"21 个/6 分钟"那个数是这个来源，不是 muv 的）
+```
+⇒ **要治理的是那边**；muv 侧只有"一次性遗留"，没有堆积问题。
+
+**硬约束（清 `%TEMP%` 时永远遵守）**：
+
+```
+1) **绝不按名字前缀盲扫**。本仓已踩过三次（未归一化比较把主树列进删除表 / 盲扫删了别人的验证残留 /
+   把 verify- 放进前缀白名单误删他人探针）。
+2) 若做自动清理，**只删本次运行自己创建的路径**，且**删前逐条打印清单**，并断言每条都在 %TEMP% 之下。
+3) **绝不碰任何仓**。
+```
+
+**本次按上面约束做了一次清理（只删我自己造的）**：30 条（24 个本次会话的夹具目录
++ 6 个 `dsh-restore-check-<ts>`）⇒ 删前逐条打印 + 越界条目断言 = 0 ⇒ 删 30/30。
+★ `dsh-restore-check-*` 的来源：`tools/verify/verify-handoff-restore.mjs` 每次运行都会 `mkdtemp` 一个
+  `dsh-restore-check-<ts>` 作为恢复目标；它**不会**（也不该）自动删——那正是它要"验证恢复"的产物，
+  需人工清理。⇒ 这一条请**按易失产物对待**，别当成"工具没清干净"。

@@ -3,8 +3,8 @@
   "linesNote": "各分片 lines 之和 = 产物 split('\\n') 的长度；产物的 \\n 个数比它少 1（末行无尾随换行）。",
   "artifact": {
     "path": "lib/client.js",
-    "bytes": 557144,
-    "sha256": "bab685647728f9322a82349cd2015a98e5fc111df7d3fdfa9f5c737f12c73070"
+    "bytes": 557282,
+    "sha256": "fae84cf7b90f4f6e5cc640e3870d11b88d0d111782de6181e900659c289a1cb4"
   },
   "modules": {
     "src/client/mod-text.js": {
@@ -28,6 +28,14 @@
         "insertIntoInput": "f1885722ec50f866aa13aff842559671ee62b1438f9b8536449548d50a6a54c0",
         "messageRootOf": "a18c4bf05c97dee1cce9e26861e102325caf271a3bcdcaa19e8779132995d9d9",
         "muvIsVisibleInDom": "603dd923448ae07fc4ec8551db2f8c3023e2a742e78b76a10e7e8f6f269c53aa"
+      }
+    },
+    "src/client/mod-text-parse.js": {
+      "functions": {
+        "muvIsPageSourceText": "cfaaef04c3ace9cdf7d4ef7d1a8299ef204067ae6d08a33a631dc4cc101a47e1",
+        "extractStatusWrap": "d7e64ac20bb2ba58dfe622120bdcd4d7d3a5d726cab77fc37d7229a5a87839ee",
+        "muvRegExpEscape": "fbb972960de841e9b537aa28be4651dc975601579a27c7a9970c6bd698b48d8e",
+        "muvTsSegmentsOf": "932d5ffeb77bb4047e9c83441ad90d2de01fa88009e28507c0ea27d33259aae5"
       }
     }
   },
@@ -185,20 +193,30 @@
     {
       "path": "src/client/part-13.js",
       "startLine": 7706,
-      "endLine": 8233,
-      "lines": 528,
-      "bytes": 26426,
-      "sha256": "2f349acbd111b1b0f4f21fb983967b625f53a96abb374598898c8e30ffecefd8",
+      "endLine": 8159,
+      "lines": 454,
+      "bytes": 22515,
+      "sha256": "443b4dcffe5a540215e76f47cfe758e20d14f1d66e290da8799d9be6f1e36d30",
+      "depthAtStart": 4,
+      "depthAtEnd": 4
+    },
+    {
+      "path": "src/client/mod-text-parse.js",
+      "startLine": 8160,
+      "endLine": 8220,
+      "lines": 61,
+      "bytes": 2630,
+      "sha256": "e143bc73d11b9cc9c7219dd5488fb599d982ddba632349405f59905515d95f27",
       "depthAtStart": 4,
       "depthAtEnd": 4
     },
     {
       "path": "src/client/part-14.js",
-      "startLine": 8234,
-      "endLine": 8840,
-      "lines": 607,
-      "bytes": 34146,
-      "sha256": "84aaa535df89284c60251cc42f5c3225970969ccbb1f3f5226f2e3abfaeb5f9b",
+      "startLine": 8221,
+      "endLine": 8844,
+      "lines": 624,
+      "bytes": 35565,
+      "sha256": "092b76e60620e5dcedbd34b1054eef433026fd85927bc5d93e77ce455a744d95",
       "depthAtStart": 4,
       "depthAtEnd": 0
     }

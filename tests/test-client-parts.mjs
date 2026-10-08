@@ -60,9 +60,19 @@ export function boundaryReport({ partTexts, fullText }) {
       problems.push('边界 ' + b + ' 劈开了一个 token（切在字符串/模板/正则/注释中间）')
     }
     let prev = null
-    for (const t of toks) { if (t.end <= b) prev = t; else break }
-    if (!prev || !(prev.type === 'punct' && (prev.value === ';' || prev.value === '}'))) {
-      problems.push('边界 ' + b + ' 不落在语句之间（上一 token = ' + (prev ? prev.value : '无') + '）')
+    // ★ 取"前一个**有效** token"时**跳过注释**：注释不是语句，边界落在一条完整注释之后
+    //   仍然算"落在语句之间"。原实现把注释也当 token ⇒ 边界前面若有一条 `/** … */`
+    //   会被误判成"不落在语句之间"（实测：段4 的模块插入点正好紧跟一条块注释，报红的就是它）。
+    //   "切在注释**内部**"那种真错由上面的 `insideToken` 管，不会被这条放宽漏掉。
+    for (const t of toks) {
+      if (t.end <= b) { if (t.type !== 'comment') prev = t; continue }
+      break
+    }
+    // 判红条件：**前面确有一个有效 token**，且它不是语句终结符（`;` / `}`）。
+    // ★ 前面**没有**任何有效 token 时不算红 —— 那是"文件/块的起点"，本来就落在语句之间
+    //   （原实现写的是 `!prev || …`，把"没有前驱"也判红 ⇒ 实测：边界在开头时误红）。
+    if (prev && !(prev.type === 'punct' && (prev.value === ';' || prev.value === '}'))) {
+      problems.push('边界 ' + b + ' 不落在语句之间（上一有效 token = ' + prev.value + '）')
     }
   }
   for (const [i, p] of partTexts.entries()) if (!p) problems.push('第 ' + (i + 1) + ' 片为空')
@@ -268,6 +278,15 @@ console.log('\n③ 分片边界合法性（"每片独立解析"不可满足 ⇒ 
   // 反证 ③：空分片 ⇒ 报红
   check('反证：空分片 ⇒ 报红',
     boundaryReport({ partTexts: ['', 'x\n'], fullText: 'x\n' }).ok === false)
+  // ★ 反证（段4 实测踩到的形态）：边界紧跟一条**完整注释** ⇒ 算合法（注释是透明的）
+  check('★ 边界紧跟一条完整块注释 ⇒ **合法**（注释不算"上一个语句 token"）',
+    boundaryReport({
+      partTexts: ['/** 说明 */\n', 'const a = 1;\n'],
+      fullText: '/** 说明 */\nconst a = 1;\n',
+    }).ok === true)
+  // 反向：上一有效 token 是运算符 ⇒ 仍必须红（放宽注释后没有把这条一起放掉）
+  check('反向：上一**有效** token 是 `+` ⇒ 仍必须红（放宽注释没把真错一起放过）',
+    boundaryReport({ partTexts: ['const a = 1 +\n', '2\n'], fullText: 'const a = 1 +\n2\n' }).ok === false)
   // 反向自证：合法切法必须过（判据没被收废）
   check('反向自证：合法切法能过（判据没被收废）',
     boundaryReport({ partTexts: ['const a = 1;\n', 'const b = 2;\n'], fullText: 'const a = 1;\nconst b = 2;\n' }).ok === true)

@@ -1,3 +1,65 @@
+
+        /**
+         * 隐藏正文里**与 iframe 内容重复**的整页源码块 —— ST 给残留 `<pre><code>`
+         * 加 `hidden!` 的等价物（我们跨源进不去子文档，只能在父页侧隐藏）。
+         *
+         * 只动 `<pre>`：DSH 的 markdown 把 ``` 围栏渲染成 `<pre><code>`，
+         * 而"裸文档"必然是这么来的。
+         *
+         * ★ 不隐藏的两类（保守）：
+         *   · 内容不像整页文档的普通代码块（判据见 `muvIsPageSourceText`）；
+         *   · 落在**我们自己的产物**里面的 `<pre>`（变量折叠卡 / 摘要框里的 `<pre>`
+         *     是我们渲染出来的，藏掉等于把刚渲染的东西又吞了）。
+         *
+         * 隐藏用**内联 `display:none!important`** 而不是 `hidden` 属性：DSH 与卡
+         * 都可能给 `pre` 设过 `display`，属性会被 CSS 盖掉。同时打
+         * `data-muv-src-hidden` 记号，让门禁（与以后的人）数得到。
+         * @param {Element} body
+         * @returns {number} 隐藏了几块
+         */
+        function muvHidePageSourceBlocks(body) {
+          var n = 0
+          try {
+            if (!body || !body.querySelectorAll) return 0
+            var pres = body.querySelectorAll('pre')
+            for (var i = 0; i < pres.length; i++) {
+              var el = pres[i]
+              try {
+                if (el.getAttribute('data-muv-src-hidden')) { n++; continue }
+                if (el.closest && el.closest('[class*="muv-"]')) continue
+              } catch (_) { }
+              var t = ''
+              try { t = el.textContent || '' } catch (_) { t = '' }
+              if (!muvIsPageSourceText(t)) continue
+              // ★ 第 40 轮：只隐藏 `<pre>` 会留下 DSH 的代码块**外壳** —— 那个外壳有
+              //   圆角底 + 顶部横幅（横幅里写的就是围栏语言名；卡源码是 ```html ⇒
+              //   横幅写着 **html**）+ 复制按钮 ⇒ 用户看到"一个写着 html 的空框"。
+              //   所以这里**连外壳一起隐藏**，但只在「这条消息已经有卡 iframe」时：
+              //   没有 iframe 说明卡没渲染成功，那块源码是用户唯一能看到的卡内容，
+              //   藏掉等于吞内容（本项目栽过的过度修复）；有 iframe 才说明是**重复**。
+              //   ★ 整段内联（不新开函数）：`buildFrom` 只抽依赖表里列出的函数，
+              //     多一层声明在 `test-client-render` 的变异对照臂里会是 ReferenceError。
+              var target = el
+              try {
+                if (el.closest) {
+                  var msg = el.closest('[class*="_markdown_"]')
+                  if (msg && msg.querySelector &&
+                      msg.querySelector('.muv-statusbar-wrap, iframe.muv-iframe')) {
+                    var shell = el.closest('.md-code-block')
+                    if (shell && shell.querySelectorAll('pre').length <= 1) target = shell
+                  }
+                }
+              } catch (_) { target = el }
+              try {
+                target.setAttribute('data-muv-src-hidden', '1')
+                target.style.setProperty('display', 'none', 'important')
+                n++
+              } catch (_) { }
+            }
+          } catch (_) { }
+          return n
+        }
+
         /**
          * Decorate one message.
          *
@@ -173,28 +235,6 @@
          * @param {string} html
          * @returns {string|null}
          */
-        function extractStatusWrap(html) {
-          var s = String(html || '')
-          // ★ 前缀匹配，不带闭合引号（2026-09-23k）：wrap 打标唯一化后整页文档
-          //   产物是 `<div class="muv-statusbar-wrap muv-fullpage">`，精确串
-          //   `'<div class="muv-statusbar-wrap"'` 匹配不上 ⇒ cardMatch 落空 ⇒
-          //   走 applyDecoratedHtml 的整条替换兜底，正文 markdown 被塌平
-          //   （dsh-live31 真机实锤：农场问候楼 rectW 1576 即此因）。
-          //   后面的 `>` 配平不依赖 class 串内容，放宽安全。
-          var open = s.indexOf('<div class="muv-statusbar-wrap')
-          if (open < 0) return null
-          var gt = s.indexOf('>', open)
-          if (gt < 0) return null
-          var depth = 1
-          var re = /<\/?div\b[^>]*>/gi
-          re.lastIndex = gt + 1
-          var m
-          while ((m = re.exec(s))) {
-            depth += (m[0].charAt(1) === '/') ? -1 : 1
-            if (depth === 0) return s.slice(open, re.lastIndex)
-          }
-          return null
-        }
 
         /**
          * 整条替换兜底的**段落保持**（2026-09-23k，"一大坨"修复）。
@@ -288,9 +328,6 @@
          * @param {string} s
          * @returns {string}
          */
-        function muvRegExpEscape(s) {
-          return String(s).replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&')
-        }
 
         /**
          * 逐字匹配、但**空白处放宽**的正则源码。
@@ -325,26 +362,6 @@
          * @param {string} html
          * @returns {Array<{kind:string, raw:string, look:string, html:string}>}
          */
-        function muvTsSegmentsOf(html) {
-          var out = []
-          try {
-            var s = String(html || '')
-            if (s.indexOf('data-muv-ts=') < 0) return out
-            var holder = document.createElement('div')
-            holder.innerHTML = s
-            var nodes = holder.querySelectorAll('[data-muv-ts]')
-            for (var i = 0; i < nodes.length; i++) {
-              var el = nodes[i]
-              out.push({
-                kind: el.getAttribute('data-muv-ts') || '',
-                raw: el.getAttribute('data-muv-ts-raw') || '',
-                look: el.getAttribute('data-muv-ts-look') || '',
-                html: el.outerHTML
-              })
-            }
-          } catch (_) { return [] }
-          return out
-        }
 
         /**
          * 把正文里的原文段逐段换成文本级状态栏。任一段找不到落点就整体放弃。

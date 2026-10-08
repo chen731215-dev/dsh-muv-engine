@@ -140,7 +140,7 @@ function caseProbe(id) {
     'window.addEventListener("load",function(){s();setTimeout(s,400)})})();</' + 'script>'
 }
 
-// ST 的 srcdoc reset，逐字取自 `C:\_st_spec\SPEC.md` §5.3 —— 这是**外部真值**，
+// ST 的 srcdoc reset，逐字取自开发机上的 `_st_spec/SPEC.md` §5.3（属易失产物，不在仓内） —— 这是**外部真值**，
 // 不是我们从自己源码里抄的，所以它能当"有没有对上 ST"的判据。
 const ST_RESET_RE = [
   ['box-sizing:border-box', /\*[^{]*\{[^}]*box-sizing\s*:\s*border-box/],

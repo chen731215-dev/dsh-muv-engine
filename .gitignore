@@ -25,6 +25,8 @@ desktop.ini
 _cm.txt
 _commit-msg.txt
 
+_scratch/
+
 # 调试残留（历次 .tmp-xxx 探针脚本，用完即弃）
 .tmp-*
 _hfix-*

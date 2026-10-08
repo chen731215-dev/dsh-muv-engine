@@ -69,6 +69,18 @@ const SKIP_PARTS = !!process.env.MUV_MOVE_SKIP_PARTS_INSERT
 //   —— **已删除**（Lead 裁定 A）：它与"**禁死代码**/判据的分支必须被真跑一次"冲突，且它产的
 //   "全绿但产物被重排"**永远不会红**、**无任何测试覆盖** ⇒ 留着就是一句活的误导。
 //   若将来要 B4（"不重算该片元数据"⇒ 连续性/行数和必破 ⇒ 必然红），**按新语义重加，并先证明会红**。
+//
+// ★★ **B 族**：三条**语义真实**的故障注入。★ 它们**仅供常驻反证使用** —— **正常使用不会设它们**
+//    （`tests/test-move-segment.mjs` 里逐支断言"注入 ⇒ 必须红并点名 + 命中次数恰好 1"）：
+//      B1 `MUV_MOVE_NO_DELETE=1`     ⇒ 搬了**不删原文**（copy 而非 move）⇒ 应由 `--uniqueness` 红并点名
+//      B2 `MUV_MOVE_NO_BUMP=1`       ⇒ **不 bump EXPECTED_PARTS** ⇒ 应由 `--check`（分片数不符）红并点名
+//      B3 `MUV_MOVE_VALUE_CAPTURE=1` ⇒ 接线写成**值捕获**（`x: MUV_X`）⇒ 应由 `moduleWiringCaptureReport` 红并点名
+//   ★ 口径：**若某支不红 ⇒ 结论是"缺一条判据"，不是"再换个坏样本"** ⇒ 补判据，不许绕过去。
+//   ★ 口径（判"某分支是否还存在"）：看**非注释命中数 = 0**；同名串只出现在注释里属**历史留档**，不算存在。
+//     （这条来自一次真实误报：自查把注释里的字面量算成了"仍在读该环境变量"。）
+const NO_DELETE = !!process.env.MUV_MOVE_NO_DELETE
+const NO_BUMP = !!process.env.MUV_MOVE_NO_BUMP
+const VALUE_CAPTURE = !!process.env.MUV_MOVE_VALUE_CAPTURE
 
 function fail(msg) { console.error('❌ move-segment：' + msg); process.exit(1) }
 const WIRING = allOf('wiring').map((s) => {
@@ -124,12 +136,12 @@ const modText = [
   indent + '// ── ' + MOD.replace(/\.js$/, '') + '：' + FN + '（档 B：**显式接线**；由 move-segment 生成）──',
   indent + '/* wiring */',
   indent + 'const __wiring = {',
-  ...WIRING.map((w) => indent + '  ' + w.key + ': () => ' + w.target + ','),
+  ...WIRING.map((w) => indent + '  ' + w.key + ': ' + (VALUE_CAPTURE ? '' : '() => ') + w.target + ','),   // B3
   indent + '}',
   ...body.split('\n'),
 ].join('\n') + '\n'
 if (!/const\s+__wiring\s*=\s*\{[\s\S]*?\n\s*\}\s*$/.test(modText)) fail('生成的接线块不在**片末**（现有判据要求块在片末）')
-const newHostText = hostText.replace(fnText + '\n', '')
+const newHostText = NO_DELETE ? hostText : hostText.replace(fnText + '\n', '')   // B1：copy 而非 move
 if (newHostText === hostText) fail('从承载片里移除函数失败（逐字匹配没命中）')
 
 // ── ★ 重切分：新 parts 顺序 + 逐片元数据（**显式职责**）──
@@ -178,6 +190,8 @@ const textOf = (p) => (p.path === modPath ? modText : (p.path === host.path ? ne
   }
 }
 
+const INJ = [SKIP_PARTS && 'SKIP_PARTS', NO_DELETE && 'NO_DELETE', NO_BUMP && 'NO_BUMP', VALUE_CAPTURE && 'VALUE_CAPTURE'].filter(Boolean)
+console.log('  注入生效：' + (INJ.length ? INJ.join(',') + '  ★' : '（无注入）'))
 console.log('① 分片：' + host.path + ' 移除 ' + fnText.split('\n').length + ' 行；新增 ' + modPath
   + '（' + modText.split('\n').length + ' 行）' + (SKIP_PARTS ? '   ★★ 故障注入：**跳过 parts 插入**' : ''))
 console.log('   parts 顺序：' + ordered.map((p) => p.path.replace('src/client/', '')).join(' , '))
@@ -192,7 +206,7 @@ fs.writeFileSync(path.join(PARTS_DIR, MOD), modText)
   const bt0 = fs.readFileSync(BUILD, 'utf8')
   const before = 'export const EXPECTED_PARTS = ' + EXPECTED_PARTS
   if (!bt0.includes(before)) fail('build-client.mjs 里找不到 `' + before + '`')
-  fs.writeFileSync(BUILD, bt0.replace(before, 'export const EXPECTED_PARTS = ' + (EXPECTED_PARTS + 1)))
+  if (!NO_BUMP) fs.writeFileSync(BUILD, bt0.replace(before, 'export const EXPECTED_PARTS = ' + (EXPECTED_PARTS + 1)))   // B2
 }
 {
   const mp = path.join(PARTS_DIR, 'MANIFEST.json')

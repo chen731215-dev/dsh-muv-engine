@@ -100,6 +100,48 @@ console.log('\n③ fail-closed 守卫：脏工作树 ⇒ **拒绝运行**（不�
   dropSandbox(d)
 }
 
+console.log('\n⑤ ★ B1：搬了**不删原文**（copy 而非 move）⇒ 必须由 `--uniqueness` 红并点名')
+{
+  const d = makeSandbox('b1')
+  const r = runGen(d, { MUV_MOVE_NO_DELETE: '1' })
+  const out = String(r.stdout || '') + String(r.stderr || '')
+  check('★ 命中自证：注入横幅含 NO_DELETE，恰好 1 次', (out.match(/注入生效：[^\n]*NO_DELETE/g) || []).length === 1,
+    (out.match(/注入生效：[^\n]*/g) || []).join(' / ').slice(0, 120))
+  const j = judge(d, '--uniqueness')
+  const o = String(j.stderr || '') + String(j.stdout || '')
+  check('★ --uniqueness 红（声明恰好 1 次）并点名函数/模块',
+    j.status !== 0 && /ensureStatusCss|声明/.test(o), 'exit=' + j.status + '  ' + o.slice(0, 200))
+  dropSandbox(d)
+}
+
+console.log('\n⑥ ★ B2：**不 bump `EXPECTED_PARTS`** ⇒ 必须由 `--check`（分片数不符）红并点名')
+{
+  const d = makeSandbox('b2')
+  const r = runGen(d, { MUV_MOVE_NO_BUMP: '1' })
+  const out = String(r.stdout || '') + String(r.stderr || '')
+  check('★ 命中自证：注入横幅含 NO_BUMP，恰好 1 次', (out.match(/注入生效：[^\n]*NO_BUMP/g) || []).length === 1)
+  const j = judge(d, '--check')
+  const o = String(j.stderr || '') + String(j.stdout || '')
+  check('★ --check 红（分片数 ≠ 期望）并点名', j.status !== 0 && /分片数.*≠.*期望|EXPECTED_PARTS/.test(o),
+    'exit=' + j.status + '  ' + o.slice(0, 200))
+  dropSandbox(d)
+}
+
+console.log('\n⑦ ★ B3：接线写成**值捕获**（`x: MUV_X`）⇒ 必须由 `moduleWiringCaptureReport` 红并点名')
+{
+  const d = makeSandbox('b3')
+  const r = runGen(d, { MUV_MOVE_VALUE_CAPTURE: '1' })
+  const out = String(r.stdout || '') + String(r.stderr || '')
+  check('★ 命中自证：注入横幅含 VALUE_CAPTURE，恰好 1 次', (out.match(/注入生效：[^\n]*VALUE_CAPTURE/g) || []).length === 1)
+  // 该判据没有 CLI 开关 ⇒ 直接对**沙盒里**的 build-client 求值（loadFromDisk 的 REPO 由模块位置推导 = 沙盒）
+  const bc = await import(pathToFileURL(path.join(d, 'tools', 'build-client.mjs')).href)
+  const loaded = bc.loadFromDisk()
+  const w = bc.moduleWiringCaptureReport({ parts: loaded.parts, manifest: loaded.manifest })
+  check('★ 判据红（值捕获/顶层求值）并点名该模块',
+    w.ok === false && w.problems.some((p) => /值捕获|顶层求值/.test(p)), JSON.stringify(w.problems).slice(0, 220))
+  dropSandbox(d)
+}
+
 console.log('\n④ 非空跑下限 + 自证清理（hermetic）')
 check('★ 断言数 ≥ ' + MIN_ASSERTIONS + '（否则"全部通过"可能只是"什么都没跑"）', pass + fail >= MIN_ASSERTIONS,
   '实际 ' + (pass + fail))

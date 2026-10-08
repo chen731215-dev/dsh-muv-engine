@@ -78,7 +78,9 @@ const SKIP_PARTS = !!process.env.MUV_MOVE_SKIP_PARTS_INSERT
 //   ★ 口径：**若某支不红 ⇒ 结论是"缺一条判据"，不是"再换个坏样本"** ⇒ 补判据，不许绕过去。
 //   ★ 口径（判"某分支是否还存在"）：看**非注释命中数 = 0**；同名串只出现在注释里属**历史留档**，不算存在。
 //     （这条来自一次真实误报：自查把注释里的字面量算成了"仍在读该环境变量"。）
-const TAMPER_LOOKUP = !!process.env.MUV_MOVE_TAMPER_LOOKUP   // 守卫反证用：把待查文本改坏 ⇒ guard 必响
+const TAMPER_LOOKUP = !!process.env.MUV_MOVE_TAMPER_LOOKUP   // 守卫反证：出现 0 次
+// ★ Lead 补漏：计数守卫的另一侧 —— 只造"该原文出现 2 次"的样本 ⇒ 必须 fail-closed 并点名次数
+const DUP_TARGET = !!process.env.MUV_MOVE_DUP_TARGET   // 守卫反证用：把待查文本改坏 ⇒ guard 必响
 const NO_DELETE = !!process.env.MUV_MOVE_NO_DELETE
 const NO_BUMP = !!process.env.MUV_MOVE_NO_BUMP
 const VALUE_CAPTURE = !!process.env.MUV_MOVE_VALUE_CAPTURE
@@ -147,7 +149,10 @@ if (!/const\s+__wiring\s*=\s*\{[\s\S]*?\n\s*\}\s*$/.test(modText)) fail('生成�
 //   "移除"只删 1 处，而"不是原样就算过"的守卫会**放行** ⇒ 留下一个**半搬运**的产物（静默）。
 //   ⇒ 先数次数，不为 1 就**响亮**失败；再算 `wouldRemove`、再按注入决定是否施加。
 const fnNeedle = TAMPER_LOOKUP ? (fnText + '\n// 故意改坏（守卫反证）') : (fnText + '\n')
-const beforeCnt = hostText.split(fnNeedle).length - 1
+// ★ 计数守卫的**另一侧**（Lead 补漏）：TAMPER 只覆盖"出现 0 次"；这里覆盖"**出现 ≥2 次**"。
+//   `String.replace` 只替换**首次**出现 ⇒ 若有重复副本会留下**半搬运**产物（静默）⇒ 必须响亮。
+const countText = DUP_TARGET ? (hostText + fnNeedle + fnNeedle) : hostText
+const beforeCnt = countText.split(fnNeedle).length - 1
 if (beforeCnt !== 1) fail('承载片里该函数原文出现 ' + beforeCnt + ' 次（要求**恰好 1 次**）——'
   + '改错地方 / 有重复副本都会让"搬运"变成半搬运，故在此 fail-closed')
 // ★ 守卫的**本义**是"该片里必须能找到这段逐字原文"（防"改错了地方"），而**不是**"移除动作必须被施加" ⇒
@@ -205,7 +210,7 @@ const textOf = (p) => (p.path === modPath ? modText : (p.path === host.path ? ne
   }
 }
 
-const INJ = [SKIP_PARTS && 'SKIP_PARTS', NO_DELETE && 'NO_DELETE', NO_BUMP && 'NO_BUMP', VALUE_CAPTURE && 'VALUE_CAPTURE', TAMPER_LOOKUP && 'TAMPER_LOOKUP'].filter(Boolean)
+const INJ = [SKIP_PARTS && 'SKIP_PARTS', NO_DELETE && 'NO_DELETE', NO_BUMP && 'NO_BUMP', VALUE_CAPTURE && 'VALUE_CAPTURE', TAMPER_LOOKUP && 'TAMPER_LOOKUP', DUP_TARGET && 'DUP_TARGET'].filter(Boolean)
 console.log('  注入生效：' + (INJ.length ? INJ.join(',') + '  ★' : '（无注入）'))
 console.log('① 分片：' + host.path + ' 移除 ' + fnText.split('\n').length + ' 行；新增 ' + modPath
   + '（' + modText.split('\n').length + ' 行）' + (SKIP_PARTS ? '   ★★ 故障注入：**跳过 parts 插入**' : ''))

@@ -71,8 +71,21 @@ const ALLOWED = [
     reason: '构建/判据工具：**必须**直读产物做逐字节比较 —— 它**不能**走收口点，'
       + '因为收口点返回的是**归一化后**的文本，而逐字节比较一旦归一化就不是逐字节了',
   },
+  // ★ P5（审核方）：档 B 的接线生成器若需要读工作树 ⇒ **必须显式加白名单并给出理由，且每次增要报**。
+  //   下面两条是 task-16 新增、落在 `lib/client.js` 上的**新消费者** —— 由本判据**当场点名**抓出来的（实弹）：
+  {
+    path: 'tools/move-segment.mjs',
+    reason: '搬迁生成器（task-16）：经 `build-client.mjs` 的 `loadFromDisk()` 直读产物与分片 ——'
+      + '它要按"清单声明制"**重切分**（算 startLine/endLine/深度、把新片插进 parts），'
+      + '而收口点返回的是**归一化**文本，做不了逐字节与行区间这两件事',
+  },
+  {
+    path: 'tests/test-move-segment.mjs',
+    reason: '该生成器的**常驻反证**：在 %TEMP% 沙盒里读**沙盒那份** `lib/client.js` 做无损证据'
+      + '（函数恰好出现 1 次）—— 读的是沙盒产物、不是本仓产物，故不能走收口点',
+  },
 ]
-const EXPECTED_ALLOWED = 3
+const EXPECTED_ALLOWED = 5
 
 /** 会被判成"读取 client.js 文本"的 API 名（F1–F3）。 */
 const READER_APIS = new Set(['readFileSync', 'readFile', 'readSourceText'])

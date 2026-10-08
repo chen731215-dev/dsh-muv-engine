@@ -66,8 +66,13 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ALLOWED = [
   { path: 'tests/test-client-source.mjs', reason: '收口点本体（测试侧）：clientSource() 是唯一读口' },
   { path: 'tools/verify/verify-shared.mjs', reason: '收口点本体（工具侧）：readEngineSource() 是唯一读口' },
+  {
+    path: 'tools/build-client.mjs',
+    reason: '构建/判据工具：**必须**直读产物做逐字节比较 —— 它**不能**走收口点，'
+      + '因为收口点返回的是**归一化后**的文本，而逐字节比较一旦归一化就不是逐字节了',
+  },
 ]
-const EXPECTED_ALLOWED = 2
+const EXPECTED_ALLOWED = 3
 
 /** 会被判成"读取 client.js 文本"的 API 名（F1–F3）。 */
 const READER_APIS = new Set(['readFileSync', 'readFile', 'readSourceText'])

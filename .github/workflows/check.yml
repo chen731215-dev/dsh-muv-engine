@@ -63,6 +63,9 @@ jobs:
       - name: 仓库卫生（不许出现凭据 / 会话记录 / 本机路径 / 临时产物）
         run: npm run check:hygiene
 
+      - name: 客户端产物与分片逐字节一致（分片是源、产物是派生物；不许直接编辑产物）
+        run: npm run check:client-freshness
+
 # ⚠️ 本工作流**刻意没有** `continue-on-error` / `|| true` 这类降级写法：
 #   免费送出来的绿灯比红灯更危险。有一批门禁（tools/verify/ + tools/repro/，
 #   需要真 Edge / 真卡 / 真会话）在 CI 环境里注定跑不动，它们**没有被塞进 CI**，

@@ -1,0 +1,287 @@
+// **作用域完备性**的常驻测试 —— muv-S2（拆 client.js）的接线判据。
+//
+// ── 为什么必须有这个文件（真实翻车，同栈刚发生的）────────────────────────
+// `dsh-tavern-v2` 把路由搬进新模块时写的"静态契约"是
+// **解构名集合 == 调用点键集合** —— 它比的是**自己枚举的两份清单**。
+// 于是有个名字（`json`，被用了 105 处）**两侧都没有写**，契约恒等地看不见它，
+// 一路全绿，跑到冒烟才炸 `ReferenceError: json is not defined`。
+// ⇒ 教训：**"自己枚举清单去比对"的契约，对"清单本身漏了"这件事是盲的。**
+//
+// 所以这里的判据是**反过来的**：从**函数体**里枚举自由标识符，逐个要求能解析到
+// （形参 / 区内局部 / 组内一起搬走的函数 / 真全局 / 显式接线）；
+// **任何无法分类的名字 ⇒ 直接失败并点名**，不许静默丢弃。
+//
+// 本文件测的是**判据本身**，因此除了"现在的代码是干净的"，还必须证明它**真的会红**：
+//   ① 删掉一个接线名 ⇒ 判据报红**并点名那个标识符**（三类破坏之①）；
+//   ② 注入一个不可分类的名字 ⇒ 判据**直接失败**（三类破坏之②）；
+//   ③ 判据**落在 tests/ 且被 `npm test` 扫到**（三类破坏之③ —— "判据只活在 %TEMP% 里"
+//      与"契约比的是自己枚举的清单"是同一种失效）；
+//   ④ 遮蔽（内层 `var x` 不得顶掉外层的自由 `x`）—— 这是判据自己最容易静默蒙混的地方。
+//
+// 运行：node tests/test-client-scope-completeness.mjs
+
+import { readFileSync } from 'node:fs'
+import { findFunctions, mutateOnce, scopeReport, tokenize, wiringReport } from '../tools/client-scope.mjs'
+
+const SRC = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+
+let pass = 0, fail = 0
+function check(name, cond, detail) {
+  if (cond) { pass++; console.log('  OK   ' + name) }
+  else { fail++; console.log('  FAIL ' + name + (detail ? '  -> ' + detail : '')) }
+}
+
+const sameSet = (a, b) => a.length === b.length && a.slice().sort().join('\u0000') === b.slice().sort().join('\u0000')
+
+/**
+ * 待迁移的分组。
+ *
+ * `entries` = **会被一起搬走**的函数（组内互相引用算 local，不需要额外接线）。
+ * `required` = **从函数体反推的**必须接线清单 —— 这个清单有测试盯着：
+ *   若被搬的代码新增了一个依赖而没人接线，下面的"反推 == 声明"那条会当场报红。
+ *   ⇒ 这就是"不许誊抄清单"：声明必须与反推结果逐字一致。
+ */
+const MIGRATION_SETS = [
+  {
+    label: '① KV 命名空间（会话栅栏）',
+    entries: ['muvKvKeyOf'],
+    required: ['currentSessionId'],
+    live: [],
+  },
+  {
+    label: '② 消息取样 + 可见性护栏',
+    entries: ['messageRootOf', 'muvIsVisibleInDom', 'messageTargets'],
+    required: ['MSG_BODY_RE'],
+    live: [],
+  },
+  {
+    label: '③ 权威楼号',
+    entries: ['muvTurnOfEl', 'muvSessionTurnsNow'],
+    required: [],
+    live: [],
+  },
+  {
+    label: '④ 装饰主循环',
+    entries: ['muvDepthFromLaterCount', 'muvTurnOfEl', 'muvSessionTurnsNow', 'decorateMessages'],
+    // `_decorating` 是**活变量**（会被回写）⇒ 必须走访问器，不能当只读快照接线
+    required: ['messageTargets', '_decorateOne', '_decorating'],
+    live: ['_decorating'],
+  },
+]
+
+console.log('\n【一】现在的代码：每个分组的自由标识符都已被分类（missing 为空）')
+for (const s of MIGRATION_SETS) {
+  const r = wiringReport({ src: SRC, entries: s.entries, provided: new Set(s.required) })
+  check(s.label + '：不漏名字（missing 为空）', r.missing.length === 0, r.missing.join(', '))
+}
+
+console.log('\n【二】反推 == 声明（不许誊抄清单；新增依赖而没接线 ⇒ 当场报红）')
+for (const s of MIGRATION_SETS) {
+  const derived = wiringReport({ src: SRC, entries: s.entries, provided: new Set() }).missing
+  check(s.label + '：从函数体反推出的必需清单 == 声明的清单',
+    sameSet(derived, s.required), '反推=' + JSON.stringify(derived) + ' 声明=' + JSON.stringify(s.required))
+}
+
+console.log('\n【三】三类破坏之①：删掉任意一个接线名 ⇒ 报红**并点名那个标识符**')
+let deletions = 0
+for (const s of MIGRATION_SETS) {
+  for (const name of s.required) {
+    const without = new Set(s.required)
+    without.delete(name)
+    const r = wiringReport({ src: SRC, entries: s.entries, provided: without })
+    deletions++
+    check(s.label + '：删掉接线「' + name + '」⇒ 报红且点名 ' + name,
+      r.missing.includes(name), 'missing=' + JSON.stringify(r.missing))
+    // 顺带证明它给得出诊断位置（"只报不通过、不点名"视为不达标）
+    const hint = r.where.get(name)
+    check(s.label + '：对「' + name + '」给出可诊断的位置说明',
+      typeof hint === 'string' && hint.length > 0, String(hint))
+  }
+}
+
+console.log('\n【四】三类破坏之②：不可分类的名字 ⇒ 工具**直接失败**（不许静默丢弃）')
+{
+  // 既不是形参/区内局部，也不是模块级绑定，也不是真全局 —— 就是一根断线
+  const SYNTH = [
+    'window.__ModuleLoader__.load({',
+    '  factory: (require) => {',
+    '    function alpha() {',
+    '      return beta() + ghostName',
+    '    }',
+    '    function beta() { return 1 }',
+    '    return {}',
+    '  }',
+    '})',
+  ].join('\n')
+  const rep = scopeReport({ src: SYNTH, name: 'alpha' })
+  check('悬空名被**点名**（不是被丢掉）', rep.unresolved.includes('ghostName'), JSON.stringify(rep.buckets))
+  check('区内/外层的合法名字没有被误伤', rep.buckets.local.includes('beta') || rep.buckets.enclosing.includes('beta'),
+    JSON.stringify(rep.buckets))
+  const wr = wiringReport({ src: SYNTH, entries: ['alpha'], provided: new Set() })
+  check('搬迁判据同样点名它', wr.missing.includes('ghostName'), JSON.stringify(wr.missing))
+  check('并说明"前源码里也找不到"（真悬空）', /真·悬空|找不到/.test(String(wr.where.get('ghostName'))),
+    String(wr.where.get('ghostName')))
+
+  // 反向：把它接上线之后必须转绿 —— 证明上面那条红是"因为没接线"，不是判据抽风
+  const wired = wiringReport({ src: SYNTH, entries: ['alpha'], provided: new Set(['ghostName', 'beta']) })
+  check('把它接上线之后转绿（红的确实是"没接线"）', wired.missing.length === 0, wired.missing.join(','))
+}
+
+console.log('\n【五】遮蔽：内层 var 不得顶掉外层的自由名（判据自己最易静默蒙混处）')
+{
+  const MASK = [
+    '(function () {',
+    '  function outer() {',
+    '    function inner() { var shadow = 2; return shadow }',
+    '    return inner() + shadow',
+    '  }',
+    '})()',
+  ].join('\n')
+  const rep = scopeReport({ src: MASK, name: 'outer' })
+  // ★ 判据按**引用**判、不按名字去重，所以"内层是局部 / 外层是自由"会同时成立 ——
+  //   这正是我们要的：内层那处不能把外层那处顶掉。按名字去重的实现会在这一格静默蒙混。
+  check('内层 `var shadow` 那一处被认成 inner 的局部',
+    rep.free.some((r) => r.name === 'shadow' && r.local === true), JSON.stringify(rep.free))
+  check('★ outer 里的 `shadow` 那一处是**自由名**，必须进 unresolved（遮蔽不许顶掉它）',
+    rep.free.some((r) => r.name === 'shadow' && r.local === false) && rep.unresolved.includes('shadow'),
+    JSON.stringify(rep.buckets))
+  const wr = wiringReport({ src: MASK, entries: ['outer'], provided: new Set() })
+  check('搬迁判据同样点名外层的 shadow', wr.missing.includes('shadow'), JSON.stringify(wr.missing))
+}
+
+console.log('\n【六】词法：字符串/注释里的"同名函数"和括号不许骗过提取器')
+{
+  // 本仓真实存在的形态：引导脚本是**写在字符串里的 JavaScript**（`'function m(){try{'`）
+  const SNEAKY = [
+    'window.__ModuleLoader__.load({',
+    '  factory: (require) => {',
+    "    var guide = 'function realFn(){ try{' + '}}}'",
+    '    // function realFn(  ← 注释里也来一个',
+    '    function realFn(a) { return a + 1 }',
+    '    return {}',
+    '  }',
+    '})',
+  ].join('\n')
+  check('字符串/注释里的同名函数**不产生**幻影候选（词法已经排掉）',
+    findFunctions(SNEAKY, 'realFn').length === 1, String(findFunctions(SNEAKY, 'realFn').length))
+  check('字符串里的 `{` 不会把函数从中截断（提取结果能被解析）',
+    (() => {
+      try { new Function(findFunctions(SNEAKY, 'realFn')[0].source); return true } catch (_) { return false }
+    })())
+  const rep = scopeReport({ src: SNEAKY, name: 'realFn' })
+  check('其自由标识符分类正确（a 是形参）', rep.buckets.local.includes('a'), JSON.stringify(rep.buckets))
+}
+
+console.log('\n【七】提取器对"重名"必须失败（重名会让"提取成功"失去意义）')
+{
+  const DUP = [
+    '(function () {',
+    '  function dupFn() { return 1 }',
+    '  function dupFn() { return 2 }',
+    '})()',
+  ].join('\n')
+  let msg = ''
+  try { scopeReport({ src: DUP, name: 'dupFn' }) } catch (e) { msg = e.message }
+  check('重名 ⇒ 直接失败，且说明是重名', /重名/.test(msg), msg)
+}
+
+console.log('\n【八】真全局白名单是**窄**的（新全局必须显式表态，不许被默默放过）')
+{
+  const GLOB = [
+    '(function () {',
+    '  function g() { return someUnlistedGlobalThing + document.title }',
+    '})()',
+  ].join('\n')
+  const rep = scopeReport({ src: GLOB, name: 'g' })
+  check('白名单外的全局名 ⇒ unresolved（强制显式表态）',
+    rep.unresolved.includes('someUnlistedGlobalThing'), JSON.stringify(rep.buckets))
+  check('白名单内的真全局 `document` 正常归类', rep.buckets.global.includes('document'))
+  const withExtra = scopeReport({ src: GLOB, name: 'g', extraGlobals: ['someUnlistedGlobalThing'] })
+  check('显式加进白名单后转绿（"表态"这条路是通的）', withExtra.unresolved.length === 0, withExtra.unresolved.join(','))
+}
+
+console.log('\n【九】活变量：必须**从函数体反推**出来（不许誊抄清单）')
+{
+  for (const s of MIGRATION_SETS) {
+    const r = wiringReport({ src: SRC, entries: s.entries, provided: new Set(s.required) })
+    check(s.label + '：活变量集合 == 声明（' + (s.live.join(',') || '无') + '）',
+      sameSet(r.liveVariables, s.live), '反推=' + JSON.stringify(r.liveVariables))
+  }
+  // 反向：把**两处**回写都改成只读，活变量应当**消失**
+  // （证明它是从函数体反推的，不是写死的。只去掉一处是不够的 —— `_decorating` 有 `= true`
+  //   和 finally 里的 `= false` 两处写点，少改一处它照样是活变量。）
+  const READ_ONLY = mutateOnce(
+    mutateOnce(SRC, '_decorating = true', 'var _everTrue = true'),
+    '} finally {\n            _decorating = false\n          }',
+    '} finally {\n            void 0\n          }')
+  const rRo = wiringReport({
+    src: READ_ONLY,
+    entries: MIGRATION_SETS[3].entries,
+    provided: new Set(['messageTargets', '_decorateOne', '_decorating']),
+  })
+  check('把两处回写都改成只读后，`_decorating` 不再是活变量（说明它是反推的、不是写死的）',
+    !rRo.liveVariables.includes('_decorating'), JSON.stringify(rRo.liveVariables))
+  check('把回写改成只读后，它仍是一条必须接线的依赖（读也要接线）',
+    wiringReport({ src: READ_ONLY, entries: MIGRATION_SETS[3].entries, provided: new Set(['messageTargets', '_decorateOne']) })
+      .missing.includes('_decorating'))
+}
+
+console.log('\n【十】判据自己是常驻测试（三类破坏之③）')
+{
+  const self = readFileSync(new URL(import.meta.url), 'utf8')
+  check('本判据位于 tests/ 下（会被 `node tools/run-each-test.mjs` 扫到）',
+    /[\\/]tests[\\/]test-client-scope-completeness\.mjs$/.test(new URL(import.meta.url).pathname))
+  check('本判据在**默认运行路径**上就会跑反证（没有藏在开关/环境变量后面）',
+    !/if\s*\(\s*process\.env\.MUV_/.test(self) && /【三】|【四】|【五】/.test(self))
+  check('tokenize 对整份 client.js 不抛错（判据能在真实规模上跑）', tokenize(SRC).length > 10000)
+  check('反证覆盖数 > 0（确实逐名删过接线）', deletions > 0, String(deletions))
+}
+
+console.log('\n【十一】非空跑下限（否则"missing 为空"可能只是"什么都没分析到"）')
+{
+  // ★ 值由**实测**量级定，留余量但远高于 0：抓"静默空分析"，又不因正常搬动误红。
+  //   按本仓口径：数字写在测试里，**不写进文档**（文档里的数字必漂）。
+  const MIN_FREE_NAMES = 50      // 实测 84
+  const MIN_MISSING = 3          // 实测 5
+  const MIN_FUNCS = 8            // 实测 8 个不同函数
+  const MIN_TOKENS = 20000       // 实测 38547
+  const MIN_FN_CHARS = 120       // 实测最短函数体 182 字符
+
+  let freeNameTotal = 0
+  let missingTotal = 0
+  const fnNames = new Set()
+  for (const s of MIGRATION_SETS) {
+    missingTotal += wiringReport({ src: SRC, entries: s.entries, provided: new Set() }).missing.length
+    for (const e of s.entries) {
+      fnNames.add(e)
+      freeNameTotal += scopeReport({ src: SRC, name: e }).freeNames.length
+      const cands = findFunctions(SRC, e)
+      if (cands.length !== 1) { check('入口 ' + e + ' 必须唯一可提取', false, '候选=' + cands.length); continue }
+      check('入口 ' + e + ' 的函数体长度 ≥ ' + MIN_FN_CHARS, cands[0].source.length >= MIN_FN_CHARS,
+        String(cands[0].source.length))
+    }
+  }
+
+  check('分析到的自由标识符总数 ≥ ' + MIN_FREE_NAMES, freeNameTotal >= MIN_FREE_NAMES, String(freeNameTotal))
+  check('必须有"真的需要接线"的名字 ≥ ' + MIN_MISSING + '（全是 0 就说明判据没在看前提）',
+    missingTotal >= MIN_MISSING, String(missingTotal))
+  check('覆盖到的入口函数数 ≥ ' + MIN_FUNCS, fnNames.size >= MIN_FUNCS, String(fnNames.size))
+  check('tokenize 在整份 client.js 上规模正常（≥ ' + MIN_TOKENS + ' token）',
+    tokenize(SRC).length >= MIN_TOKENS, String(tokenize(SRC).length))
+
+  // 反证：喂空串 ⇒ 三个入口都必须**直接失败 / 点名**，不许"空输入 ⇒ 空结果 ⇒ 全绿"
+  let threw = false
+  try { scopeReport({ src: '', name: 'muvKvKeyOf' }) } catch (_) { threw = true }
+  check('空源码 ⇒ scopeReport 直接失败（不许静默返回空集合）', threw)
+
+  const emptyWiring = wiringReport({ src: '', entries: MIGRATION_SETS[0].entries, provided: new Set() })
+  check('空源码 ⇒ wiringReport **点名**找不到入口（而不是 missing=[] 的空绿）',
+    emptyWiring.missing.length > 0, JSON.stringify(emptyWiring.missing))
+
+  const emptyDerived = wiringReport({ src: SRC, entries: MIGRATION_SETS[3].entries, provided: new Set() }).missing
+  check('非空输入下反推清单非空（与上面的空输入对照，证明"下限"两边都看得见东西）',
+    emptyDerived.length > 0, JSON.stringify(emptyDerived))
+}
+
+console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)
+process.exit(fail ? 1 : 0)

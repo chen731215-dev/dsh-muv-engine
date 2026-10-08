@@ -481,10 +481,18 @@ export function moduleRegistryReport({ parts, manifest }) {
     const spec = modEntries[p] || {}
     const n = Object.keys(spec.functions || {}).length
     fnTotal += n
-    // ── P2（搬前作用域记账，必须非空）──
+    // ── P2（搬前作用域记账，必须非空 + **必须标注证据强度**）──
     if (!spec.preMoveScope || typeof spec.preMoveScope !== 'string') {
       problems.push(p + ' 缺 `preMoveScope`（搬前的作用域归属）—— ★ 档 B 的包装器会把作用域同质化，'
         + '这条一旦事后补记就**无据可查**；必须在动刀前落')
+    }
+    // ★ 审核方 ④-2：同一字段里可能装着**两种证据强度**的东西 ——
+    //   `pre-knife` = 动刀前可复核的读数（别人能照着重算比对）；`reconstructed` = 事后按搬迁记录重建的散文式记录。
+    //   不标注就会出现"看起来一样、其实不一样" ⇒ 那正是 P2 自己反对的含混。
+    if (!spec.preMoveScopeEvidence || !['pre-knife', 'reconstructed'].includes(spec.preMoveScopeEvidence)) {
+      problems.push(p + ' 的 `preMoveScopeEvidence` 缺失或取值非法'
+        + '（必须是 `pre-knife` = 动刀前可复核读数，或 `reconstructed` = 事后重建）'
+        + ' ⇒ 不标注会让两种证据强度"看起来一样、其实不一样"')
     }
     if (n === 0) problems.push(p + ' 的 functions 为空（每个模块至少要有 1 个函数）')
   }
@@ -507,10 +515,15 @@ export function moduleRegistryReport({ parts, manifest }) {
  *
  * @param {object} o
  * @param {Array<{path:string,text:string}>} o.parts
+ * @param {object} o.manifest —— 用于"声明了接线的模块"这一侧的下限（见下）
  */
-export function moduleWiringCaptureReport({ parts }) {
+export function moduleWiringCaptureReport({ parts, manifest }) {
   const problems = []
   let checked = 0
+  const modParts = parts.filter((p) => /(^|\/)mod-[^/]+\.js$/.test(p.path))
+  if (modParts.length === 0) {
+    problems.push('没有任何 mod-* 模块片 ⇒ 本判据**无可评估对象**（≥1 是下限；不许在空集上恒真）')
+  }
   for (const p of parts) {
     if (!/(^|\/)mod-[^/]+\.js$/.test(p.path)) continue
     const m = /\/\*\s*wiring\s*\*\/([\s\S]*?)\n\s*\}\s*$/.exec(p.text)
@@ -528,7 +541,21 @@ export function moduleWiringCaptureReport({ parts }) {
       }
     }
   }
-  return { ok: problems.length === 0, problems, stats: { modulesWithWiring: checked } }
+  // ★★ **P3 的空跑下限**（审核方 ④-1：与 P1 同族，P1 已堵、P3 原先没堵）
+  //   原先 `checked` 只进 stats ⇒ 若真实模块把标记写成别的形式（`/* wiring:* */`、块不在末尾…），
+  //   **找不到块就全绿 ⇒ 保护静默消失**。⇒ 凡 MANIFEST 声明了接线的模块，必须至少有一个**可识别**的块。
+  const declared = Object.entries((manifest && manifest.modules) || {})
+    .filter(([, v]) => v && v.wiring).map(([k]) => k)
+  if (declared.length >= 1 && checked < 1) {
+    problems.push('MANIFEST 声明了 ' + declared.length + ' 个模块带接线（' + declared.join(', ') + '），'
+      + '但**一个可识别的接线块都没找到** ⇒ "找不到块就全绿"会让这条保护**静默消失**。'
+      + '接线块必须写成 `/* wiring */` 或 `const __wiring = { … }`（见 §44.14 的形态约定）')
+  }
+  if (declared.length >= 1 && checked !== declared.length) {
+    problems.push('声明带接线的模块 ' + declared.length + ' 个 ≠ 找到接线块的 ' + checked + ' 个'
+      + ' ⇒ 两者必须一致（否则有模块"声明了却没被检查"）')
+  }
+  return { ok: problems.length === 0, problems, stats: { modulesWithWiring: checked, declaredWiring: declared.length } }
 }
 
 // ── CLI ─────────────────────────────────────────────────────────────────

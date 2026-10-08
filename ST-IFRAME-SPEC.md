@@ -1,6 +1,7 @@
 # SillyTavern 卡 iframe 权威规格（从 ST 源码逐字提取）
 
-> 出处：`C:\MySpecialFolder\SillyTavern\public\scripts\extensions\third-party\JS-Slash-Runner\`
+> 出处：`<ST 安装根>/public/scripts/extensions/third-party/JS-Slash-Runner/`
+> （发文时在一台开发机上提取；ST 安装位置因人而异，照抄请替换 `<ST 安装根>`。）
 > 提取方式：直接读 `dist/index.js`（1,088,340 字符）与 `src/iframe/*.js` 原文，**不是推测**。
 > 提取时间：2026-09-20。用途：把 DSH 的卡 iframe 对齐到 ST 的真实行为。
 
@@ -303,7 +304,8 @@ ST 里的卡 HTML **天然拥有 Tailwind 工具类、jQuery、jQuery-UI、Vue�
 ## 10. 复现命令（下次不用重新找）
 
 ```powershell
-$f = "C:\MySpecialFolder\SillyTavern\public\scripts\extensions\third-party\JS-Slash-Runner\dist\index.js"
+# 改成你自己的 ST 安装位置（本节其余命令不变）
+$f = "<ST 安装根>\public\scripts\extensions\third-party\JS-Slash-Runner\dist\index.js"
 $t = Get-Content $f -Raw -Encoding UTF8
 $i = $t.IndexOf('function y1');      # vh 重写器
 $i = $t.IndexOf('function b1');      # iframe 文档模板

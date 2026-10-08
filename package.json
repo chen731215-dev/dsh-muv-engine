@@ -9,15 +9,37 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
-  "files": ["lib", "cordis.patch.yml", "CHANGELOG.md", "README.md", "diag.mjs", "test-status-cascade.mjs"],
-  "keywords": ["dsh", "dsh-plugin", "muv", "magvarupdate", "tavern"],
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "CHANGELOG.md",
+    "README.md",
+    "diag.mjs",
+    "tests/test-status-cascade.mjs"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "muv",
+    "magvarupdate",
+    "tavern"
+  ],
   "license": "PolyForm-Noncommercial-Copyleft-1.0.0",
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
-    "client": { "platform": "web" }
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
   },
-  "repository": {"type": "git", "url": "git+https://github.com/chen731215-dev/dsh-muv-engine.git"},
-  "engines": { "node": ">=20" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chen731215-dev/dsh-muv-engine.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "dsh-muv-table": "^0.2.2"
   },
@@ -25,6 +47,15 @@
     "dsh-muv-table": "^0.2.2"
   },
   "peerDependenciesMeta": {
-    "dsh-muv-table": { "optional": true }
+    "dsh-muv-table": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "node tools/run-each-test.mjs",
+    "test:all": "node tools/run-each-test.mjs --all",
+    "check": "node --no-warnings --experimental-vm-modules tools/check-syntax.mjs",
+    "check:hygiene": "node tools/check-repo-hygiene.mjs",
+    "ci:local": "npm run check && npm test && npm run check:hygiene"
   }
 }

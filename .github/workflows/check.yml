@@ -1,0 +1,71 @@
+# 本仓唯一的**自动化强制点**。
+#
+# 为什么需要它：在此之前，本仓**没有统一 runner、没有 CI** —— 55 个散落在仓根的
+# `test-*` / `verify-*` / `repro-*` 脚本全靠「人记得手动跑」，一个坏提交可以直接进分支，
+# 没有任何拦截。分家（tests/ + tools/verify/ + tools/repro/）只是把语料收拢，
+# **真正让它持续生效的是这个工作流**。
+#
+# 为什么是 windows-latest（而不是 ubuntu）：
+#   · 本仓是 Windows-only：DSH Desktop、`C:\...` 路径习惯、脚本里的 CRLF 容错都在这个前提下写的。
+#   · 相当一部分门禁要真 Edge（CDP），Linux 上根本没得跑，绿了也不代表什么。
+#
+# 为什么有一个「同伴仓」步骤：本仓的测试按**相对路径** import 同伴仓
+#   （`../dsh-muv-table/lib/png-card.js`、`../dsh-muv-table/test-cards.mjs`），
+#   而 `lib/index.js` 按**裸名** import 它（`dsh-muv-table/lib/muv-parser.js`）。
+#   干净 checkout 里两者都不存在 ⇒ 会得到一片「Cannot find module」的假红。
+#   所以：把同伴仓 clone 成**仓库的兄弟目录**（相对路径要的就是这个位置），
+#   再在 `node_modules/` 下建 junction 让裸名也能解析。这也是开发树本来的布局
+#   （见 HANDOFF.md「恢复后必做：重建 junction」）。
+#
+# 为什么先关 core.autocrlf：本仓工作树里 `.mjs` 全是 LF，而 Windows runner 的 git
+#   默认 `core.autocrlf=true` ⇒ 检出成 CRLF。有几条门禁是**逐字比较**源码文本的，
+#   CRLF 会让它们因为换行符而不是因为产品代码假红（tavern 仓已踩过同一坑：字符窗口
+#   被 `\r` 撑破）。在 checkout 之前设成 false，检出与开发树一致。
+#
+# 为什么不需要 npm ci：本仓唯一的运行时依赖就是同伴仓 dsh-muv-table，上面已经用
+#   兄弟目录 + junction 提供了，不必再走 registry（也避免了版本漂移）。
+name: check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: 关掉 autocrlf（本仓工作树是 LF；CRLF 会让逐字比较类门禁假红）
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 有一批门禁用 `git show <rev>:lib/client.js` 取「修复前」对照臂
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22' # package.json engines: node >=20
+
+      - name: 同伴仓 dsh-muv-table（相对路径要兄弟目录，裸名要 node_modules 链接）
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/chen731215-dev/dsh-muv-table.git ../dsh-muv-table
+          New-Item -ItemType Directory -Force node_modules | Out-Null
+          cmd /c mklink /J node_modules\dsh-muv-table ..\dsh-muv-table
+
+      - name: 语法检查（全仓 lib/ tests/ tools/，按 ESM 解析，扫目录不手抄清单）
+        run: npm run check
+
+      - name: 全量测试（逐文件独立判红；清单由目录决定；空跑即失败）
+        run: npm test
+
+      - name: 仓库卫生（不许出现凭据 / 会话记录 / 本机路径 / 临时产物）
+        run: npm run check:hygiene
+
+# ⚠️ 本工作流**刻意没有** `continue-on-error` / `|| true` 这类降级写法：
+#   免费送出来的绿灯比红灯更危险。有一批门禁（tools/verify/ + tools/repro/，
+#   需要真 Edge / 真卡 / 真会话）在 CI 环境里注定跑不动，它们**没有被塞进 CI**，
+#   而是留给本地 `npm run test:all`（基线在 CHANGELOG/交接文档里，逐个列名）。
+#   把跑不动的东西放进 CI 只有两种下场：要么假红（没人再看 CI），要么加 continue-on-error
+#   （等于把闸门拆了）。宁可让它留在本地、并把「跑不动」如实记账。

@@ -3216,3 +3216,47 @@ Analysis 隐藏（5118），本轮补齐的是原生 DOM 路径的**元素形态
 
 - npm `dsh-muv-engine@0.3.11`（`chencheng810`）；GitHub `wip/card-interactive` 用 API 管线
   重传脱敏版（`_scratch/_ghapi-push-muvengine-v3.mjs`，TIP 常量 + PATCH ref）。
+
+---
+
+## 44. S2 分片化交接（walking skeleton 已完成，**函数搬迁未开始**）
+
+> ⚠️ 先读这条，否则会把整套设计误读成更严的版本：
+> **「逐字节」是【分片 ↔ 产物】之间，不是「产物 ↔ 历史」。**
+> `拼装(分片) === lib/client.js` **恒成立**；而"把函数从分片 A 挪到分片 B"会改变分片顺序
+> ⇒ **产物字节必然变**。若误读成"产物不许变"，搬迁会被**永久锁死**。
+
+### 44.1 现状（截至本节的提交）
+
+- **唯一真相源**：`src/client/part-01.js` … `part-12.js` 是**源**，`lib/client.js` 是**派生物**。
+  **不许直接编辑产物** —— 改产物会让 `node tools/build-client.mjs --check` 报红（这是故意的）。
+  这条**不能**靠产物内的生成标记声明（会改变字节、破坏逐字节相等），只能靠：
+  本文件 + `AGENTS.md` + `package.json` 里的 `build:client` / `check:client-freshness`。
+- 生成/判据：`node tools/build-client.mjs`（生成）/ `--check`（判据，CI 用）/ `--list`（列分片）。
+- 常驻判据：`tests/test-client-parts.mjs`（新鲜度**双向**反证 + 边界合法性）、
+  `tests/test-client-source-convergence.mjs`（谁在从工作树读 client.js）。
+- 契约：`.gitattributes` 钉 `lib/client.js` 与 `src/client/**` 为 **LF** ——
+  这是逐字节判据的**前置**（逐字节不许归一化 ⇒ 必须要求两侧检出形态一致）。
+- `package.json.files` **未动**：分片在 `src/` 不进包；产物仍在 `lib` ⇒ 发布面与拆分前**逐字节相同**，
+  `exports["./client"]` 不变 ⇒ 加载契约不变。
+
+### 44.2 下一步（③ 批量搬）怎么做
+
+1. 先跑 `node tools/build-client.mjs --check` 确认起手是绿的。
+2. 用 `tools/client-scope.mjs` 的 `wiringReport({src, entries, provided})` **从函数体反推**
+   那一组要搬的函数的**必需接线清单**与**活变量**（活变量必须走访问器，不许当只读快照）。
+3. 搬完：`node tools/build-client.mjs` 重新生成产物（**产物字节会变，这是预期的**），
+   然后跑全套 + `--check`，并在材料里列清"因搬家而红 vs 本就红"。
+4. **每搬一段立刻跑全套**：`npm test` / `npm run check` / `npm run check:client-freshness` /
+   `npm run check:hygiene`，以及两形态 EOL（夹具用 `git worktree add`，**不要**用"clone 再 checkout"）。
+
+### 44.3 已知边界（别把"没验"当"没有"）
+
+- 分片**不能**独立解析（首片含 `(function () {`，闭合需要 `})()`；补花括号补不平圆括号）
+  ⇒ 判据只判**边界合法性**（不劈开 token / 落在语句之间）；"合并后整体可解析"由 `check-syntax` 覆盖。
+- 收敛判据的白名单现有 **3** 条：两个收口点 + `tools/build-client.mjs`（它**必须**直读产物做逐字节比较，
+  **不能**走收口点 —— 收口点返回归一化文本，而逐字节比较不许归一化）。
+- 收敛判据**已知未覆盖**的形态（`tools/client-scope.mjs` 与 `tests/test-client-source-convergence.mjs` 头注里有全文）：
+  N1 路径完全来自配置/环境变量（无字面量）· N2 动态 import/require 拼路径 · N3 其它 fs API（`createReadStream` 等）。
+- 收敛准点口径：**口径 C（真的从工作树读文本）= 收口点 2 + 消费者 0**（基线 2 + 26）。
+  口径 B（含路径字面量）**会恒定不降**，是解释材料、不是指标。

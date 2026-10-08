@@ -109,7 +109,10 @@ export function freshnessReport({ parts, artifact, manifest }) {
     problems.push('分片数不符：实际 ' + parts.length + ' ≠ 清单 ' + declared.length)
   }
   if (declared.length !== EXPECTED_PARTS) {
-    problems.push('分片数 ≠ 预期 ' + EXPECTED_PARTS + '（增减分片必须显式改 build-client.mjs 的 EXPECTED_PARTS）')
+    problems.push('分片数 = ' + declared.length + ' ≠ 期望 ' + EXPECTED_PARTS
+      + ' ⇒ **若这是有意的**（本段搬入/移除了模块片），请显式修改 `tools/build-client.mjs` 里的 '
+      + '`EXPECTED_PARTS` 常量并说明理由；**若你本想保持片数不变**，请检查是否漏写/多写了分片文件。'
+      + '（本仓口径：不允许静默改变分片数 —— 这个常量就是那道必须显式跨过的小门。）')
   }
   for (let i = 0; i < Math.min(parts.length, declared.length); i++) {
     const p = parts[i], d = declared[i]
@@ -352,6 +355,88 @@ export function moduleUniquenessReport({ parts, artifact }) {
   }
 }
 
+/**
+ * ★ **模块迁移账本**判据（审核方建议的低成本补强）。
+ *
+ * 它补的是"唯一性判据抓不到的那一类"：函数被**挪到同层别的模块**、或模块里的函数被改动。
+ *   唯一性只问"声明了几次"；账本问"**这个函数还在这个模块里吗、文本还是当初那一份吗**"。
+ *
+ * 形态与 `artifact.sha256` **完全同构**（一个声明 + 它的唯一复查），而且**不读 git**：
+ * 账本记的是"迁移完成时，该模块里每个函数的文本 sha256"；判据只复查
+ * "现在该模块里这个函数的文本 sha256 是否仍等于账本值"。
+ *
+ * ★ 账本里**只放被判的东西**（函数名 -> 文本摘要）。来源信息（从哪个 rev 的哪几行搬来）
+ *   属于**历史**，写在提交信息/交接文档里 —— 放清单里就会变成"没人复查的字段"（本仓明令禁止）。
+ *
+ * @param {object} o
+ * @param {Array<{path:string, text:string}>} o.parts
+ * @param {object} o.manifest 需要 `manifest.modules`
+ */
+export function moduleLedgerReport({ parts, manifest }) {
+  const problems = []
+  const ledger = (manifest && manifest.modules) || null
+  if (!ledger || typeof ledger !== 'object' || Array.isArray(ledger)) {
+    return { ok: false, problems: ['清单缺少 `modules` 迁移账本（模块函数的文本摘要无从复查）'], entries: [] }
+  }
+  const declNames = (text) => {
+    const toks = tokenize(text)
+    const out = []
+    for (let i = 0; i < toks.length; i++) {
+      if (toks[i].type !== 'ident' || toks[i].value !== 'function') continue
+      let j = i + 1
+      if (toks[j] && toks[j].type === 'punct' && toks[j].value === '*') j++
+      const idt = toks[j]
+      if (idt && idt.type === 'ident') out.push(idt.value)
+    }
+    return out
+  }
+  /** 抠出某个具名函数的源码文本（按 token 配平，字符串/注释里的不算）。 */
+  const fnText = (text, nm) => {
+    const toks = tokenize(text)
+    for (let i = 0; i < toks.length; i++) {
+      if (toks[i].type !== 'ident' || toks[i].value !== 'function') continue
+      let j = i + 1
+      if (toks[j] && toks[j].type === 'punct' && toks[j].value === '*') j++
+      const idt = toks[j]
+      if (!idt || idt.type !== 'ident' || idt.value !== nm) continue
+      let d = 0, close = -1
+      for (let k = j + 1; k < toks.length; k++) {
+        const q = toks[k]
+        if (q.type !== 'punct') continue
+        if (q.value === '{') d++
+        else if (q.value === '}') { d--; if (d === 0) { close = k; break } }
+      }
+      if (close < 0) return null
+      return text.slice(toks[i].start, toks[close].end)
+    }
+    return null
+  }
+  const entries = []
+  for (const [modPath, spec] of Object.entries(ledger)) {
+    const part = parts.find((p) => p.path === modPath)
+    if (!part) { problems.push('账本里的模块片不存在：' + modPath); continue }
+    const declared = declNames(part.text)
+    const fns = (spec && spec.functions) || {}
+    const names = Object.keys(fns)
+    if (names.length === 0) problems.push('账本条目 ' + modPath + ' 里没有函数（无从复查）')
+    for (const nm of names) {
+      if (!declared.includes(nm)) {
+        problems.push(modPath + ' 里**没有** `' + nm + '`（账本说它在这里）——'
+          + '多半是被挪到了别的模块，或搬迁时漏了它')
+        continue
+      }
+      const got = sha256(lf(fnText(part.text, nm) || ''))
+      if (got !== fns[nm]) {
+        problems.push(modPath + ' 的 `' + nm + '` 文本摘要与账本不符：按**当前内容**算出 ' + got.slice(0, 16) + '…，'
+          + '账本记的是 ' + String(fns[nm]).slice(0, 16) + '… ⇒ 要么你改动了它（那么请同步账本），'
+          + '要么它被别的东西顶替了')
+      }
+    }
+    entries.push({ path: modPath, declared: declared.length, ledgered: names.length })
+  }
+  return { ok: problems.length === 0, problems, entries }
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2)
 // ★ 入口判定必须用 `pathToFileURL`，**不能**手拼 `'file://' + argv[1]`：
@@ -368,6 +453,14 @@ if (isMain) {
         + '  ' + String(p.bytes).padStart(7) + ' 字节  深度 ' + p.depthAtStart + '->' + p.depthAtEnd)
     }
     console.log('产物：' + manifest.artifact.path + '  ' + manifest.artifact.bytes + ' 字节');
+  }
+  if (argv.includes('--ledger')) {
+    const lg = moduleLedgerReport({ parts, manifest })
+    for (const e of lg.entries) console.log('  ' + e.path.padEnd(26) + ' 账本 ' + e.ledgered + ' 个函数 / 实际声明 ' + e.declared + ' 个')
+    if (lg.ok) { console.log('✅ 模块迁移账本：每个模块里的函数都在、文本摘要都对得上'); process.exit(0) }
+    console.error('❌ 模块迁移账本不成立：')
+    for (const p of lg.problems) console.error('  · ' + p)
+    process.exit(1)
   }
   if (argv.includes('--uniqueness')) {
     const uq = moduleUniquenessReport({ parts, artifact })

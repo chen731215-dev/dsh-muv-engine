@@ -1,4 +1,33 @@
     /**
+     * 这张卡里有没有一条正则脚本会去消费 `<StatusPlaceHolderImpl/>`？
+     *
+     * 判据刻意做得**很窄**（只有在 findRegex 里逐字出现 `StatusPlaceHolderImpl` 才算），
+     * 因为它决定我们要不要往每条消息尾部追加一个占位符 —— 猜错的代价是给一张不认这个
+     * 标记的卡塞进一段它渲染不出来的文本。
+     *
+     * 三种卡形态都要认：`{regexScripts:[…]}`（muv-table 的规范化产物，门禁夹具用的就是它）、
+     * 裸 chara_card_v3（`data.extensions.regex_scripts`）、以及顶层的 `regex_scripts`
+     * —— 与 `regex-engine.js:regexScriptsOf` 认的那三种保持一致，别只认一种。
+     * @param {object|null} cardJson
+     * @returns {boolean}
+     */
+    function cardWantsStatusPlaceholder(cardJson) {
+      try {
+        if (!cardJson || typeof cardJson !== 'object') return false
+        var list = cardJson.regexScripts
+        if (!list && cardJson.data && cardJson.data.extensions) list = cardJson.data.extensions.regex_scripts
+        if (!list) list = cardJson.regex_scripts
+        if (!list || !list.length) return false
+        for (var i = 0; i < list.length; i++) {
+          var s = list[i]
+          if (!s || s.disabled) continue
+          if (String(s.findRegex || '').indexOf('StatusPlaceHolderImpl') >= 0) return true
+        }
+      } catch (_) {}
+      return false
+    }
+
+    /**
      * ★★ 补齐 `<StatusPlaceHolderImpl/>` —— 这一条救回的是整张卡的 ERA 状态栏。
      *
      * 为什么必须有：占位符**不是**模型写的，也不是预设/世界书里的任何一句要求的。
@@ -690,39 +719,3 @@
           try { if (_scheduleDecorateHook) _scheduleDecorateHook() } catch (_) {}
         },
       }
-      try { document.documentElement.setAttribute('data-muv-engine', MUV_BUILD) } catch (_) {}
-      try { console.log('[muv-engine] client loaded ' + MUV_BUILD) } catch (_) {}
-
-      // ★ 轻量 LaTeX 渲染
-      if (!window._tavernLatexInstalled) {
-        window._tavernLatexInstalled = true
-        window._tavernRenderLatex = function(text) {
-          if (!text || text.indexOf('\\(') === -1) return text
-          return text.replace(/\\\(([\s\S]*?)\\\)/g, function(_, latex) {
-            var html = latex
-              .replace(/\\scalebox\{[^}]*\}\{/g, '').replace(/\}\s*$/g, '')
-              .replace(/\\begin\{array\}\{[^}]*\}/g, '').replace(/\\end\{array\}/g, '')
-              .replace(/\\fcolorbox\{([^}]*)\}\{([^}]*)\}\{/g, function(_, border, bg) {
-                return '<div style="border:2px solid '+border+';background:'+bg+';border-radius:6px;padding:8px 10px;margin:6px 0">'
-              })
-              .replace(/\\colorbox\{([^}]*)\}\{([^}]*)\}/g, function(_, color, content) {
-                return '<span style="background:'+color+';padding:2px 8px;border-radius:4px;display:inline-block">'+content+'</span>'
-              })
-              .replace(/\\textcolor\{([^}]*)\}\{([^}]*)\}/g, function(_, color, content) {
-                return '<span style="color:'+color+'">'+content+'</span>'
-              })
-              .replace(/\\rule\{([^}]*)\}\{([^}]*)\}/g, function(_, w, h) {
-                return '<span style="display:inline-block;width:'+w+';height:'+h+';background:currentColor;border-radius:2px;vertical-align:middle"></span>'
-              })
-              .replace(/\\overline\{[^}]*\}/g, '<hr style="border:none;border-top:1px solid #c9a45c;margin:4px 0">')
-              .replace(/\\Large\s/g, '<span style="font-size:18px">').replace(/\\large\s/g, '<span style="font-size:16px">').replace(/\\footnotesize\s/g, '<span style="font-size:11px">')
-              .replace(/\\quad/g, ' &nbsp; ').replace(/\\textbf\{([^}]*)\}/g, '<b>$1</b>').replace(/\\bullet/g, '•')
-              .replace(/\\\\/g, '<br>').replace(/[\{\}]/g, '')
-            var opens = (html.match(/<div/g)||[]).length - (html.match(/<\/div>/g)||[]).length
-            var openSp = (html.match(/<span/g)||[]).length - (html.match(/<\/span>/g)||[]).length
-            while (opens-- > 0) html += '</div>'
-            while (openSp-- > 0) html += '</span>'
-            return '<div class="muv-latex-block">'+html+'</div>'
-          })
-        }
-

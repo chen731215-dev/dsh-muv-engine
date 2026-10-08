@@ -718,4 +718,3 @@
         return html
       })
     }
-

@@ -3,8 +3,8 @@
   "linesNote": "各分片 lines 之和 = 产物 split('\\n') 的长度；产物的 \\n 个数比它少 1（末行无尾随换行）。",
   "artifact": {
     "path": "lib/client.js",
-    "bytes": 557282,
-    "sha256": "fae84cf7b90f4f6e5cc640e3870d11b88d0d111782de6181e900659c289a1cb4"
+    "bytes": 557423,
+    "sha256": "9c0e36dedeb2ac9ba006cbdee43fbbb89264bba38ce8796e3613e80b0b66d614"
   },
   "modules": {
     "src/client/mod-text.js": {
@@ -37,6 +37,13 @@
         "muvRegExpEscape": "fbb972960de841e9b537aa28be4651dc975601579a27c7a9970c6bd698b48d8e",
         "muvTsSegmentsOf": "932d5ffeb77bb4047e9c83441ad90d2de01fa88009e28507c0ea27d33259aae5"
       }
+    },
+    "src/client/mod-card-render.js": {
+      "functions": {
+        "muvSimpleBlock": "0be1b98be4088b79eae5c13401944f0c3e006e5478c92140ce5cca08fbb353d4",
+        "muvFillGameCardFields": "7c598225e7a29d001bd6f79b083ad0bc886fd82e59694e7373d8f46025d06345",
+        "muvStyleTavernOpts": "ae296d0c8d38ded1d3dcd56677107434d8e53b812e72cbad9477d7aae9f2ad0e"
+      }
     }
   },
   "parts": [
@@ -63,107 +70,117 @@
     {
       "path": "src/client/part-02.js",
       "startLine": 61,
-      "endLine": 781,
-      "lines": 721,
-      "bytes": 42546,
-      "sha256": "7209cd9d24e45c53009e4b542f88ed8e7530d9601db91bbb74020c8736f1da09",
+      "endLine": 780,
+      "lines": 720,
+      "bytes": 42545,
+      "sha256": "2217717a52eb1a018764291c450e3ac2d6d449c6c39ee3e8ed956e077d16f41c",
       "depthAtStart": 2,
       "depthAtEnd": 2
     },
     {
       "path": "src/client/part-03.js",
-      "startLine": 782,
+      "startLine": 781,
       "endLine": 1634,
-      "lines": 853,
-      "bytes": 59460,
-      "sha256": "6e95ef48d0e6b40cfd072c1e6df0aa30d11fb55aac8acb8e236ba50ca4782a2a",
+      "lines": 854,
+      "bytes": 59461,
+      "sha256": "095ef2dbeaa69b61a6ed85bcc9d336205060327c4dc492ea04ac386c512726bf",
       "depthAtStart": 2,
       "depthAtEnd": 2
     },
     {
       "path": "src/client/part-04.js",
       "startLine": 1635,
-      "endLine": 2234,
-      "lines": 600,
-      "bytes": 41787,
-      "sha256": "7dc175503a80019ac298a21ef1ad2b71768cc3deb0c01b00f560c0832530a95b",
+      "endLine": 2231,
+      "lines": 597,
+      "bytes": 41762,
+      "sha256": "3503629eacb2ac672a8bf51d09540716792dc0212a9bb7dd22a0d3f0eafb7005",
       "depthAtStart": 2,
-      "depthAtEnd": 2
+      "depthAtEnd": 3
     },
     {
       "path": "src/client/part-05.js",
-      "startLine": 2235,
+      "startLine": 2232,
       "endLine": 2684,
-      "lines": 450,
-      "bytes": 27433,
-      "sha256": "70575e15d5eb2a113b27160add628de4071bdbc8c778a25a783106f2a73368b4",
-      "depthAtStart": 2,
+      "lines": 453,
+      "bytes": 27458,
+      "sha256": "101617b83215c1aa03ce0a9233f1eb7b38d07d8d4a894e80b886547018f69c26",
+      "depthAtStart": 3,
       "depthAtEnd": 2
     },
     {
       "path": "src/client/part-06.js",
       "startLine": 2685,
-      "endLine": 3691,
-      "lines": 1007,
-      "bytes": 83547,
-      "sha256": "1a7dfc9af08cbb958ea08c29aae9707e5a7c609e475c4503f12e3efafc9a36a5",
+      "endLine": 3658,
+      "lines": 974,
+      "bytes": 81347,
+      "sha256": "5b9f57f0debb8d14a9954a4b1721a006179d5807d974ba66fac1189b08d9daad",
       "depthAtStart": 2,
       "depthAtEnd": 4
     },
     {
       "path": "src/client/part-07.js",
-      "startLine": 3692,
-      "endLine": 4412,
-      "lines": 721,
-      "bytes": 37749,
-      "sha256": "cfa6ff73526deca87b6d99cd1a748cedda64b2ba7ff332dca775661af938bac9",
+      "startLine": 3659,
+      "endLine": 4400,
+      "lines": 742,
+      "bytes": 39236,
+      "sha256": "af34ba061a7e1adc16cf149910f649ec7ffcfd9c9e1e9e31222c7585480da58b",
       "depthAtStart": 4,
       "depthAtEnd": 4
     },
     {
       "path": "src/client/part-08.js",
-      "startLine": 4413,
-      "endLine": 5128,
-      "lines": 716,
-      "bytes": 37959,
-      "sha256": "a1b4fad21fe550495d8a2484faa85aa3c31094b7d191218f2b61934621ba51b5",
+      "startLine": 4401,
+      "endLine": 5099,
+      "lines": 699,
+      "bytes": 37227,
+      "sha256": "d9abcee63790a0c0fd041f0c5bec0e036a42efbdc691b53c3b9088f89618c95b",
       "depthAtStart": 4,
       "depthAtEnd": 2
     },
     {
       "path": "src/client/part-09.js",
-      "startLine": 5129,
-      "endLine": 5856,
-      "lines": 728,
-      "bytes": 45359,
-      "sha256": "7a28f5e5167c25a48b084160401f182380269c30289915255f58660468fe6660",
+      "startLine": 5100,
+      "endLine": 5820,
+      "lines": 721,
+      "bytes": 44343,
+      "sha256": "42b0147ff618121a7d47012bd64cd4156e3abe97b926d25e7b182df6d3cabd81",
       "depthAtStart": 2,
-      "depthAtEnd": 4
+      "depthAtEnd": 3
     },
     {
       "path": "src/client/part-10.js",
-      "startLine": 5857,
-      "endLine": 6547,
-      "lines": 691,
-      "bytes": 48417,
-      "sha256": "0f0005247afb1270579ece738efa81d65e1e77a8f8d6c8e2ef648fea2fb6a8fd",
-      "depthAtStart": 4,
+      "startLine": 5821,
+      "endLine": 6540,
+      "lines": 720,
+      "bytes": 50673,
+      "sha256": "83b6d56136ad2db6646edeb84c416fd64d7fa2b5dc25b32421a3d9de4eadea1c",
+      "depthAtStart": 3,
+      "depthAtEnd": 3
+    },
+    {
+      "path": "src/client/mod-card-render.js",
+      "startLine": 6541,
+      "endLine": 6578,
+      "lines": 38,
+      "bytes": 1668,
+      "sha256": "4be7eaf4e75ee36c446602f241c6aa21df89849a80f7feebf542e32f1a58f279",
+      "depthAtStart": 3,
       "depthAtEnd": 3
     },
     {
       "path": "src/client/part-11.js",
-      "startLine": 6548,
-      "endLine": 7316,
-      "lines": 769,
-      "bytes": 51913,
-      "sha256": "a37f36b6d229b69f65e0f3eb60723a234089b34c73f946c66dc38b21801c2ce8",
+      "startLine": 6579,
+      "endLine": 7319,
+      "lines": 741,
+      "bytes": 50591,
+      "sha256": "2f2c006736c39b41dba2e5ceec7d5fa983aab1d13537284441c345e17898b1f1",
       "depthAtStart": 3,
       "depthAtEnd": 4
     },
     {
       "path": "src/client/mod-dom-utils.js",
-      "startLine": 7317,
-      "endLine": 7367,
+      "startLine": 7320,
+      "endLine": 7370,
       "lines": 51,
       "bytes": 2109,
       "sha256": "d94858a475dea62f1af938f10f883705048d708baec8a56d4b0173a50372744c",
@@ -172,8 +189,8 @@
     },
     {
       "path": "src/client/part-12.js",
-      "startLine": 7368,
-      "endLine": 7651,
+      "startLine": 7371,
+      "endLine": 7654,
       "lines": 284,
       "bytes": 11112,
       "sha256": "f4d1845146be3b8c4bf01d0b4b0f14c9abdaf632d13e3a5625f67199e7eb768f",
@@ -182,8 +199,8 @@
     },
     {
       "path": "src/client/mod-vr-ui.js",
-      "startLine": 7652,
-      "endLine": 7705,
+      "startLine": 7655,
+      "endLine": 7708,
       "lines": 54,
       "bytes": 5203,
       "sha256": "4b07c4d2d6ed43a40c6ee38329223eb6577a04a7aa2e89cbd5e9147d8b286ad5",
@@ -192,8 +209,8 @@
     },
     {
       "path": "src/client/part-13.js",
-      "startLine": 7706,
-      "endLine": 8159,
+      "startLine": 7709,
+      "endLine": 8162,
       "lines": 454,
       "bytes": 22515,
       "sha256": "443b4dcffe5a540215e76f47cfe758e20d14f1d66e290da8799d9be6f1e36d30",
@@ -202,8 +219,8 @@
     },
     {
       "path": "src/client/mod-text-parse.js",
-      "startLine": 8160,
-      "endLine": 8220,
+      "startLine": 8163,
+      "endLine": 8223,
       "lines": 61,
       "bytes": 2630,
       "sha256": "e143bc73d11b9cc9c7219dd5488fb599d982ddba632349405f59905515d95f27",
@@ -212,8 +229,8 @@
     },
     {
       "path": "src/client/part-14.js",
-      "startLine": 8221,
-      "endLine": 8844,
+      "startLine": 8224,
+      "endLine": 8847,
       "lines": 624,
       "bytes": 35565,
       "sha256": "092b76e60620e5dcedbd34b1054eef433026fd85927bc5d93e77ce455a744d95",

@@ -1,3 +1,4 @@
+
       /**
        * 原生路径要接的内联标签表 —— **与酒馆路径 `_tavernRenderTags` 对齐**
        * （那里的字符串版 + `verify-decorate-dom.mjs` 是行为基准）。
@@ -73,20 +74,6 @@
        * @param {string} text
        * @returns {void}
        */
-      function muvFillGameCardFields(card, text) {
-        var lines = String(text == null ? '' : text).split(/\r?\n/)
-        for (var i = 0; i < lines.length; i++) {
-          var m = /^([^：:\r\n]+)[：:]\s*([^\r\n]+)$/.exec(lines[i].trim())
-          if (!m) continue
-          var row = document.createElement('div')
-          row.className = 'muv-card-field'
-          var b = document.createElement('b')
-          b.textContent = m[1].trim()
-          row.appendChild(b)
-          row.appendChild(document.createTextNode(' ' + m[2].trim()))
-          card.appendChild(row)
-        }
-      }
 
       /**
        * 原生路径的游戏卡渲染（G_gamecard）。
@@ -424,21 +411,6 @@
         }
       }
 
-      function muvStyleTavernOpts(root) {
-        var groups = []
-        if (root.classList && root.classList.contains('tavern-options')) groups.push(root)
-        var found = root.querySelectorAll('.tavern-options')
-        for (var fi = 0; fi < found.length; fi++) groups.push(found[fi])
-        for (var gi = 0; gi < groups.length; gi++) {
-          var group = groups[gi]
-          if (group.hasAttribute('data-muv-styled')) continue
-          group.setAttribute('data-muv-styled', '1')
-          var btns = group.querySelectorAll('.tavern-option-btn')
-          for (var bi = 0; bi < btns.length; bi++) {
-            btns[bi].setAttribute('data-opt-letter', String.fromCharCode(65 + bi))
-          }
-        }
-      }
 
       /**
        * 修复「模型把整段正文包进 <content>…</content> 原始信封」的段落塌陷

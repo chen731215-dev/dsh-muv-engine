@@ -58,6 +58,6 @@
     "check:hygiene": "node tools/check-repo-hygiene.mjs",
     "build:client": "node tools/build-client.mjs",
     "check:client-freshness": "node tools/build-client.mjs --check",
-    "ci:local": "npm run check && npm run check:client-freshness && npm test && npm run check:hygiene"
+    "ci:local": "npm run check && npm test && npm run check:hygiene && npm run check:client-freshness"
   }
 }

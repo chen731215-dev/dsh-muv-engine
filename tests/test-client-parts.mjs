@@ -145,6 +145,37 @@ console.log('\n② ★ 双向反证：两个方向都必须红（防真相源漂
     check('分片数与清单/预期不符 ⇒ 红', r.ok === false, r.problems.join(' | '))
   }
 
+  // ★ 连续性：让 `depthAtStart/depthAtEnd` 与 `startLine/endLine` 各自被一条断言盯着，
+  //   而不是当"写给人看的字段"（本仓明令禁止那种字段）。
+  {
+    const c = clone()
+    c.manifest.parts[3].startLine = c.manifest.parts[3].startLine + 1
+    const r = freshnessReport(c)
+    check('★ 分片不连续（行区间断档）⇒ 红并点名',
+      r.ok === false && r.problems.some((p) => p.includes('分片不连续')), r.problems.join(' | '))
+  }
+  {
+    const c = clone()
+    c.manifest.parts[5].depthAtEnd = c.manifest.parts[5].depthAtEnd + 1
+    const r = freshnessReport(c)
+    check('★ 边界深度不连续 ⇒ 红并点名',
+      r.ok === false && r.problems.some((p) => p.includes('边界深度不连续')), r.problems.join(' | '))
+  }
+  {
+    const c = clone()
+    c.manifest.parts[0].lines = c.manifest.parts[0].lines + 1
+    const r = freshnessReport(c)
+    check('★ 清单 lines 之和 ≠ 产物行数 ⇒ 红（把清单口径与产物对齐）',
+      r.ok === false && r.problems.some((p) => p.includes('lines 之和')), r.problems.join(' | '))
+  }
+  {
+    // 口径自证：8831 / 8832 的差值是"末行无尾随换行"，不是矛盾
+    const artLines = artifact.split('\n').length
+    const nlCount = (artifact.match(/\n/g) || []).length
+    check('口径自证：产物行数 = \\n 个数 + 1（末行无尾随换行）—— ' + artLines + ' = ' + nlCount + ' + 1',
+      artLines === nlCount + 1)
+  }
+
   // 空输入不许空绿
   const empty = freshnessReport({ parts: [], artifact: '', manifest: { parts: [] } })
   check('空输入 ⇒ 红（不许"什么都没分析到"当绿）', empty.ok === false, empty.problems.join(' | '))

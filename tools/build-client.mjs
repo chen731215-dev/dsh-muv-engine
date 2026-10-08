@@ -121,6 +121,31 @@ export function freshnessReport({ parts, artifact, manifest }) {
     if (sha !== d.sha256) problems.push(p.path + ' sha256 不符（清单声明的是上一次生成时的内容）')
   }
 
+  // ①b 分片**连续性**（清单内部自洽 + 与产物行数口径对齐）。
+  //    ★ 为什么必须有：`depthAtStart/depthAtEnd` 与 `startLine/endLine` 若没有判据复查，
+  //      它们就是"写给人看的字段"（本仓明令禁止）。这里让它们各自被一条断言盯着：
+  //      · 逐片首尾相接（`endLine + 1 === 下一片 startLine`）⇒"分片覆盖了整份产物"不是假象；
+  //      · 边界深度连续（`depthAtEnd === 下一片 depthAtStart`）⇒ 同一处的深度只有一个说法；
+  //      · 行数之和 == 产物 `split('\n')` 的长度 ⇒ 把清单口径与产物对齐
+  //        （产物**末行无尾随换行** ⇒ 行数比 `\n` 个数多 1，见 MANIFEST.json 的 linesNote）。
+  for (let i = 0; i + 1 < declared.length; i++) {
+    const a = declared[i], b = declared[i + 1]
+    if (typeof a.endLine === 'number' && typeof b.startLine === 'number' && a.endLine + 1 !== b.startLine) {
+      problems.push('分片不连续：' + a.path + ' 结束于第 ' + a.endLine + ' 行，下一片 ' + b.path + ' 却从第 ' + b.startLine + ' 行开始')
+    }
+    if (typeof a.depthAtEnd === 'number' && typeof b.depthAtStart === 'number' && a.depthAtEnd !== b.depthAtStart) {
+      problems.push('边界深度不连续：' + a.path + ' 结束深度 ' + a.depthAtEnd + ' ≠ ' + b.path + ' 起始深度 ' + b.depthAtStart)
+    }
+  }
+  if (declared.length && declared.every((d) => typeof d.lines === 'number')) {
+    const sumLines = declared.reduce((s, d) => s + d.lines, 0)
+    const artLines = artifact.split('\n').length
+    if (sumLines !== artLines) {
+      problems.push('清单 lines 之和 ' + sumLines + " ≠ 产物 split('\\n') 长度 " + artLines
+        + '（产物末行无尾随换行 ⇒ 行数比 \\n 个数多 1，见 MANIFEST 的 linesNote）')
+    }
+  }
+
   // ② 拼装（实际分片）== 产物（实际产物）—— 逐字节，**不归一化**（归一化就不是逐字节了）
   const built = assemble(parts.map((p) => p.text))
   const builtBuf = Buffer.from(built, 'utf8')

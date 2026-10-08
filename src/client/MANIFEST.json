@@ -13,7 +13,8 @@
         "findClosingFence": "7080d70289dae6654e3ac8c9b7d119fb8f13a739fad6324349d96ec0eff40270",
         "readStartTag": "2ce276bd35a7803a04831095803a784421ba742cf746a9563037d3f87587673b"
       },
-      "preMoveScope": "工厂体（深度 2）—— 段1：三个函数同层零依赖，搬迁时逐条打印过"
+      "preMoveScope": "工厂体（深度 2）—— 段1：三个函数同层零依赖，搬迁时逐条打印过",
+      "preMoveScopeEvidence": "reconstructed"
     },
     "src/client/mod-vr-ui.js": {
       "functions": {
@@ -22,7 +23,8 @@
         "vrCreateEntry": "70f72f8f685e590cf6be8e26c453a4044d93f94451fd7b7fc4a5987b4a8d36fc",
         "vrCreatePanel": "f7238f772d98305c10c9cc2ad2f22b4ba8f29d50e659b4f5bbe8109f4df49cd4"
       },
-      "preMoveScope": "<匿名函数表达式>@行7148 —— 段2（就地划界，未位移）"
+      "preMoveScope": "<匿名函数表达式>@行7148 —— 段2（就地划界，未位移）",
+      "preMoveScopeEvidence": "reconstructed"
     },
     "src/client/mod-dom-utils.js": {
       "functions": {
@@ -31,7 +33,8 @@
         "messageRootOf": "a18c4bf05c97dee1cce9e26861e102325caf271a3bcdcaa19e8779132995d9d9",
         "muvIsVisibleInDom": "603dd923448ae07fc4ec8551db2f8c3023e2a742e78b76a10e7e8f6f269c53aa"
       },
-      "preMoveScope": "<匿名函数表达式>@行7148 —— 段3（真位移 593 行）"
+      "preMoveScope": "<匿名函数表达式>@行7148 —— 段3（真位移 593 行）",
+      "preMoveScopeEvidence": "reconstructed"
     },
     "src/client/mod-text-parse.js": {
       "functions": {
@@ -40,7 +43,8 @@
         "muvRegExpEscape": "fbb972960de841e9b537aa28be4651dc975601579a27c7a9970c6bd698b48d8e",
         "muvTsSegmentsOf": "932d5ffeb77bb4047e9c83441ad90d2de01fa88009e28507c0ea27d33259aae5"
       },
-      "preMoveScope": "<匿名函数表达式>@行7148 —— 段4（真位移 401 行）"
+      "preMoveScope": "<匿名函数表达式>@行7148 —— 段4（真位移 401 行）",
+      "preMoveScopeEvidence": "reconstructed"
     },
     "src/client/mod-card-render.js": {
       "functions": {
@@ -48,7 +52,8 @@
         "muvFillGameCardFields": "7c598225e7a29d001bd6f79b083ad0bc886fd82e59694e7373d8f46025d06345",
         "muvStyleTavernOpts": "ae296d0c8d38ded1d3dcd56677107434d8e53b812e72cbad9477d7aae9f2ad0e"
       },
-      "preMoveScope": "<匿名函数表达式>@行6014 —— 段5（真位移 433 行）"
+      "preMoveScope": "<匿名函数表达式>@行6014 —— 段5（真位移 433 行）",
+      "preMoveScopeEvidence": "reconstructed"
     }
   },
   "parts": [
@@ -243,5 +248,6 @@
       "depthAtEnd": 0
     }
   ],
-  "preMoveScopeNote": "每个模块必须记「搬前的作用域归属」（P2）：档 B 的包装器会把作用域同质化，\"同段同作用域\"这条保护会**不会红、只是不再保护**；而**事后补记无据** ⇒ 必须在动刀前落。"
+  "preMoveScopeNote": "每个模块必须记「搬前的作用域归属」（P2）：档 B 的包装器会把作用域同质化，\"同段同作用域\"这条保护会**不会红、只是不再保护**；而**事后补记无据** ⇒ 必须在动刀前落。",
+  "preMoveScopeEvidenceNote": "pre-knife = 动刀前可复核读数（别人能照着重算比对）；reconstructed = 事后按搬迁记录重建（证据强度较弱）。★ 不标注会出现\"看起来一样、其实不一样\"。"
 }

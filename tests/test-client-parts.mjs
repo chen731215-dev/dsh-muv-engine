@@ -523,6 +523,21 @@ console.log('\n⑨ P1/P2/P3：模块**声明清单 + 非空下限 + 搬前作用
     w1.ok === false && w1.problems.some((p) => p.includes('值捕获')), w1.problems.join(' | '))
   const good = 'const __wiring = {\n  sbCss: () => MUV_SB_CSS,\n}\nfunction f() { return __wiring }\n'
   const w2 = moduleWiringCaptureReport({ parts: [{ path: 'src/client/mod-probe2.js', text: good }] })
+  // ★★ 审核方 ④-1：P3 的空跑下限（与 P1 同族 —— 找不到块不许全绿）
+  check('④-1 P3 无 mod-* 片 ⇒ 红（无可评估对象，不许空集恒真）',
+    moduleWiringCaptureReport({ parts: [{ path: 'tests/x.mjs', text: '' }], manifest }).ok === false)
+  const declaredNoBlock = { modules: { ...manifest.modules, 'src/client/mod-x.js': { functions: { f: 'a' }, preMoveScope: 'x', preMoveScopeEvidence: 'reconstructed', wiring: { sbCss: { kind: 'accessor', target: 'MUV_SB_CSS' } } } } }
+  check('④-1 反证：**声明了接线但块不可识别** ⇒ 红（保护不许静默消失）',
+    moduleWiringCaptureReport({ parts, manifest: declaredNoBlock }).ok === false,
+    moduleWiringCaptureReport({ parts, manifest: declaredNoBlock }).problems.join(' | '))
+  // ★★ 审核方 ④-2：preMoveScope 必须标注证据强度
+  const noEv = Object.fromEntries(Object.entries(manifest.modules).map(([k, v]) => { const c = { ...v }; delete c.preMoveScopeEvidence; return [k, c] }))
+  check('④-2 反证：缺 `preMoveScopeEvidence` ⇒ 红并点名（不标注会让两种证据强度看起来一样）',
+    moduleRegistryReport({ parts, manifest: { ...manifest, modules: noEv } }).ok === false &&
+    moduleRegistryReport({ parts, manifest: { ...manifest, modules: noEv } }).problems.some((x) => x.includes('preMoveScopeEvidence')),
+    '')
+  check('④-2 正向：真实仓库每条都标了 pre-knife 或 reconstructed',
+    rg.ok && Object.values(manifest.modules).every((v) => ['pre-knife', 'reconstructed'].includes(v.preMoveScopeEvidence)))
   check('★ P3 正向：`sbCss: () => MUV_SB_CSS`（访问器）⇒ 通过',
     w2.ok === true && w2.stats.modulesWithWiring === 1, w2.problems.join(' | '))
 }

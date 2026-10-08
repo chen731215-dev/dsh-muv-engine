@@ -31,6 +31,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 import { tokenize } from './client-scope.mjs'
 import { loadFromDisk, EXPECTED_PARTS } from './build-client.mjs'
 
@@ -164,7 +165,9 @@ fs.writeFileSync(path.join(PARTS_DIR, MOD), modText)
   const keep = new Map(mf.parts.map((p) => [p.path, p]))
   mf.parts = ordered.map((p) => ({ ...p, sha256: keep.get(p.path) ? keep.get(p.path).sha256 : '' }))
   mf.modules[modPath] = {
-    functions: {},
+    // ★ 账本必须由本工具**自己算好**（build-client 只刷新 parts/artifact，**不刷 functions 账本**）
+    //   形态与既有条目同构：函数名 -> sha256(归一化后的函数文本)
+    functions: { [FN]: createHash('sha256').update(body.replace(/\r\n/g, '\n')).digest('hex') },
     preMoveScope: SCOPE,
     preMoveScopeEvidence: 'live',
     wiring: Object.fromEntries(WIRING.map((w) => [w.key, { kind: 'accessor', target: w.target }])),

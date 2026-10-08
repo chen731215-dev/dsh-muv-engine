@@ -696,9 +696,23 @@ export function enclosingBindingsIn(tokens, atOffset) {
 
 /** 一个括号块**相对深度 0** 处的声明名。 */
 function statementLevelDecls(tokens, openIdx, closeIdx) {
+  return depthZeroDecls(tokens, openIdx + 1, closeIdx - 1)
+}
+
+/**
+ * `[from, to]` 区间内**相对深度 0** 处的声明名（`function/var/let/const/class`）。
+ *
+ * ★ 只收相对深度 0：更深的声明在别的块里，外层看不见。这条是**故意的窄**——
+ *   收宽了会把"内层才有的名字"当成外层可用，那是静默蒙混（遮蔽类缺陷就此隐身）。
+ *   代价是**标签不精确**：包在块里的 `var`（有提升、运行时其实可见）会被算成
+ *   "外层找不到"，于是进 unresolved/missing。对搬迁闸门无害（不接线照样要报、接线后能清空），
+ *   但读材料时别把它当成"真悬空"——见 `where` 里那句"前源码里的外层绑定"。
+ *   `catch (e)` 的参数同理只被认作绑定、不进这里的声明集。
+ */
+function depthZeroDecls(tokens, from, to) {
   const out = new Set()
   let depth = 0
-  for (let k = openIdx + 1; k < closeIdx; k++) {
+  for (let k = from; k <= to && k < tokens.length; k++) {
     const t = tokens[k]
     if (t.type === 'comment') continue
     if (t.type === 'punct') {
@@ -714,8 +728,8 @@ function statementLevelDecls(tokens, openIdx, closeIdx) {
       continue
     }
     if (t.value === 'var' || t.value === 'let' || t.value === 'const') {
-      const next = tokens[k + 1]
-      if (next && next.type === 'ident') out.add(next.value)
+      const d = collectDeclarationNames(tokens, k)
+      for (const nm of d.names) out.add(nm)
       continue
     }
     if (t.value === 'class') {
@@ -724,6 +738,93 @@ function statementLevelDecls(tokens, openIdx, closeIdx) {
     }
   }
   return out
+}
+
+// ── 右端校验：`provided` 里的名字，在新模块里**真的落地**了吗 ──────────────
+
+/**
+ * ★ 目标模块（新文件）的**顶层绑定**集合：`import` 说明符 + 模块顶层声明。
+ *
+ * ── 为什么必须有它（这是 tavern 那次失效的**镜像**）─────────────────────
+ * `wiringReport` 只能答「**必须接线什么**」——它的 `provided` 是**调用方的声明**，
+ * **没有任何东西核对过**。于是：只要 `provided` 里写了某个名字，判据就是绿的，
+ * 哪怕新模块**根本没 import / 没声明**它。
+ *   · tavern 那次是「**两侧都没写**」（`json`）⇒ `wiringReport` 能挡；
+ *   · 这一次是「**写了但没落地**」      ⇒ 只有右端校验能挡。
+ * 搬迁时每一次都要经过 `provided`，一次手滑就把闸门变成装饰 —— 所以两端都要看。
+ *
+ * ★ 只收**模块顶层**：嵌套函数里绑定的名字不是模块级绑定，收进来就成了静默蒙混。
+ * @param {string} targetSrc 新模块的完整源码
+ * @returns {Set<string>}
+ */
+export function targetBindings(targetSrc) {
+  const tokens = tokenize(targetSrc)
+  const out = new Set()
+
+  // ① import 说明符（本地名）：`import d from` / `import {a, b as c} from` / `import * as ns from`
+  for (let k = 0; k < tokens.length; k++) {
+    const t = tokens[k]
+    if (t.type !== 'ident' || t.value !== 'import') continue
+    const nx = tokens[k + 1]
+    // `import.meta` / 动态 `import(` 都不是绑定
+    if (nx && nx.type === 'punct' && (nx.value === '.' || nx.value === '(')) continue
+
+    let braceDepth = 0
+    for (let j = k + 1; j < tokens.length; j++) {
+      const q = tokens[j]
+      if (q.type === 'comment') continue
+      if (q.type === 'str') break                                  // 模块说明符 ⇒ 结束
+      if (q.type === 'punct') {
+        if (q.value === '{') braceDepth++
+        else if (q.value === '}') braceDepth--
+        continue
+      }
+      if (q.type !== 'ident') continue
+      if (q.value === 'from') break
+      if (q.value === 'as') {
+        // `as <本地名>`：本地名是**后面**那个
+        const nm = tokens[j + 1]
+        if (nm && nm.type === 'ident') { out.add(nm.value); j++ }
+        continue
+      }
+      // 普通位置的名字：若紧跟 `as`，它是**导出名**而不是本地名，跳过
+      const after = tokens[j + 1]
+      if (after && after.type === 'ident' && after.value === 'as') continue
+      out.add(q.value)
+    }
+  }
+
+  // ② 模块顶层声明
+  for (const nm of depthZeroDecls(tokens, 0, tokens.length - 1)) out.add(nm)
+  return out
+}
+
+/**
+ * ★ **两端一起看**：左端（必须接线什么）+ 右端（新模块里真的落地了吗）。
+ *
+ * 判绿条件：`missing` 为空 **且** `unlanded` 为空。
+ * —— 少任何一端，闸门都能被绕过：只看左端 ⇒ 声明了就算数；只看右端 ⇒ 不知道要接什么。
+ *
+ * @param {object} o
+ * @param {string} o.src        旧文件（如 lib/client.js）
+ * @param {string[]} o.entries  一起搬走的入口函数
+ * @param {Set<string>} o.provided  调用方声明的接线名字
+ * @param {string} o.targetSrc  新模块源码（落地侧的真相）
+ * @param {string[]} [o.extraGlobals]
+ */
+export function landingReport({ src, entries, provided = new Set(), targetSrc = '', extraGlobals = [] }) {
+  const left = wiringReport({ src, entries, provided, extraGlobals })
+  const landed = targetBindings(targetSrc)
+  // 真全局不需要落地（它们不是模块绑定）；其余 `provided` 里的名字必须找得到绑定
+  const unlanded = [...provided].filter((n) => !landed.has(n)).sort()
+  return {
+    missing: left.missing,
+    where: left.where,
+    unlanded,
+    liveVariables: left.liveVariables,
+    landedBindings: [...landed].sort(),
+    ok: left.missing.length === 0 && unlanded.length === 0,
+  }
 }
 
 /**

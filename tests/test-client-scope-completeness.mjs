@@ -21,7 +21,10 @@
 // 运行：node tests/test-client-scope-completeness.mjs
 
 import { readFileSync } from 'node:fs'
-import { findFunctions, mutateOnce, scopeReport, tokenize, wiringReport } from '../tools/client-scope.mjs'
+import {
+  extractFunction, findFunctions, landingReport, mutateOnce,
+  scopeReport, targetBindings, tokenize, wiringReport,
+} from '../tools/client-scope.mjs'
 
 const SRC = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 
@@ -281,6 +284,88 @@ console.log('\n【十一】非空跑下限（否则"missing 为空"可能只是"
   const emptyDerived = wiringReport({ src: SRC, entries: MIGRATION_SETS[3].entries, provided: new Set() }).missing
   check('非空输入下反推清单非空（与上面的空输入对照，证明"下限"两边都看得见东西）',
     emptyDerived.length > 0, JSON.stringify(emptyDerived))
+}
+
+console.log('\n【十二】★ 右端校验：`provided` 里的名字，在新模块里**真的落地**了吗')
+{
+  // 为什么单独立这一节：`wiringReport` 只能答"必须接线什么"——`provided` 是**调用方的声明**，
+  // 没有任何东西核对过它。于是"写了但没落地"（与 tavern 那次"两侧都没写"互为镜像）
+  // 会让判据照样全绿。搬迁时每次都要经过 provided，一次手滑就把闸门变成装饰。
+
+  // ① import 说明符的本地名认得对
+  const imports = [
+    "import def from './a.js'",
+    "import { one, two as alias } from './b.js'",
+    "import * as ns from './c.js'",
+    "import './side-effect.js'",
+    'var up = import.meta.url',
+  ].join('\n')
+  const tb = targetBindings(imports)
+  check('默认导入的本地名被认下', tb.has('def'))
+  check('具名导入认原名', tb.has('one'))
+  check('`as` 认的是**本地名**，不是导出名', tb.has('alias') && !tb.has('two'), JSON.stringify([...tb]))
+  check('命名空间导入认 `ns`', tb.has('ns'))
+  check('四种导入形态的本地名齐全（def/one/alias/ns + 顶层 var up）',
+    tb.size === 5, JSON.stringify([...tb].sort()))
+  // 边界：纯副作用导入与 import.meta 本身都**不该**凭空造出绑定
+  check('纯副作用导入不产生绑定（边界）', targetBindings("import './side-effect.js'").size === 0,
+    JSON.stringify([...targetBindings("import './side-effect.js'")]))
+  check('`import.meta` 本身不产生绑定（只有 `var u` 那一个）',
+    targetBindings('var u = import.meta.url').size === 1 &&
+    !targetBindings('var u = import.meta.url').has('meta'),
+    JSON.stringify([...targetBindings('var u = import.meta.url')]))
+
+  // ② 只在**嵌套**函数里绑定的名字不算落地 —— 收宽了就是静默蒙混
+  const deepOnly = ['function wrapper() {', '  let nestedOnly = false', '}'].join('\n')
+  check('★ 只在嵌套函数里绑定的名字 **不算** 模块级落地',
+    targetBindings(deepOnly).has('nestedOnly') === false, JSON.stringify([...targetBindings(deepOnly)]))
+
+  // ③ 拿真实的搬迁组做两端联合判定（目标模块用真函数体 + 真 import 拼出来）
+  const group = MIGRATION_SETS[3]
+  const targetSrc = [
+    "import { messageTargets } from './sampling.js'",
+    "import { _decorateOne } from './decorate-one.js'",
+    'let _decorating = false',
+    ...group.entries.map((e) => extractFunction(SRC, e)),
+    'export { decorateMessages, muvTurnOfEl, muvSessionTurnsNow, muvDepthFromLaterCount }',
+  ].join('\n')
+
+  const land = landingReport({
+    src: SRC, entries: group.entries, provided: new Set(group.required), targetSrc,
+  })
+  check('两端联合判定：左端不漏名字 + 右端全部落地 ⇒ ok',
+    land.ok, JSON.stringify({ missing: land.missing, unlanded: land.unlanded }))
+  check('右端认下了这三个接线名',
+    ['messageTargets', '_decorateOne', '_decorating'].every((n) => land.landedBindings.includes(n)),
+    JSON.stringify(land.landedBindings))
+  check('右端没把 import 的**导出名**误当本地名', !land.landedBindings.includes('sampling'))
+
+  // ④ ★ 审核方点名的反证：从新模块的 import 里删掉一个名字 ⇒ 必须报红并点名
+  const noImport = mutateOnce(targetSrc, "import { messageTargets } from './sampling.js'\n", '')
+  const badImport = landingReport({
+    src: SRC, entries: group.entries, provided: new Set(group.required), targetSrc: noImport,
+  })
+  check('反证：删掉新模块里那条 import ⇒ 报红', badImport.ok === false)
+  check('反证：并**点名** messageTargets（不是只说"不通过"）',
+    badImport.unlanded.includes('messageTargets'), JSON.stringify(badImport.unlanded))
+  check('反证：左端此刻仍是绿的（证明红**只**来自右端，两端确实各管一段）',
+    badImport.missing.length === 0, JSON.stringify(badImport.missing))
+
+  // ⑤ 同一条反证换 `_decorating`（活变量在右端漏落地时同样必须报红）
+  const noLive = mutateOnce(targetSrc, 'let _decorating = false\n', '')
+  const badLive = landingReport({
+    src: SRC, entries: group.entries, provided: new Set(group.required), targetSrc: noLive,
+  })
+  check('反证：活变量 `_decorating` 没在新模块里落地 ⇒ 报红并点名',
+    badLive.unlanded.includes('_decorating'), JSON.stringify(badLive.unlanded))
+
+  // ⑥ 空目标模块 ⇒ 所有 provided 都必须被点名为"没落地"（防"空目标 ⇒ 空 unlanded ⇒ 假绿"）
+  const emptyTarget = landingReport({
+    src: SRC, entries: group.entries, provided: new Set(group.required), targetSrc: '',
+  })
+  check('★ 空目标模块 ⇒ 每个接线名都被点名为未落地（不许空绿）',
+    emptyTarget.unlanded.length === group.required.length && emptyTarget.ok === false,
+    JSON.stringify(emptyTarget.unlanded))
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)

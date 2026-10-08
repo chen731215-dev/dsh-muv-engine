@@ -23,7 +23,8 @@
 import { readFileSync } from 'node:fs'
 import { clientSource } from './test-client-source.mjs'
 import {
-  extractFunction, findFunctions, landingReport, lf, mutateOnce, scopeReport, targetBindings, tokenize, wiringReport,
+  extractFunction, findFunctions, functionScopes, landingReport, lf, mutateOnce,
+  scopeGroupReport, scopeReport, targetBindings, tokenize, wiringReport,
 } from '../tools/client-scope.mjs'
 
 // ★ 读源码一律走**收口点** `clientSource()`：它内部做归一化行尾（S2 ① 把归一化上收到读口）。
@@ -423,6 +424,47 @@ console.log('\n【十三】两种 EOL 形态（CI 是 LF、Windows 普通 clone 
   check('CRLF 形态下删掉落地后右端照常报红并点名',
     landingReport({ src: CRLF, entries: grp.entries, provided: new Set(grp.required), targetSrc: mut })
       .unlanded.includes('messageTargets'))
+}
+
+console.log('\n【十四】搬迁前置检查：一个**提议的分组**是否共享同一个 enclosing scope')
+{
+  // 为什么它在这里而不在"产物判据"里：它是**搬前**性质（搬完恒真）⇒ 进仓做常驻判据无从复查。
+  // 但它**可以被判**：给一个提议的分组，问"它们同作用域吗"。
+  const SAME = ['sizeFrame', 'insertIntoInput', 'messageRootOf', 'muvIsVisibleInDom']
+  const r1 = scopeGroupReport({ src: SRC, names: SAME })
+  check('★ 段3 实际搬的那 4 个：同一作用域 ⇒ ok', r1.ok, r1.problems.join(' | '))
+  check('并给出作用域名字与每个成员（可审阅）',
+    typeof r1.scope === 'string' && r1.members.length === 4 && r1.members.every((m) => m.scope === r1.scope),
+    JSON.stringify(r1.members))
+
+  // ★ 反证 A（Lead 点名要的那类）：**同深度但不同作用域** ⇒ 必须红并点名两个作用域
+  const r2 = scopeGroupReport({ src: SRC, names: ['muvSimpleBlock', 'fenceInlineBlank'] })
+  check('★ 反证：**同深度但不同作用域** ⇒ 红，并点名"跨作用域"',
+    r2.ok === false && r2.problems.some((p) => p.includes('跨作用域')),
+    JSON.stringify(r2.members) + ' | ' + r2.problems.join(' '))
+  check('反证：两个成员被分到**不同** scope（证明它不是"深度"的复述）',
+    new Set(r2.members.map((m) => m.scope)).size === 2, JSON.stringify(r2.members.map((m) => m.scope)))
+
+  // 反证 B：在同作用域分组里**混入**一个异作用域的 ⇒ 也要红
+  const r3 = scopeGroupReport({ src: SRC, names: [...SAME, 'fenceInlineBlank'] })
+  check('反证：混入一个异作用域的 ⇒ 红', r3.ok === false, JSON.stringify(r3.members.map((m) => m.name + '@' + m.scope)))
+
+  // 反证 C：空分组 ⇒ 不许空绿
+  check('反证：空分组 ⇒ 红（不许"没得判"当绿）', scopeGroupReport({ src: SRC, names: [] }).ok === false)
+
+  // 反向自证：单个函数 ⇒ ok（判据没被收废）
+  check('反向自证：单个函数恒 ok', scopeGroupReport({ src: SRC, names: ['sizeFrame'] }).ok === true)
+
+  // ★ 匿名/箭头必须被算进作用域：否则绝大多数函数会被判成"顶层"，判据就退化成空话
+  check('★ 作用域归属不是"(顶层)"（说明匿名函数表达式/箭头被算进来了）',
+    scopeGroupReport({ src: SRC, names: ['sizeFrame'] }).members[0].scope !== '(顶层)',
+    scopeGroupReport({ src: SRC, names: ['sizeFrame'] }).members[0].scope)
+  check('functionScopes 收集到的作用域数量足够多（实测 300+）',
+    functionScopes(SRC).length > 200, String(functionScopes(SRC).length))
+  check('且其中确实包含匿名函数表达式与箭头函数（两类都被收）',
+    functionScopes(SRC).some((s) => s.name.startsWith('<匿名函数表达式>'))
+    && functionScopes(SRC).some((s) => s.name.startsWith('<箭头函数')),
+    JSON.stringify(functionScopes(SRC).slice(0, 3).map((s) => s.name)))
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)

@@ -916,6 +916,133 @@ export function mutateOnce(src, needle, replacement) {
   return out
 }
 
+// ── 搬迁前置检查：作用域一致性 ────────────────────────────────────────────
+
+/**
+ * 收集**所有函数作用域**（具名声明 / 匿名函数表达式 / 箭头函数块体）。
+ *
+ * ★ 为什么必须把**匿名**与**箭头**也算进来：本仓的主体结构就是
+ *   `load({ factory: (require) => { (function () { …` 这一串 —— 里面那个大 IIFE 是
+ *   **匿名函数表达式**。只收具名声明的话，绝大多数函数都会被判成"顶层"，
+ *   "作用域一致性"就退化成一句空话（实测：只收具名时 13 个候选**全被判为"顶层"**；
+ *   补上匿名/箭头后立刻分成 `@7148` / `@6014` / `wrapLoneDocuments` 三组）。
+ * @param {string} src
+ * @returns {Array<{name:string, start:number, end:number, openBrace:number}>}
+ */
+export function functionScopes(src) {
+  const text = lf(src)
+  const toks = tokenize(text)
+  const lineOf = (off) => text.slice(0, off).split('\n').length
+  const out = []
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i]
+    if (t.type === 'ident' && t.value === 'function') {
+      let j = i + 1
+      if (toks[j] && toks[j].type === 'punct' && toks[j].value === '*') j++
+      const idt = (toks[j] && toks[j].type === 'ident') ? toks[j] : null
+      if (idt) j++
+      if (!(toks[j] && toks[j].type === 'punct' && toks[j].value === '(')) continue
+      let d = 0, k = j
+      for (; k < toks.length; k++) {
+        const q = toks[k]
+        if (q.type !== 'punct') continue
+        if (q.value === '(') d++
+        else if (q.value === ')') { d--; if (d === 0) { k++; break } }
+      }
+      for (; k < toks.length; k++) if (toks[k].type === 'punct' && toks[k].value === '{') break
+      if (k >= toks.length) continue
+      let dd = 0, close = -1
+      for (let m = k; m < toks.length; m++) {
+        const q = toks[m]
+        if (q.type !== 'punct') continue
+        if (q.value === '{') dd++
+        else if (q.value === '}') { dd--; if (dd === 0) { close = m; break } }
+      }
+      if (close < 0) continue
+      out.push({
+        name: idt ? idt.value : ('<匿名函数表达式>@行' + lineOf(t.start)),
+        start: t.start, end: toks[close].end, openBrace: toks[k].start,
+      })
+      continue
+    }
+    if (t.type === 'punct' && t.value === '=>') {
+      const nx = toks[i + 1]
+      if (!(nx && nx.type === 'punct' && nx.value === '{')) continue
+      let d = 0, close = -1
+      for (let m = i + 1; m < toks.length; m++) {
+        const q = toks[m]
+        if (q.type !== 'punct') continue
+        if (q.value === '{') d++
+        else if (q.value === '}') { d--; if (d === 0) { close = m; break } }
+      }
+      if (close < 0) continue
+      out.push({ name: '<箭头函数@行' + lineOf(t.start) + '>', start: t.start, end: toks[close].end, openBrace: nx.start })
+    }
+  }
+  return out
+}
+
+/**
+ * ★ **搬迁前置检查**：一个**提议的分组**（要一起搬走的函数名）是否共享**同一个 enclosing scope**。
+ *
+ * ── 为什么需要它（"同深度 ≠ 同作用域"）────────────────────────────────
+ * 跨作用域位移会让被搬的函数**对原调用者不可见** —— 这是"真位移"独有的风险，
+ * 而"形式 / 边界 / 唯一性 / 账本"四条判据**全都覆盖不到**（它们只看产物自身，不看可见性）。
+ * 深度相同只是**必要不充分**：实测本仓存在同深度但不同作用域的危险组合。
+ * ★ 它是**搬前**性质（搬完恒真）⇒ 进仓做常驻判据**无从复查**；
+ *   所以按本仓裁定：它是**搬迁前置检查**，规则写在 `HANDOFF.md §44.2`。
+ *
+ * @param {object} o
+ * @param {string} o.src
+ * @param {string[]} o.names 提议一起搬走的函数名
+ * @returns {{ok:boolean, scope:string|null, members:Array, problems:string[]}}
+ */
+export function scopeGroupReport({ src, names }) {
+  const text = lf(src)
+  const scopes = functionScopes(text)
+  const toks = tokenize(text)
+  const problems = []
+  const members = []
+  for (const nm of names) {
+    let found = null
+    for (let i = 0; i < toks.length; i++) {
+      const t = toks[i]
+      if (t.type !== 'ident' || t.value !== 'function') continue
+      let j = i + 1
+      if (toks[j] && toks[j].type === 'punct' && toks[j].value === '*') j++
+      const idt = toks[j]
+      if (!idt || idt.type !== 'ident' || idt.value !== nm) continue
+      const open = toks[j + 1]
+      if (!open || open.type !== 'punct' || open.value !== '(') continue
+      let d = 0, close = -1
+      for (let k = j + 1; k < toks.length; k++) {
+        const q = toks[k]
+        if (q.type !== 'punct') continue
+        if (q.value === '{') d++
+        else if (q.value === '}') { d--; if (d === 0) { close = k; break } }
+      }
+      found = { start: t.start, end: toks[close].end }
+      break
+    }
+    if (!found) { problems.push('找不到函数：' + nm); continue }
+    let best = null
+    for (const g of scopes) {
+      if (g.start === found.start) continue
+      if (g.start < found.start && found.end < g.end) {
+        if (!best || (g.end - g.start) < (best.end - best.start)) best = g
+      }
+    }
+    members.push({ name: nm, scope: best ? best.name : '(顶层)' })
+  }
+  const uniq = [...new Set(members.map((m) => m.scope))]
+  if (uniq.length > 1) {
+    problems.push('待搬函数**跨作用域**（' + uniq.join(' / ') + '）——同深度 ≠ 同作用域；'
+      + '跨作用域位移会让它们**对原调用者不可见**。请拆成两段，或改搬同一作用域里的函数。')
+  }
+  if (names.length === 0) problems.push('分组为空（没有可判的东西）')
+  return { ok: problems.length === 0, scope: uniq.length === 1 ? uniq[0] : null, members, problems }
+}
+
 // ── 主判据 ──────────────────────────────────────────────────────────────
 
 /**

@@ -1,329 +1,3 @@
-    }
-
-    /**
-     * 把当前变量状态推给**所有在线卡帧**（取数落地后推一次）。
-     *
-     * 为什么要多档重推、而不是"回灌完成推一次"：卡 iframe 是**消息渲染时**才创建的，
-     * 而回灌发生在渲染**之前** —— 最后一次回灌完成时卡帧往往还不存在
-     * （`querySelectorAll` 数到 0 个），那一次推送就落空；而卡只在自己加载约 1200ms 时
-     * 查一次变量，于是它就**永久停在初始值**上。实测症状：服务端状态里
-     * `剧情选项` 三条真文本、`时间详情` 10:15，卡上却还是空选项 / 10:00。
-     *
-     * ★ 每帧**推两条**（两代卡各要一条，别只推一条）：
-     *   ① `era:queryResult` —— ERA/MUV 卡的 `eventOn` 通路（老行为，逐字未改）；
-     *   ② `mag_variable_update_ended` —— MVU 新 API 那代卡的刷新钩子（实测 `1.txt`：
-     *      卡在 `Mvu.events.VARIABLE_UPDATE_ENDED` / `'mag_variable_update_ended'` 上
-     *      `ingestMvuEvent(wrapper)`，detail 必须带非空 `stat_data` 才被接受）。
-     *      同时被垫片 `__muvAbsorb` 吸进变量缓存 ⇒ `Mvu.getMvuData()` 的**同步**读也拿到新值。
-     * @returns {void}
-     */
-    function muvEraPushNow() {
-      var locator = muvEraLocator()
-      if (!locator) return
-      muvEraWarm(locator)   // 缓存里没数就去取；有数就直接用（状态是服务端算好的）
-      var tries = 0
-      var iv = setInterval(function () {
-        tries++
-        if (muvEraVars.data == null && tries <= 25) return
-        clearInterval(iv)
-        if (muvEraVars.data == null) return
-        var frames
-        try { frames = document.querySelectorAll('iframe.muv-iframe') } catch (_) { return }
-        if (!frames.length) return
-        var mvuTree = muvMvuWrap(muvEraVars.data)
-        for (var i = 0; i < frames.length; i++) {
-          muvEraDeliver(frames[i], 'era:getCurrentVars', muvEraVars.data)
-          muvEraSend(frames[i], 'mag_variable_update_ended', mvuTree)
-        }
-        // 这条日志是**诊断用**的：用户在控制台能直接看到"推了几棵树给几帧"，
-        // 比"卡上没反应"这种无可观测症状好判得多。
-        try { console.log('[muv-engine] era push → ' + Object.keys(muvEraVars.data).length + ' 棵树 → ' + frames.length + ' 帧（含 MVU 事件）') } catch (_) {}
-      }, 120)
-    }
-
-    /**
-     * 状态变化后的重推时刻表：立刻 + 1.5s + 4s。
-     *
-     * 三档分别覆盖：已经存在的卡帧（立刻）、刚被创建还在跑初始化脚本的帧（1.5s）、
-     * 以及滚动/懒渲染才出现的帧（4s）。没有这三档时实测选项填不上。
-     * @returns {void}
-     */
-    function muvEraSchedulePush() {
-      var delays = [0, 1500, 4000]
-      for (var i = 0; i < delays.length; i++) {
-        setTimeout(muvEraPushNow, delays[i])
-      }
-    }
-
-    /** 回灌去重账本（`会话|长度|块头 120 字` → 1）。声明口径同 muvHelloAt。@type {Object<string, number>} */
-    var muvVarFedSig = {}
-
-    function muvEraLocator() {
-      // ★★ 与 `fetchTavernCard` **同一逻辑同一处理**（别只修一半）。
-      //
-      // 上一版（P1-3 原稿）这里也把 `presetId` 兜底删了。同样的代价：`currentSessionId()`
-      // 拿不到时定位串成了空 ⇒ `muvEraFetchVars('')` 请求的是**服务端默认预设**的
-      // `initvarData` ⇒ 喂给卡 `data-era` 的变量树是**别的卡的**（实测默认预设是
-      // `川上富江`，它连正则剧本都是 0 条），卡拿到的路径全对不上 ⇒ 数值全空。
-      // 那比"不填"更糟：**填的是另一张卡的值**，而面板看不出来。
-      //
-      // 窄化兜底：有会话用会话，没有会话才退回面板预设（没有会话就没有"串会话"可言）。
-      var sid = ''
-      try { sid = currentSessionId() } catch (_) { sid = '' }
-      if (sid) return 'sessionId=' + encodeURIComponent(sid)
-      var pid = ''
-      try { pid = currentPresetId() } catch (_) { pid = '' }
-      if (pid) return 'presetId=' + encodeURIComponent(pid)
-      return ''
-    }
-
-    /**
-     * 深合并（era 桥专用）：`overlay` 覆盖 `base`，两边都是纯对象时递归，数组整体替换。
-     * 自足函数 —— 逐字提取的门禁要能单独执行它。
-     * @param {Object} base
-     * @param {Object} overlay
-     * @returns {Object}
-     */
-    function muvDeepMerge(base, overlay) {
-      var out = {}
-      var k
-      for (k in base) { if (Object.prototype.hasOwnProperty.call(base, k)) out[k] = base[k] }
-      for (k in overlay) {
-        if (!Object.prototype.hasOwnProperty.call(overlay, k)) continue
-        var b = out[k], o = overlay[k]
-        if (o && typeof o === 'object' && !Array.isArray(o) && b && typeof b === 'object' && !Array.isArray(b)) {
-          out[k] = muvDeepMerge(b, o)
-        } else {
-          out[k] = o
-        }
-      }
-      return out
-    }
-
-    /**
-     * 向 muv-table 取**卡声明的初始变量**、向 muv-engine 取**本会话运行时变量**，
-     * 合并（运行时覆盖初始）后交给 era 桥。
-     *
-     * 数据形态：`tavern-card` 的 `initvarData` —— 卡自己声明的变量树（`世界信息.时间.日期`、
-     * `公司.总现金`、`主播档案.超天酱.数值.好感度` …），正好是卡里 `data-era` 用的那套路径；
-     * `muv-engine/state` —— `muvFeedVariables` 从消息流里的 `<UpdateVariable><initvar>`
-     * 块回灌出来的运行时状态（ST 里由酒馆助手的 ERA 框架脚本维护的那一份）。
-     *
-     * ★ 诚实声明：运行时状态来自**本会话已装饰过的消息**，会话历史没回灌完之前它可能
-     *   只有部分数值 —— 绝不编数据，取不到就返回 `{}`（见 `muvEraDeliver`）。
-     * @param {string} locator
-     * @returns {Promise<Object>} 变量树，失败时 {}
-     */
-    function muvEraFetchVars(locator) {
-      var sid = ''
-      try {
-        if (locator && locator.indexOf('sessionId=') === 0) sid = decodeURIComponent(locator.slice(10))
-      } catch (_) { sid = '' }
-      var baseP = fetch('/api/muv-table/tavern-card' + (locator ? '?' + locator : ''))
-        .then(function (r) { return r.json() })
-        .then(function (d) {
-          return (d && d.ok && d.initvarData && typeof d.initvarData === 'object') ? d.initvarData : {}
-        })
-        .catch(function () { return {} })
-      var runP = sid
-        ? fetch('/api/muv-engine/state?sessionId=' + encodeURIComponent(sid))
-          .then(function (r) { return r.json() })
-          .then(function (d) {
-            if (!d || !d.ok || !d.state || typeof d.state !== 'object') return {}
-            // ★★ 必须剥掉端点那层 `{data, updatedAt}` 信封（2026-09-22 现场取证抓到）。
-            //
-            //   `/api/muv-engine/state` 回的是 `stateStore` 里那条记录本身：
-            //     `{ ok:true, state:{ data:{世界信息:…, 剧情选项:…}, updatedAt:… } }`
-            //   这里原来直接 `return d.state` ⇒ 运行时值被塞进**深一层** `stat.data.*`，
-            //   而卡读的是 `stat.剧情选项.选项1` ⇒ 读到的仍是**初始值**。
-            //   实测症状极具迷惑性：`data-era` 里 17 个填上 14 个（那些字段 initvar 有默认值），
-            //   **只有 剧情选项.选项1/2/3（initvar 默认是空串）是空的**，时间也停在 initvar 的 10:00
-            //   —— 看起来像"某几个字段没被填"，其实是**整份运行时状态都没接上**。
-            //   判据用"键数"分辨不出（信封和真值都可能非空），只有**比对一个 initvar 与运行时
-            //   取值不同的字段**才拦得住 —— 见 verify-era-bridge 里那条新增断言。
-            var s = d.state
-            return (s.data && typeof s.data === 'object') ? s.data : s
-          })
-          .catch(function () { return {} })
-        : Promise.resolve({})
-      return Promise.all([baseP, runP]).then(function (rs) {
-        var base = rs[0] || {}
-        var run = rs[1] || {}
-        var hasRun = false
-        for (var k in run) { if (Object.prototype.hasOwnProperty.call(run, k)) { hasRun = true; break } }
-        return hasRun ? muvDeepMerge(base, run) : base
-      })
-    }
-
-    /**
-     * 预热变量快照（幂等 + 去重）。`__muvHello` 时就开始取，这样卡 1200ms 后的那次
-     * `era:getCurrentVars` 命中缓存、当场有数（**数值要尽快到位**）。
-     * @param {string} locator
-     * @returns {void}
-     */
-    function muvEraWarm(locator) {
-      if (!locator) return
-      var now = Date.now()
-      if (muvEraVars.locator === locator) {
-        if (muvEraVars.inflight) return
-        if (muvEraVars.data != null && (now - muvEraVars.at) < MUV_ERA_TTL) return
-      }
-      muvEraVars.locator = locator
-      muvEraVars.at = now
-      muvEraVars.data = null
-      muvEraVars.inflight = true
-      muvEraFetchVars(locator).then(function (v) {
-        muvEraVars.inflight = false
-        muvEraVars.data = v
-        muvEraVars.at = Date.now()
-        muvEraFlushPending()
-      })
-    }
-
-    /**
-     * 一张卡在窗口内还能不能再收到应答。
-     * @param {string} key `data-muv-kv`（每个 iframe 一个命名空间）
-     * @returns {boolean}
-     */
-    function muvEraAllowed(key) {
-      var now = Date.now()
-      var g = muvEraGate[key]
-      if (!g || (now - g.t) > MUV_ERA_WINDOW) {
-        muvEraGate[key] = { t: now, n: 1 }
-        return true
-      }
-      if (g.n >= MUV_ERA_MAX_REPLIES) return false
-      g.n = g.n + 1
-      return true
-    }
-
-    /**
-     * 宿主 → 卡的事件注入（唯一出口）。
-     * @param {HTMLIFrameElement} frame
-     * @param {string} name
-     * @param {*} detail
-     * @returns {void}
-     */
-    function muvEraSend(frame, name, detail) {
-      if (!frame) return
-      try {
-        frame.contentWindow.postMessage({ __muvEvent: { name: name, detail: detail } }, '*')
-      } catch (_) {}
-    }
-
-    /**
-     * 把一份变量树按卡的语义投递回去。
-     *
-     * 卡里的形状是**实测**出来的（`_足控天堂2.png` 的《ERA 状态栏》脚本，4690-4740 行）：
-     *   - `eventOn('era:writeDone', d => d.statWithoutMeta && renderAll(d.statWithoutMeta))`
-     *   - `eventOn('era:queryResult', d => d.queryType === 'getCurrentVars' && d.result
-     *        && renderAll(d.result.statWithoutMeta || d.result.stat))`
-     * 所以 `getCurrentVars` 回 `era:queryResult`（`queryType` 必须原样叫 `getCurrentVars`，
-     * 否则卡那边整条 if 都不进）；`forceSync` 是「把当前状态同步出去」的语义，回 `era:writeDone`
-     * ——**不谎报一次写**：我们确实没有写，只是把手上这份状态当成同步结果递过去。
-     * @param {HTMLIFrameElement} frame
-     * @param {string} name 卡请求的事件名
-     * @param {Object} stat 变量树（拿不到就传 {}）
-     * @returns {void}
-     */
-    function muvEraDeliver(frame, name, stat) {
-      var s = (stat && typeof stat === 'object') ? stat : {}
-      if (name === 'era:forceSync') {
-        muvEraSend(frame, 'era:writeDone', { statWithoutMeta: s })
-        return
-      }
-      muvEraSend(frame, 'era:queryResult', {
-        queryType: 'getCurrentVars',
-        result: { stat: s, statWithoutMeta: s }
-      })
-    }
-
-    /**
-     * MVU 口径包装：卡里的 `pickStat()` **只认非空的 `stat_data`**（实测
-     * `1.txt` 里 `pickStat(o)` 的判据是 `o.stat_data && typeof o.stat_data === 'object'
-     * && Object.keys(o.stat_data).length`）。
-     *
-     * 所以凡是走"新 API"（`Mvu.getMvuData` / `TavernHelper.getVariables` / 事件 detail）
-     * 送出去的树，都要包成 `{stat_data:…}`；平铺树只在卡内 `readVar` 的路径查询里兜底命中。
-     * 已经是 MVU 形态（顶层就有非空 `stat_data`）的原样返回 —— 不重复包一层。
-     * @param {*} tree
-     * @returns {Object}
-     */
-    function muvMvuWrap(tree) {
-      try {
-        var t = (tree && typeof tree === 'object' && !Array.isArray(tree)) ? tree : {}
-        if (t.stat_data && typeof t.stat_data === 'object' && !Array.isArray(t.stat_data)) return t
-        return { stat_data: t }
-      } catch (_) { return { stat_data: {} } }
-    }
-
-    /**
-     * 应答卡内的 `__muvMvuReq`（`Mvu.getMvuData()` 的第一次调用）。
-     *
-     * 走**已有的事件通道**（`mag_variable_update_ended`）而不是新开一条：卡自己就在
-     * `eventOn('mag_variable_update_ended' | Mvu.events.VARIABLE_UPDATE_ENDED, ingestMvuEvent)`
-     * 上消费这个事件（实测 `1.txt` 的 `bindEvents()`），所以同一条消息既唤醒卡的刷新、
-     * 又被垫片 `__muvAbsorb` 吸进变量缓存 —— 一个出口覆盖"刷 UI"和"同步读"两件事。
-     * 数据没取回来就先记账（`muvMvuPending`），回来后在 `muvEraFlushPending` 里一起兑现。
-     * @param {HTMLIFrameElement} frame
-     * @returns {void}
-     */
-    function muvMvuReply(frame) {
-      if (!frame) return
-      var locator = muvEraLocator()
-      if (!locator) { muvEraSend(frame, 'mag_variable_update_ended', muvMvuWrap({})); return }
-      muvEraWarm(locator)
-      if (muvEraVars.data == null) {
-        muvMvuPending.push(frame)
-        while (muvMvuPending.length > 16) muvMvuPending.shift()
-        return
-      }
-      muvEraSend(frame, 'mag_variable_update_ended', muvMvuWrap(muvEraVars.data))
-    }
-
-    /**
-     * 卡内**变量写 API** 的宿主侧落地：`POST /api/muv-engine/state`。
-     *
-     * 覆盖的卡内入口（实测新卡的写链）：`Mvu.replaceMvuData` ·
-     * `TavernHelper.replaceVariables` / `insertOrAssignVariables` · 同名的裸全局 ·
-     * `triggerSlash('/setvar k=v')`。
-     *
-     * 口径（与 `muvFeedVariables` 完全一致，别只改一半）：
-     *  - **认不出会话就不写** —— 宁可这次不生效，也不把变量写进别的会话（或 'default'）；
-     *  - 只发卡送上来的那份 data，**不做任何求值**；
-     *  - 体积上限 `MUV_VARWRITE_MAX_BYTES`，超了直接丢（恶意卡不能靠一棵巨树撑爆服务端）；
-     *  - 落库成功后作废 era 缓存并**多档重推**：卡的写入口后面通常紧跟一次同步读
-     *    （`writeMany` → `readVars()`），推送不到位就会"点了没反应"。
-     * @param {HTMLIFrameElement} frame
-     * @param {*} payload `{data, replace}`
-     * @returns {void}
-     */
-    function muvVarWriteFromCard(frame, payload) {
-      var data = payload && payload.data
-      if (!data || typeof data !== 'object') return
-      var sid = ''
-      try {
-        var locator = muvEraLocator()
-        if (locator && locator.indexOf('sessionId=') === 0) sid = decodeURIComponent(locator.slice(10))
-      } catch (_) { sid = '' }
-      if (!sid) return
-      var body = ''
-      try {
-        body = JSON.stringify({ sessionId: sid, data: data, merge: payload.replace !== true })
-      } catch (_) { return }
-      if (!body || body.length > MUV_VARWRITE_MAX_BYTES) return
-      fetch('/api/muv-engine/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: body
-      }).then(function () {
-        try { muvEraVars.data = null } catch (_) {}
-        // ★ 变量修订号 +1：卡自己写了变量 ⇒ 带变量的缓存产物作废（同 muvFeedVariables）。
-        try { muvVarRevBump() } catch (_) {}
-        try { console.log('[muv-engine] 卡写变量 → 已落库（merge=' + (payload.replace !== true) + '）') } catch (_) {}
-        muvEraSchedulePush()
-      }).catch(function () {})
-    }
 
     /**
      * 兑现攒下来的请求（取数回来时调用一次）。
@@ -740,3 +414,261 @@
       } catch (_) {
         return text
       }
+    }
+
+    /**
+     * 本卡在**本次装饰**里处于第几层（SillyTavern 的 `depth` 口径）。
+     *
+     * 口径与 ST 一致 —— **最新一条是 0，越旧越大**。卡侧脚本
+     * `[8]「自动总结，隐藏6楼以上除摘要外内容」` 的 `minDepth = 7` 就是按这个口径写的
+     * （`regex-engine.js` 的 `depthAllows` 直接比大小）。
+     *
+     * ★ 这个换算**必须**在能看到 DOM 消息列表的地方做（`_decorateOne` 就在那个作用域里），
+     *   所以函数体在那边、接受的是已经算好的「本条之后还有几条」。
+     *   第一版把整件事放在工厂作用域并 `typeof messageTargets === 'function'` 兜底 ——
+     *   那个名字在工厂作用域里**永远**不是函数，于是恒定返回 0、看起来"接上了"其实没接上。
+     * @param {number} laterCount 页面上排在本条**之后**的消息条数
+     * @returns {number}
+     */
+    function muvDepthFromLaterCount(laterCount) {
+      var n = typeof laterCount === 'number' && isFinite(laterCount) && laterCount > 0 ? Math.floor(laterCount) : 0
+      return n
+    }
+
+    /**
+     * 这条消息是不是**已经有**状态栏了？（占位符 / 卡自带皮肤 / `<Status_block>` 三条路）
+     *
+     * 文本级兜底的**优先级判据**：上面三条任一命中，兜底一个字符都不动
+     * ——「占位符路径优先，既有行为不变」这条要求就落在这里。
+     * @param {string} text 已经过占位符/`<Status_block>` 处理的文本
+     * @param {string} sbHtml 卡自带的状态栏 HTML（`d.statusBarHtml`），没有就是空
+     * @returns {boolean}
+     */
+    function muvStatusAlreadyRendered(text, sbHtml) {
+      var s = String(text == null ? '' : text)
+      return !!sbHtml
+        || STATUS_PH_TEST.test(s)
+        || s.indexOf('class="muv-statusbar-wrap"') >= 0
+        || /<\s*Status_block\s*>/i.test(s)
+    }
+
+    /**
+     * 把「状态折叠块」的正文交给服务端既有的 loose 级联渲染。
+     *
+     * 为什么不在这里自己解析：`<details><summary>[角色状态]</summary>```- 😃 名字…```</details>`
+     * 那套形状（去围栏/去标签/section/角色块/字段行）已经在 `lib/status-cascade.js` 的
+     * loose 级里实现过一整个版本（含一串踩过的坑）——重写一份必然分叉。所以只把判定过的
+     * **块体**发给 `/api/muv-engine/render-status` 的新 `body` 入口（不经过
+     * `extractStatusBody`，因为这里没有 `<Status_block>` 包裹）。
+     * 服务端不可达时返回 ''（此时**不动**原文：宁可留着裸块，也不许把内容删掉）。
+     * @param {string} body
+     * @returns {Promise<string>} 渲染出的 HTML，'' 表示没渲染出来
+     */
+    async function muvRenderLooseStatusBody(body) {
+      try {
+        const r = await fetch('/api/muv-engine/render-status', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ body: body })
+        })
+        const d = await r.json()
+        return d && d.ok && d.html ? String(d.html) : ''
+      } catch (_) { return '' }
+    }
+
+    /**
+     * 文本级状态栏兜底：把消息开头/正文里的裸元信息渲染成状态栏，并把原文段**移除**。
+     *
+     * 两件都要成立才会改文本：判据命中（`muvTextStatusProbe` / `muvTextDetailsOf`）
+     * **并且**渲染成功。任何一步不算数就原样返回 —— 调用方（`_decorateOne`）见到
+     * `html === raw` 就不动 DOM，所以「没救回来」的代价只是维持现状，不会更差。
+     *
+     * ★ 替换串铁律：这里两处大段拼接（状态栏容器）一律用**函数式替换**，见
+     *   `muvFrameBlock` 的长注释（`$&` / `$'` / `` $` `` 会被字符串替换解析掉）。
+     * @param {string} text
+     * @param {boolean} already 已经有状态栏了（`muvStatusAlreadyRendered` 的结论）
+     * @returns {Promise<string>}
+     */
+    async function muvApplyTextStatus(text, already) {
+      if (!muvTextStatusOn() || already) return text
+      var out = String(text)
+      var probe = muvTextStatusProbe(out)
+      var details = muvTextDetailsOf(out)
+      if (!probe.prefix && !details) return text
+      var changed = false
+
+      if (probe.prefix) {
+        var inner = muvTextStatusPrefixHtml(probe.prefix)
+        if (inner) {
+          var wrap = muvTextStatusWrap('prefix', probe.prefix.raw, '', inner)
+          // ★ 函数式替换（铁律）：wrap 里是拼出来的 HTML，字符串替换会把 `$&` 吃掉
+          var next = out.replace(probe.prefix.raw, function () { return wrap })
+          if (next !== out) { out = next; changed = true }
+        }
+      }
+
+      if (details) {
+        var bodyHtml = await muvRenderLooseStatusBody(details.body)
+        if (bodyHtml) {
+          // 作者本来就用 `<details>` 折起来 ⇒ 还原成**折叠 UI**（默认收起），
+          // 内容是 loose 级的产物。summary 用的是块上原有的标签。
+          var innerHtml = '<details class="muv-sb-details"><summary>' + escHtml(details.label)
+            + '</summary>' + bodyHtml + '</details>'
+          var wrap2 = muvTextStatusWrap('details', details.raw, details.look, innerHtml)
+          var next2 = out.replace(details.raw, function () { return wrap2 })
+          if (next2 !== out) { out = next2; changed = true }
+        }
+      }
+
+      if (!changed) return text
+      try { ensureStatusCss() } catch (_) {}
+      return out
+    }
+
+    // ── 装饰产物内存缓存（2026-09-24，「切回会话秒开」）─────────────────────
+    //
+    // 取证（真机 CDP，`C:\deepseek harness\_probe-session-cache.mjs`）：切走→切回同一
+    // 会话，每条楼都重跑 beautifyMuv 全链 —— 每次切回 2~3 次 `/apply-regex-card`
+    // 服务端往返，首楼装饰 ~234ms。而产物其实是**纯函数**：给定（正文、depth、
+    // fullpage 旗标、卡），输出恒定 —— 服务端 `/apply-regex-card` 与 `/render-status`
+    // 都不读会话变量状态（见 lib/index.js 两个 handler）；变量更新走 era push
+    // （postMessage 推给**在线** iframe 的运行时通路），与"重装饰"无关。
+    //
+    // **缓存边界（2026-09-25 放宽）**：带 `iframe.muv-iframe` 的楼**与**带
+    // `.muv-statusbar-wrap` 的状态栏楼，都缓存。
+    //
+    // 为什么放宽（用户实测反馈：「点会话再切回去，状态栏要重新渲染」）：原边界把
+    // 内置 `.muv-sb` 与文本级状态栏楼排除在外，理由是"数值当场从消息文本解析、
+    // 缓存也省不了几毫秒"。但用户感知到的不是解析耗时，而是**切回来那段异步空窗** ——
+    // 取卡 + 服务端往返要 ~234ms，这期间该楼处于未装饰态，看起来就是"闪一下重渲染"。
+    // 缓存命中后这条路不再 await，同步交回产物，空窗消失。
+    //
+    // 为什么不冻变量：产物是**纯函数**（见上：两个 handler 都不读会话变量状态），
+    // 且键里现在带 `|v<rev>` 变量修订号 —— 任何真实变量变更都会 `muvVarRevBump()`
+    // 一次，把带变量的产物全部作废。见 `muvVarRev` 的长注释。
+    var muvDecorCache = {}
+    var muvDecorCacheAt = {}
+    /**
+     * 条目上限 / 单条体积上限 / **总字节上限**（2026-09-25 实测修正）。
+     *
+     * 为什么加总字节上限并把条数从 32 提到 512：真机实测（`_scratch\live-cache-count.mjs`，
+     * 逐行切走→切回数 `/apply-regex-card`）发现**命中的全是最后访问的三个会话，更早访问的全会
+     * 重装饰**（miss 23 / 41 / 3 次）—— 典型 LRU 被冲空。而 `32` 这个总条目上限实在太小：
+     * **一个长会话（实测 24 个产物楼）就能吃掉大半**，走三四个会话就全被挤掉，
+     * "切回秒开"于是只在最近几个会话上成立。
+     *
+     * 现在改成**双限界**：条数 ≤ 512 且总字节 ≤ 48MB。按条目是字符串、实测单条多为
+     * 几十 KB（农场 srcdoc ≈ 52KB、苍玄界封面 ≈ 119KB），48MB 足以装下十几个长会话；
+     * 真到上限时仍按 LRU 淘汰，内存不会被撑爆。
+     */
+    var MUV_DECOR_MAX = 512
+    var MUV_DECOR_ENTRY_MAX = 320 * 1024
+    var MUV_DECOR_TOTAL_MAX = 48 * 1024 * 1024
+    /** 当前缓存总字节（随写入/命中/淘汰维护；崩溃也不致命，只影响淘汰时机）。 */
+    var muvDecorBytes = 0
+
+    /**
+     * **变量状态修订号**（2026-09-25，"状态栏楼也能缓存"的安全性凭据）。
+     *
+     * 为什么需要：产物缓存键原先只含（会话、正文、depth、fullpage）—— 那是"产物是纯
+     * 函数"这个前提的直接翻译。放宽到缓存状态栏楼之后，必须再加一道**变量维度**的保险：
+     * 一旦真的有变量变更，带变量的产物要立刻作废，而不是等正文变化才自然失效。
+     *
+     * 挂在**真正的变更点**上（两处，都紧挨既有的 era 失效信号）：
+     *   ① `muvFeedVariables` POST `/extract` 成功 ⇒ 服务端 merge 进新变量；
+     *   ② 卡写变量 API POST `/state` 成功（`__muvVarWrite` 落地）。
+     * **故意不挂**在 `muvEraVars.data = null` 的第三处（约 L4445）：那是 TTL 过期重取，
+     * 数据可能一模一样 —— 挂上去只会让切回会话白白丢缓存。
+     *
+     * 计数而非时间戳：键要短、要稳定（同一状态同一键），时间戳会让每次读取都 miss。
+     *
+     * ★★ **必须按会话分开记**（2026-09-25 自查修正）：
+     *   第一版写成"全局单计数 + 切会话归零"，那是**错的**：A 会话的产物以 `v5` 存进缓存，
+     *   切到 B 时归零，切回 A 时键变 `v0` ⇒ **A 的缓存全部 miss** ⇒ 恰好把"切回秒开"
+     *   毁掉 —— 而切回秒开正是本缓存的立身之本。所以改成 `sid → rev` 的映射：
+     *   每个会话各自单调递增，切走切回**数值不变** ⇒ 键稳定 ⇒ 命中。
+     * @type {Object<string, number>}
+     */
+    var muvVarRevBySid = Object.create(null)
+
+    /**
+     * 取某会话的变量修订号（读不到会话 id 时退回 0 —— 与"键里必须带 sid"同一口径，
+     * 认不出会话的产物本来就不进缓存，见 `muvDecorKeyOf`）。
+     * @param {string} sid
+     * @returns {number}
+     */
+    function muvVarRevOf(sid) {
+      try { return (sid && muvVarRevBySid[sid]) || 0 } catch (_) { return 0 }
+    }
+
+    /** 记一次真实的变量变更（只影响**当前会话**，见 `muvVarRevBySid` 的长注释）。 */
+    function muvVarRevBump() {
+      try {
+        var sid = ''
+        try { sid = currentSessionId() } catch (_) { sid = '' }
+        if (!sid) return
+        muvVarRevBySid[sid] = ((muvVarRevBySid[sid] || 0) + 1) % 1000000007
+        // 有界：会话数超过 64 就丢掉最旧的一批（映射键就是会话 id，不会与产物缓存互相影响）
+        var ks = Object.keys(muvVarRevBySid)
+        if (ks.length > 64) { for (var i = 0; i < 16; i++) delete muvVarRevBySid[ks[i]] }
+      } catch (_) {}
+    }
+
+    /**
+     * 缓存键：会话 id + 正文键（与 `data-muv-kv` 同一个 `muvCompatKey` 散列）+
+     * depth + fullpage 旗标。depth/fullpage 进键是因为它们**真实改变产物**
+     * （`maxDepth/minDepth` 正则由 depth 决定；`muv-fullpage` 破格类由楼位旗标决定）。
+     *
+     * ★ fullpage **必须**进键（2026-09-25 恢复）：build k 曾去掉它，理由是"打标已写
+     *   在产物字符串里、缓存命中天然带标"—— 那句话**只在"打标与楼位无关"的前提下
+     *   自洽**。恢复楼位判据后，同一份 `text` 在封面楼与后续楼要产出**不同**的产物
+     *   字符串，键里不带 `|fp` 就会互相命中（封面楼的满宽产物被后续楼复用，或反之）。
+     *   详见 `muvFullpageFloor` 的长注释。
+     *
+     * ★ **变量修订号 `|v<n>` 也进键**（2026-09-25）：缓存边界从"只缓存 iframe 楼"
+     *   放宽到"也缓存状态栏楼"（用户实测反馈：切回会话状态栏要重新渲染）。产物虽是
+     *   纯函数，但状态栏的**观感**依赖变量，所以键里带一道变量维度保险 ——
+     *   任何真实变量变更都会 `muvVarRevBump()`，把带变量的产物一次作废。
+     *   同会话内数值不变 ⇒ 切走切回仍是同一键 ⇒ 命中（这正是要的秒开）。
+     *
+     * ★ 会话 id 只认**权威**来源（会话服务 / URL）：`currentSessionId()` 的第三档
+     *   DOM 属性兜底在切换瞬间是**旧会话**的值，拿它当键会把 A 会话的产物错记到
+     *   B 会话头上。认不出权威会话 ⇒ 返回 null ⇒ 本楼不缓存（与旧行为完全一致）。
+     * @param {string} text 装饰输入原文
+     * @param {number} depth 本次装饰的层号
+     * @returns {string|null}
+     */
+    function muvDecorKeyOf(text, depth) {
+      try {
+        var sid = ''
+        var svc = window.__DSH_TAVERN_SESSIONS__
+        if (svc && svc.list && typeof svc.list.getSnapshot === 'function') {
+          var snap = svc.list.getSnapshot()
+          var cur = snap && snap.current
+          if (cur && /^(session-)?[a-f0-9-]{20,}$/i.test(String(cur))) {
+            sid = 'session-' + String(cur).replace(/^session-/, '')
+          }
+        }
+        if (!sid) {
+          var m = location.href.match(/session[/=:-]([a-f0-9-]{20,})/i)
+          if (m && m[1]) sid = 'session-' + m[1].replace(/^session-/, '')
+        }
+        if (!sid) return null
+        var fp = false
+        try { fp = muvFullpageFloorNow() === true } catch (_) {}
+        var vr = 0
+        try { vr = muvVarRevOf(sid) } catch (_) {}
+        var d = (typeof depth === 'number' && isFinite(depth)) ? depth : 0
+        return sid + '|' + muvCompatKey(text) + '|d' + d + (fp ? '|fp' : '') + '|v' + vr
+      } catch (_) { return null }
+    }
+
+    function muvDecorCacheGet(key) {
+      try {
+        if (Object.prototype.hasOwnProperty.call(muvDecorCache, key)) {
+          muvDecorCacheAt[key] = Date.now()
+          return muvDecorCache[key]
+        }
+      } catch (_) {}
+      return null
+    }

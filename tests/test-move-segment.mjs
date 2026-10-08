@@ -32,6 +32,25 @@ const NODE = process.execPath
 const MIN_ASSERTIONS = 10
 let pass = 0, fail = 0
 const cleaned = []
+/** ★ 尚未清理的沙盒（用于**崩溃路径**兜底，见 cleanupAll）。 */
+const live = []
+
+/**
+ * ★★ **崩溃路径的 `finally`**（Lead 要求）：`try/finally` 在"进程被异常打断"时**不一定**执行到，
+ *   所以这里用 `process.on('exit')` 作兜底 —— 它在本进程**任何**退出路径上都会跑（含未捕获异常）。
+ *   那正是先前泄漏的形态：B3 崩溃 ⇒ 跳过 dropSandbox ⇒ 留下一个 worktree（被"自证清理"断言抓到）。
+ * ★ 职责分开（Lead 要求）：**清理**在 finally/exit 里做并**打印被删路径**；
+ *   **后置断言**（"自建条目都不在了"）在 ④ 里单独做 —— 两者不混。
+ */
+function cleanupAll() {
+  for (const d of live.slice()) {
+    try { execFileSync('git', ['worktree', 'remove', '--force', d], { cwd: REPO, stdio: 'ignore' }) } catch { /* 忽略 */ }
+    fs.rmSync(d, { recursive: true, force: true })
+    console.log('  （兜底清理）已移除：' + d)
+  }
+  if (live.length) { try { execFileSync('git', ['worktree', 'prune'], { cwd: REPO, stdio: 'ignore' }) } catch { /* 忽略 */ } }
+}
+process.on('exit', cleanupAll)
 
 /** ★ 防复发：判断 import 是否已存在时，**只看 import 那一行**（不许全文 Contains）。 */
 function assertImportPresent(file, needle) {
@@ -54,12 +73,14 @@ function makeSandbox(tag) {
   const dir = path.join(os.tmpdir(), 'muv-move-' + tag + '-' + Date.now())
   fs.rmSync(dir, { recursive: true, force: true })
   execFileSync('git', ['worktree', 'add', '--detach', dir, 'HEAD'], { cwd: REPO, stdio: 'ignore' })
+  live.push(dir)                      // ★ 先登记再返回 ⇒ 之后任何异常/崩溃都能被兜底清理
   return dir
 }
 function dropSandbox(dir) {
   try { execFileSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO, stdio: 'ignore' }) } catch { /* 忽略 */ }
   fs.rmSync(dir, { recursive: true, force: true })
   try { execFileSync('git', ['worktree', 'prune'], { cwd: REPO, stdio: 'ignore' }) } catch { /* 忽略 */ }
+  const i = live.indexOf(dir); if (i >= 0) live.splice(i, 1)
   cleaned.push(dir)
 }
 const runGen = (dir, env = {}) => spawnSync(NODE, [
@@ -165,6 +186,18 @@ console.log('\n⑦ ★ B3：接线写成**值捕获**（`x: MUV_X`）⇒ 必须�
   } else {
     check('★ B3 生效后判据红并点名（**因注入未生效 ⇒ 无法判定**）', false, '横幅未出现')
   }
+  dropSandbox(d)
+}
+
+console.log('\n⑧ ★ 守卫仍会响（加严后的反证）：把待查文本改坏 ⇒ 工具必须 fail 并点名')
+{
+  const d = makeSandbox('tamper')
+  const r = runGen(d, { MUV_MOVE_TAMPER_LOOKUP: '1' })
+  assertInjectionBanner(r, 'TAMPER_LOOKUP')
+  const o = String(r.stderr || '') + String(r.stdout || '')
+  check('★ 守卫红并点名（该函数原文出现 0 次 / 找不到逐字原文）',
+    r.status !== 0 && /恰好 1 次|找不到该函数的逐字原文/.test(o), fullOut(r))
+  check('★ 被拒后没有产出半成品（不写新模块片）', !fs.existsSync(path.join(d, 'src', 'client', 'mod-status-css.js')))
   dropSandbox(d)
 }
 

@@ -32,7 +32,8 @@ const REPO = path.resolve(HERE, '..')
 const NODE = process.execPath
 // ★ 下限口径：**先测量再写死**。2026-10-08 本笔落地时实测 pass+fail = 26
 //   （复算：node tests/test-move-segment.mjs | tail -1）。本笔新增 ⑨/⑨-正对照/同作用域组 共 6 条 ⇒ 10 → 20。
-const MIN_ASSERTIONS = 20
+//   ★ task-32 再新增 ⑪ 段（真算 + 两条反证 + 输入敏感性）共 11 条 ⇒ 20 → 31。
+const MIN_ASSERTIONS = 31
 
 // ★ 搬迁目标（**参数化**：换目标只改这一处）。
 //   目标刻意保留 = **笔 B 要真搬走的那个函数**（ensureStatusCss）⇒ 本测试 = 真搬迁的**同形预演**。
@@ -117,14 +118,32 @@ assertTargetStillInArtifact()
 const HOST = hostPartOf()
 console.log('（本测试目标 = ' + TARGET.fn + '，接线 ' + TARGET.wiring + '，承载片 = ' + HOST + '）')
 
+// ── ★★ 环境预检（必须在任何断言之前）：本测试**依赖 node 能 spawn 子进程** ──────
+//   为什么要有这一段：本测试用 `spawnSync(NODE, …)` 驱动生成器与四条判据，用 `execFileSync('git', …)`
+//   建 worktree。若**宿主环境禁止 node spawn 子进程**（实测本机 WorkBuddy 沙箱：任何
+//   `spawnSync`/`execFileSync` 一律 `EBUSY`），则每条断言都会拿到 `exit=null` ⇒ **18 条断言全红**，
+//   而那**不是代码坏了**，是环境不可用。★ 这正是本会话反复踩的"判据自己会骗人"家族：
+//   **环境故障被伪装成代码故障**（与"恒不绿的坏样本""SKIP 被当 pass"同一族）。
+//   ⇒ 口径：检测到 spawn 不可用 ⇒ **显式报"环境不可用"并以非零退出**，
+//     且**不谎称**"断言 ×N 失败"。反之若 spawn 可用而本测试报红 ⇒ 那才是**真红**。
+{
+  const probe = spawnSync(NODE, ['-e', '0'], { encoding: 'utf8' })
+  if (probe.error) {
+    console.error('\n⛔ 环境不可用：本测试需要 node 能 spawn 子进程，但实测 `spawnSync(node,-e,0)` 报 '
+      + probe.error.code + '。')
+    console.error('   ⇒ 这不是代码故障：请换到允许 spawn 的环境重跑（本仓 CI / DSH 宿主），'
+      + '或在本机用 `npm test` 的 runner。★ 按纪律：**不跳过、不冒充 pass、也不冒充 fail**。')
+    process.exit(2)   // ★ 专用退出码 2 = 环境不可用（与"断言失败 = 1"区分 ⇒ 读数可判别）
+  }
+}
+
 function makeSandbox(tag) {
   const dir = path.join(os.tmpdir(), 'muv-move-' + tag + '-' + Date.now())
   fs.rmSync(dir, { recursive: true, force: true })
   execFileSync('git', ['worktree', 'add', '--detach', dir, 'HEAD'], { cwd: REPO, stdio: 'ignore' })
   live.push(dir)                      // ★ 先登记再返回 ⇒ 之后任何异常/崩溃都能被兜底清理
   return dir
-}
-function dropSandbox(dir) {
+}function dropSandbox(dir) {
   try { execFileSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO, stdio: 'ignore' }) } catch { /* 忽略 */ }
   fs.rmSync(dir, { recursive: true, force: true })
   try { execFileSync('git', ['worktree', 'prune'], { cwd: REPO, stdio: 'ignore' }) } catch { /* 忽略 */ }
@@ -320,6 +339,75 @@ console.log('\n⑩ ★ 搬迁目标的同作用域组必须 ok=true（名单自�
   check('★ 同作用域组 ok=true 且 members ≥ 1（防空分组假绿）', grp.ok === true && grp.members.length >= 1 && grp.members.length === uniq.length,
     JSON.stringify({ ok: grp.ok, members: grp.members.length, names: uniq.length, problems: grp.problems }).slice(0, 400))
   check('★ 反证：空分组 ⇒ ok=false（这条断言**会红**）', cs.scopeGroupReport({ src: srcNow, names: [] }).ok === false)
+}
+
+console.log('\n⑪ ★ task-32：`preMoveScopeEvidence` 必须**真算**（不许写死）+ 两条反证')
+{
+  const cs = await import(pathToFileURL(path.join(REPO, 'tools', 'client-scope.mjs')).href)
+  const srcNow = fs.readFileSync(path.join(REPO, 'lib', 'client.js'), 'utf8')
+
+  // ⑪-a 正对照：正常搬 ⇒ 账本写 `live`，且同一条 console 里**打印出真算读数**
+  {
+    const d = makeSandbox('scope-ok')
+    const r = runGen(d)
+    const o = String(r.stdout || '') + String(r.stderr || '')
+    check('★ ⑪-a 正对照：exit=0', r.status === 0, fullOut(r))
+    check('★ ⑪-a 正对照：打印 preMoveScopeEvidence = **live**（值来自读数）',
+      /preMoveScopeEvidence = \*\*live\*\*/.test(o) && /真算：scope=/.test(o), fullOut(r))
+    // 账本落盘值 = live（读沙盒里的 MANIFEST，不读主仓）
+    let ev = null
+    try {
+      const mf = JSON.parse(fs.readFileSync(path.join(d, 'src', 'client', 'MANIFEST.json'), 'utf8'))
+      ev = mf.modules['src/client/' + TARGET.module] && mf.modules['src/client/' + TARGET.module].preMoveScopeEvidence
+    } catch { /* 诊断在下一条 */ }
+    check('★ ⑪-a 正对照：账本 `preMoveScopeEvidence` === "live"', ev === 'live', '实际 = ' + JSON.stringify(ev))
+    dropSandbox(d)
+  }
+
+  // ⑪-b 反证一：**代码层** —— 把"算不出"注入（`MUV_MOVE_SCOPE_UNRESOLVED=1`）⇒ 必须非零 + 点名 + 不落盘
+  {
+    const d = makeSandbox('scope-bad')
+    const r = runGen(d, { MUV_MOVE_SCOPE_UNRESOLVED: '1' })
+    const o = String(r.stderr || '') + String(r.stdout || '')
+    check('★ ⑪-b 反证：exit≠0（fail-closed，不是静默降级）', r.status !== 0, fullOut(r))
+    check('★ ⑪-b 反证：报错**点名**"算不出来"+ 点名该函数', /算不出来/.test(o) && new RegExp(TARGET.fn).test(o), fullOut(r))
+    check('★ ⑪-b 反证：**没有**产出新模块片（不落半成品）',
+      !fs.existsSync(path.join(d, 'src', 'client', TARGET.module)), TARGET.module + ' 竟然存在')
+    dropSandbox(d)
+  }
+
+  // ⑪-c 反证二：**判据层** —— `scopeGroupReport` 的两条"必然算不出"输入 ⇒ ok=false（证明判据会咬）
+  {
+    const gEmpty = cs.scopeGroupReport({ src: srcNow, names: [] })
+    check('★ ⑪-c 反证二：空名单 ⇒ ok=false', gEmpty.ok === false, JSON.stringify(gEmpty.problems))
+    const gGhost = cs.scopeGroupReport({ src: srcNow, names: ['__task32_no_such_fn__'] })
+    check('★ ⑪-c 反证二：不存在的函数名 ⇒ ok=false 且点名"找不到函数"',
+      gGhost.ok === false && (gGhost.problems || []).some((p) => /找不到函数/.test(p)), JSON.stringify(gGhost.problems))
+    // 正对照（同一判据的"能算出"侧）：目标函数 ⇒ ok=true 且成员 ≥ 1
+    const gOk = cs.scopeGroupReport({ src: srcNow, names: [TARGET.fn] })
+    check('★ ⑪-c 正对照：目标函数 ⇒ ok=true 且成员 ≥ 1（判据不是永假）',
+      gOk.ok === true && gOk.members.filter((m) => m.name === TARGET.fn).length >= 1, JSON.stringify(gOk.problems))
+  }
+
+  // ⑪-d 输入敏感性：换成**另一个作用域**的函数 ⇒ scope 读数必须**不同**（否则"真算"≈"写死"）
+  {
+    const a = cs.scopeGroupReport({ src: srcNow, names: [TARGET.fn] })
+    const other = (() => {
+      const toks = cs.tokenize(srcNow)
+      for (let i = 0; i < toks.length; i++) {
+        if (toks[i].type !== 'ident' || toks[i].value !== 'function') continue
+        const idt = toks[i + 1]
+        if (idt && idt.type === 'ident' && idt.value !== TARGET.fn) {
+          const g = cs.scopeGroupReport({ src: srcNow, names: [idt.value] })
+          if (g.ok && g.scope && g.scope !== a.scope) return g
+        }
+      }
+      return null
+    })()
+    check('★ ⑪-d 输入敏感性：存在另一个**不同作用域**的目标 ⇒ scope 读数不同（非恒同值）',
+      other !== null && other.scope !== a.scope,
+      'a.scope=' + JSON.stringify(a.scope) + ' other=' + JSON.stringify(other && other.scope))
+  }
 }
 
 console.log('\n④ 非空跑下限 + 自证清理（hermetic）')

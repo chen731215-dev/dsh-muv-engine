@@ -18,6 +18,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { unverified } from './verify-unverified.mjs'
 import { readPngCard } from '../../../dsh-muv-table/lib/png-card.js'
 import { loadClientRenderers, loadClientRenderersFrom, extractFunction, clientSource } from '../../tests/test-client-source.mjs'
 import { openPage, evalJson, sleep } from './verify-shared.mjs'
@@ -30,7 +31,7 @@ function check(name, cond, detail) {
 }
 
 const CARD = 'C:\\MySpecialFolder\\SillyTavern\\data\\default-user\\characters\\_足控天堂2.png'
-if (!fs.existsSync(CARD)) { console.log('SKIP 找不到真卡 ' + CARD); process.exit(0) }
+if (!fs.existsSync(CARD)) unverified('真卡 ' + CARD, ['用 MUV_CARD / MUV_CARD_FILE 指定你机器上的那张卡'])   // ★ 原为 SKIP + exit(0) = '没跑却报成功'
 
 const card = readPngCard(CARD)
 const data = card.data && typeof card.data === 'object' ? card.data : card
@@ -44,7 +45,7 @@ function fencedBody(rep) {
 const PAYLOADS = scripts
   .filter(s => String(s?.replaceString || '').includes('```'))
   .map(s => ({ name: String(s.scriptName), html: fencedBody(String(s.replaceString)) }))
-if (!PAYLOADS.length) { console.log('SKIP 拿不到围栏文档'); process.exit(0) }
+if (!PAYLOADS.length) unverified('围栏文档（该卡里没有可用的围栏样本）', ['换一张带围栏文档的卡'])   // ★ 原为 SKIP + exit(0)
 
 // ★ 构建环境保真度：真实 DSH 里 `cardHtmlIframe` 在**浏览器里**跑，`window.innerHeight`
 // 存在 ⇒ `rewriteVhMinHeight` 把卡里的 `min-height:100vh` 烤成父页视口常量（ST 语义，
@@ -61,7 +62,7 @@ const STARTS = [600, 900, 1500]
 
 const EDGE = ['C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'].find(p => fs.existsSync(p))
-if (!EDGE) { console.log('SKIP 找不到 msedge.exe'); process.exit(0) }
+if (!EDGE) unverified('msedge.exe', ['设 MUV_EDGE=<msedge.exe 路径>'])   // ★ 原为 SKIP + exit(0)
 
 // 探针页：每个文档 × 每个起始高度一个 iframe，跑真实的 cardHtmlIframe 产物 + 真实的
 // 父页处理器（两者都从 lib/client.js 源码里取，测的是上线代码）。见下方 runProbe()。
@@ -137,7 +138,7 @@ function runProbe(payloads, R = loadClientRenderers(undefined, PROBE_WIN), tag =
 const result = {}
 for (const p of PAYLOADS) Object.assign(result, runProbe([p]))
 
-if (!Object.keys(result).length) { console.log('SKIP 没有测量结果'); process.exit(0) }
+if (!Object.keys(result).length) unverified('测量结果（浏览器没跑起来 / 拿不到 dump-dom）', ['检查 MUV_EDGE 与无头浏览器能否启动'])   // ★ 原为 SKIP + exit(0)
 
 const byPayload = {}
 for (const [key, v] of Object.entries(result)) {

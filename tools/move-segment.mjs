@@ -78,6 +78,7 @@ const SKIP_PARTS = !!process.env.MUV_MOVE_SKIP_PARTS_INSERT
 //   ★ 口径：**若某支不红 ⇒ 结论是"缺一条判据"，不是"再换个坏样本"** ⇒ 补判据，不许绕过去。
 //   ★ 口径（判"某分支是否还存在"）：看**非注释命中数 = 0**；同名串只出现在注释里属**历史留档**，不算存在。
 //     （这条来自一次真实误报：自查把注释里的字面量算成了"仍在读该环境变量"。）
+const TAMPER_LOOKUP = !!process.env.MUV_MOVE_TAMPER_LOOKUP   // 守卫反证用：把待查文本改坏 ⇒ guard 必响
 const NO_DELETE = !!process.env.MUV_MOVE_NO_DELETE
 const NO_BUMP = !!process.env.MUV_MOVE_NO_BUMP
 const VALUE_CAPTURE = !!process.env.MUV_MOVE_VALUE_CAPTURE
@@ -141,8 +142,22 @@ const modText = [
   ...body.split('\n'),
 ].join('\n') + '\n'
 if (!/const\s+__wiring\s*=\s*\{[\s\S]*?\n\s*\}\s*$/.test(modText)) fail('生成的接线块不在**片末**（现有判据要求块在片末）')
-const newHostText = NO_DELETE ? hostText : hostText.replace(fnText + '\n', '')   // B1：copy 而非 move
-if (newHostText === hostText) fail('从承载片里移除函数失败（逐字匹配没命中）')
+// ★★ 加严（Lead 建议、采纳）：「**恰好 1 次**」口径 —— 与本会话反复用的"唯一子串 + 命中次数校验"同族。
+//   原先用 `String.replace(fnText + '\n', '')`（**只替换首次出现**）⇒ 若同一片里该原文出现 2 次，
+//   "移除"只删 1 处，而"不是原样就算过"的守卫会**放行** ⇒ 留下一个**半搬运**的产物（静默）。
+//   ⇒ 先数次数，不为 1 就**响亮**失败；再算 `wouldRemove`、再按注入决定是否施加。
+const fnNeedle = TAMPER_LOOKUP ? (fnText + '\n// 故意改坏（守卫反证）') : (fnText + '\n')
+const beforeCnt = hostText.split(fnNeedle).length - 1
+if (beforeCnt !== 1) fail('承载片里该函数原文出现 ' + beforeCnt + ' 次（要求**恰好 1 次**）——'
+  + '改错地方 / 有重复副本都会让"搬运"变成半搬运，故在此 fail-closed')
+// ★ 守卫的**本义**是"该片里必须能找到这段逐字原文"（防"改错了地方"），而**不是**"移除动作必须被施加" ⇒
+//   原来写成 `if (newHostText === hostText) fail(...)` 时，B1 注入（故意不删）会**先撞这条守卫**、
+//   在打印注入横幅之前就退出 ⇒ 那条注入永远到不了判据（实测：stderr = 「从承载片里移除函数失败」）。
+//   ⇒ 改成判"**移除本可完成**"，再按注入决定是否施加。守卫仍有意义，注入才可达。
+// ★ 守卫仍会响的反证（常驻测试里）：MUV_MOVE_TAMPER_LOOKUP=1 会把待查文本改坏 ⇒ 上面两条 guard 必响。
+const wouldRemove = hostText.replace(fnNeedle, '')
+if (wouldRemove === hostText) fail('承载片里找不到该函数的逐字原文（无法定位待搬代码）')
+const newHostText = NO_DELETE ? hostText : wouldRemove   // B1：copy 而非 move
 
 // ── ★ 重切分：新 parts 顺序 + 逐片元数据（**显式职责**）──
 const baseParts = manifest.parts.map((p) => ({ ...p }))
@@ -190,7 +205,7 @@ const textOf = (p) => (p.path === modPath ? modText : (p.path === host.path ? ne
   }
 }
 
-const INJ = [SKIP_PARTS && 'SKIP_PARTS', NO_DELETE && 'NO_DELETE', NO_BUMP && 'NO_BUMP', VALUE_CAPTURE && 'VALUE_CAPTURE'].filter(Boolean)
+const INJ = [SKIP_PARTS && 'SKIP_PARTS', NO_DELETE && 'NO_DELETE', NO_BUMP && 'NO_BUMP', VALUE_CAPTURE && 'VALUE_CAPTURE', TAMPER_LOOKUP && 'TAMPER_LOOKUP'].filter(Boolean)
 console.log('  注入生效：' + (INJ.length ? INJ.join(',') + '  ★' : '（无注入）'))
 console.log('① 分片：' + host.path + ' 移除 ' + fnText.split('\n').length + ' 行；新增 ' + modPath
   + '（' + modText.split('\n').length + ' 行）' + (SKIP_PARTS ? '   ★★ 故障注入：**跳过 parts 插入**' : ''))

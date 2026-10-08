@@ -3464,3 +3464,44 @@ const r = scopeGroupReport({ src: fs.readFileSync('lib/client.js','utf8'), names
 
 **指向**：该方向已立为 `task-16`「互锁核心的『改接线』分片（wiringReport/landingReport 的首个真实用例）」。
 优先级低于两仓的 S3 —— Lead 会在 S3 之后再排。
+
+### 44.9 同伴仓钉版本 · 升级动作 · 「CI 口径 vs 发布组合」
+
+**现状**：CI（`.github/workflows/check.yml`）与 `tools/verify/verify-handoff-restore.mjs`
+都把同伴仓 `dsh-muv-table` **钉死在同一个 sha**：
+
+```
+MUV_TABLE_SHA = 8be6643754237867c7e28bef7e69213932a0f21b
+（= dsh-muv-table 默认分支 master 在 2026-09-26 的 tip；两处必须一致）
+```
+
+**为什么必须钉**（承重依赖，任一条断 ⇒ CI 立刻红，而那不代表 muv 坏了）：
+
+```
+链1 tests/test-regex-engine.mjs 静态 import ../../dsh-muv-table/lib/png-card.js 与 test-cards.mjs
+链2 lib/index.js 用**裸名** import dsh-muv-table/lib/muv-parser.js ⇒ 必须有 node_modules junction
+链3 lib/var-tracker.js 同上（tests/test-era-vars.mjs 静态 import 它）
+⇒ 兄弟目录 clone + junction 两步都不能省；`npm ci` 确实不需要。
+```
+
+**升级同伴仓 sha 是【显式动作】**（这正是"可复现"的定价：失去"同伴仓顺手修 bug 就自动跟到"的便利）：
+
+```
+1) 取同伴仓远端默认分支 tip：git ls-remote https://github.com/chen731215-dev/dsh-muv-table.git HEAD
+   （或 api.github.com/repos/chen731215-dev/dsh-muv-table/commits?per_page=1 —— 注意匿名额度 60/小时）
+2) 把 .github/workflows/check.yml 的 MUV_TABLE_SHA 与
+   tools/verify/verify-handoff-restore.mjs 里 REPOS 的 sha 字段**同时**改成新值
+3) 本地跑 node tools/verify/verify-handoff-restore.mjs 确认能钉住（网络通时）
+4) 提交信息里写明"升级同伴仓 sha：<旧> → <新>"，让这条动作可追溯
+★ 钉错的后果是**响亮的**：CI 那一步会 fetch 失败或 rev-parse 不符并 throw ⇒ 红；
+  绝不会静默回退到 tip（这是钉版本的全部意义）。
+```
+
+**★ 一条容易误解的口径：CI 的绿 ≠ 发布组合的绿。**
+
+```
+package.json 声明 dsh-muv-table: ^0.2.2（dependencies + peerDependencies），
+而 CI 走的是 **GitHub 仓库的钉死 sha**，**不走 npm 安装**。
+⇒ CI 绿只能说明"与那个 sha 的组合可跑"，**不能认证**"用户从 npm 装到的组合可跑"。
+   不要求改设计（本地开发树也是这个模型），但别把 CI 绿当成发布组合的证书。
+```

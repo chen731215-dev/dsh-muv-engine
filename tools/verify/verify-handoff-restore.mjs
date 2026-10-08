@@ -14,7 +14,9 @@ import path from 'node:path'
 
 const REPOS = [
   { name: 'dsh-muv-engine', branch: 'master', test: ['tests/test-status-cascade.mjs', 'tests/test-client-render.mjs'] },
-  { name: 'dsh-muv-table', branch: 'master', test: ['test-png-card.mjs', 'test-muv-parser.mjs', 'test-preset-resolve.mjs'] },
+  // ★ 钉死 sha（与 CI 同一个值）：跟随默认分支 tip 会让「同伴仓一改名就红」，那不是本仓的问题。
+  //   升级同伴仓 sha 是**显式动作**，见 HANDOFF.md 的「升级同伴仓 sha」一节。
+  { name: 'dsh-muv-table', branch: 'master', sha: '8be6643754237867c7e28bef7e69213932a0f21b', test: ['test-png-card.mjs', 'test-muv-parser.mjs', 'test-preset-resolve.mjs'] },
   { name: 'dsh-tavern-v2', branch: 'main', test: [] },
 ]
 
@@ -45,9 +47,14 @@ function resolveIn(dir, rel) {
   return null
 }
 
-/** 克隆失败：环境不可达 → SKIP；文档真的写错（分支/仓库不存在）→ FAIL。 */
+/** 克隆失败：环境不可达 → SKIP；文档真的写错（分支/仓库/sha 不存在）→ FAIL。 */
 const NETWORK_ISH = /could not resolve host|unable to access|failed to connect|timed out|timeout|RPC failed|early EOF|Connection (?:was )?reset|network|ETIMEDOUT|proxy|Failed to connect/i
-const DOC_BUG = /Remote branch|not found|couldn't find remote ref|does not exist|Repository not found/i
+// ★ `not our ref` / `upload-pack` 必须在这里：**钉死的 sha 不存在**时 git 报的是
+//   `fatal: remote error: upload-pack: not our ref <sha>`。原先这条不在列表里 ⇒ 会被归成
+//   「原因不明 ⇒ SKIP」= **半空绿**，而 task-10 要的恰恰是"钉错 sha 必须红"。
+//   （实测抓到：我一度把这条误判成"会走判红分支"，因为我探针脚本最后一行是**写死的结论**、
+//     与自己算出来的 DOC_BUG=false 相矛盾 —— 探针该只说事实，不该替数据下结论。）
+const DOC_BUG = /Remote branch|not found|couldn't find remote ref|does not exist|Repository not found|not our ref|upload-pack/i
 
 const root = path.join(os.tmpdir(), 'dsh-restore-check-' + Date.now())
 fs.mkdirSync(root, { recursive: true })
@@ -61,11 +68,38 @@ console.log('[1] 从 GitHub 克隆（照 HANDOFF 第 2 节 方式 A）')
 for (const r of REPOS) {
   const dir = path.join(root, r.name)
   try {
-    git(['clone', '--quiet', '--branch', r.branch, '--depth', '1',
-      `https://github.com/chen731215-dev/${r.name}.git`, dir], root)
+    // ★ 有 `sha` 就**钉死到那个 sha**（fetch 那一个提交 + detach），而不是跟随默认分支 tip。
+    //   理由与 CI 那步一致：跟随 tip ⇒ 同伴仓一改名就红，那不是本仓的问题。
+    //   钉死的 sha 若**不存在** ⇒ fetch 失败 ⇒ 异常 ⇒ 走下面的分支（不会静默回退到 tip）。
+    if (r.sha) {
+      // ★ 目录必须先建：`git clone` 会自己建目录，而 `git init` **不会** ——
+      //   不建就会 `spawnSync git ENOENT`（cwd 不存在），而且会被下面的 catch 归成
+      //   「环境问题 ⇒ SKIP」⇒ 半空绿。（这是本笔一度引入的 bug，实测抓到后修掉。）
+      fs.mkdirSync(dir, { recursive: true })
+      try {
+        git(['init', '--quiet', '.'], dir)
+        git(['remote', 'add', 'origin', `https://github.com/chen731215-dev/${r.name}.git`], dir)
+        git(['fetch', '--quiet', '--depth', '1', 'origin', r.sha], dir)
+        git(['checkout', '--quiet', '--detach', 'FETCH_HEAD'], dir)
+      } catch (e) {
+        // ★ 失败时**把刚建的空目录删掉**：否则 [2] 会看到"目录在、文件缺"，
+        //   把「没克隆成功（应 SKIP）」误判成「关键文件缺失（FAIL）」——
+        //   而那是一条**假红**（网络不通不是本仓的问题）。实测抓到。
+        //   （与 `git clone` 路径的行为对齐：失败 ⇒ 目录不存在 ⇒ [2] SKIP。）
+        fs.rmSync(dir, { recursive: true, force: true })
+        throw e
+      }
+    } else {
+      git(['clone', '--quiet', '--branch', r.branch, '--depth', '1',
+        `https://github.com/chen731215-dev/${r.name}.git`, dir], root)
+    }
     const head = git(['rev-parse', '--short', 'HEAD'], dir).trim()
     check(`克隆 ${r.name}`, fs.existsSync(path.join(dir, 'package.json')), '缺少 package.json')
-    console.log(`       HEAD ${head}  分支 ${r.branch}`)
+    if (r.sha) {
+      check(`克隆 ${r.name} 钉到了 ${r.sha.slice(0, 12)}…`,
+        head.startsWith(r.sha.slice(0, head.length)), `实际 ${head}`)
+    }
+    console.log(`       HEAD ${head}  ${r.sha ? '钉死 sha ' + r.sha.slice(0, 12) + '…' : '分支 ' + r.branch}`)
   } catch (e) {
     const msg = String(e.message || e).slice(0, 200)
     // 环境不可达 ⇒ 响亮跳过（不判红）；分支/仓库不存在 ⇒ 文档真写错了，判红

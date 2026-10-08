@@ -10,7 +10,7 @@
 #   · 相当一部分门禁要真 Edge（CDP），Linux 上根本没得跑，绿了也不代表什么。
 #
 # 为什么有一个「同伴仓」步骤：本仓的测试按**相对路径** import 同伴仓
-#   （`../dsh-muv-table/lib/png-card.js`、`../dsh-muv-table/test-cards.mjs`），
+#   （`tests/` 里是 `../../dsh-muv-table/...`，`tools/verify/` 里是 `../../../dsh-muv-table/...`），
 #   而 `lib/index.js` 按**裸名** import 它（`dsh-muv-table/lib/muv-parser.js`）。
 #   干净 checkout 里两者都不存在 ⇒ 会得到一片「Cannot find module」的假红。
 #   所以：把同伴仓 clone 成**仓库的兄弟目录**（相对路径要的就是这个位置），
@@ -47,10 +47,27 @@ jobs:
         with:
           node-version: '22' # package.json engines: node >=20
 
-      - name: 同伴仓 dsh-muv-table（相对路径要兄弟目录，裸名要 node_modules 链接）
+      - name: 同伴仓 dsh-muv-table（★ 显式钉死 sha；相对路径要兄弟目录，裸名要 node_modules 链接）
         shell: pwsh
+        env:
+          # ★ 钉死到具体 sha，而不是「默认分支 tip」。
+          #   为什么：CI 的「绿」必须对应**某个确定的同伴仓版本**；跟随 tip ⇒ 同伴仓一改名/一删除，
+          #   muv 就假红（而那不代表 muv 坏了）—— 正是这套工作流想消灭的东西。
+          #   代价：失去「同伴仓顺手修 bug 就自动跟到」的便利 ⇒ **升级同伴仓 sha 是显式动作**，
+          #   见 HANDOFF.md 的「升级同伴仓 sha」一节。
+          MUV_TABLE_SHA: 8be6643754237867c7e28bef7e69213932a0f21b
         run: |
-          git clone --depth 1 https://github.com/chen731215-dev/dsh-muv-table.git ../dsh-muv-table
+          git init --quiet ../dsh-muv-table
+          git -C ../dsh-muv-table remote add origin https://github.com/chen731215-dev/dsh-muv-table.git
+          # ★ 只取钉死的那一个 sha。若该 sha 不存在 ⇒ fetch 失败 ⇒ 本步失败 ⇒ CI **红**
+          #   （不会静默回退到 tip —— 这正是本步存在的意义）。
+          git -C ../dsh-muv-table fetch --quiet --depth 1 origin $env:MUV_TABLE_SHA
+          git -C ../dsh-muv-table checkout --quiet --detach FETCH_HEAD
+          $got = (git -C ../dsh-muv-table rev-parse HEAD).Trim()
+          Write-Host "同伴仓 dsh-muv-table 已钉到 $got（预期 $env:MUV_TABLE_SHA）"
+          if ($got -ne $env:MUV_TABLE_SHA) {
+            throw "同伴仓 sha 不符：期望 $env:MUV_TABLE_SHA，实际 $got —— 拒绝继续（不许用 tip 顶替）"
+          }
           New-Item -ItemType Directory -Force node_modules | Out-Null
           cmd /c mklink /J node_modules\dsh-muv-table ..\dsh-muv-table
 

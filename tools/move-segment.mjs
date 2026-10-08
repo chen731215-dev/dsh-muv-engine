@@ -31,9 +31,19 @@
 // 用法：
 //   node tools/move-segment.mjs --fn <函数名> --module mod-x.js --scope "<搬前作用域归属>" \
 //     [--wiring k=IDENT]… [--dry]
-// 故障注入（**仅供常驻反证使用**，见 tests/test-move-segment.mjs）：
-//   MUV_MOVE_SKIP_PARTS_INSERT=1 ⇒ 故意**跳过 `parts` 插入** ⇒ 必须红（-check 分片数 / -ledger 模块片不存在）
-//   MUV_MOVE_BAD_INSERT_INDEX=1  ⇒ 故意把新片插到**错误位置** ⇒ 同样必须红
+// 故障注入（**仅供常驻反证使用**，见 `tests/test-move-segment.mjs`）：
+//   MUV_MOVE_SKIP_PARTS_INSERT=1 ⇒ 故意**跳过 `parts` 插入** ⇒ 必须红（--check 分片数 / --ledger 模块片不存在）
+//      ★ 这一支**已由常驻测试覆盖**（红并点名 + 命中次数自证 + 正对照）。
+//   ★ 已删除的候选：早先还有 `MUV_MOVE_BAD_INSERT_INDEX=1`（"把新片插到第 0 位"）——
+//     它**永远不会红**：分片模型只要求 `concat(parts) === 产物`，**任何顺序都满足它**
+//     （元数据按同一顺序重算 ⇒ 自洽；函数声明靠提升可见 ⇒ 纯重排不改语义）。
+//     ⇒ 那是**恒不绿的坏样本**（与"恒不报红"是同一族的另一面）⇒ 已撤下，
+//       不要在源码里断言它存在（**悬空引用比缺反证更糟一格**）。
+//   ★ B 族（语义真实、待补，每条**先证明会红**再写进测试）：
+//     B1 `搬了不删原文`（copy 而非 move）⇒ 应由 `--uniqueness` 红并点名
+//     B2 `不 bump EXPECTED_PARTS` ⇒ 应由 `--check`（分片数不符）红并点名
+//     B3 `接线写成值捕获`（`x: MUV_X`）⇒ 应由 `moduleWiringCaptureReport` 红并点名
+//     ※ B 族验的是**判据**；若某支不红，结论应是"**缺判据**，得补判据"，**不许换个坏样本绕过去**。
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'

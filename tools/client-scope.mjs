@@ -29,7 +29,50 @@
  *    `let`/`const`/`class` 归最近的**块**作用域。
  *    ★ 这条直接决定"遮蔽"判得对不对：内层函数里声明的 `var x` **不能**让外层的自由 `x`
  *      变成"区内可解析" —— 否则判据自己就会静默蒙混。
+ *
+ * ── ★★ 支撑全部结论的那条不变量（改这个文件之前先读它）──────────────────
+ *   **只要"任何非区内可解析的引用都进 `missing`/`unresolved`"，两侧的收窄/放宽
+ *     就都不会变成放行。**
+ *
+ * 本文件里有两处**方向相反**的不精确，它们都是安全的，靠的就是上面那条：
+ *   · **故意收窄**（会低估"可用"⇒ 偏红）：`depthZeroDecls` 只收**每层相对深度 0** 的声明。
+ *     于是**包在块里的 `var`**（有提升、运行时其实可见）与 **`catch (e)` 的参数**都会被
+ *     标成 `unresolved`。安全，因为"少认一个可用名"只会让东西进 `missing`（偏严）。
+ *   · **故意放宽**（会高估"绑定"⇒ 偏绿但只影响标签）：`collectDeclarationNames` 收多声明符
+ *     `var a = 1, b = 2`（对）与解构 `const {q: r} = o`（这里面 **`q` 是源属性名、不是绑定**，
+ *     被一起收进来了）。安全，因为 `enclosingBindings` 的产物只用来**标标签**；
+ *     真正的放行判断走 `missing`/`unlanded`，`q` 不接线照样进 `missing`。
+ *   ⇒ **什么不能改**：不许在任何路径上把"非 local 引用"就地放过（例如为了少报红而加豁免）。
+ *     一旦有了那种路径，上面两处不精确立刻从"偏严/只影响标签"变成"真放行"。
  */
+
+import fs from 'node:fs'
+
+// ── EOL 归一化（所有接受源码文本的入口都要先过这一关）─────────────────────
+
+/**
+ * ★ 为什么必须归一化：本仓 `core.autocrlf = true` 且**没有 `.gitattributes`** ⇒
+ * **同一个提交在不同检出形态下行尾不同**：
+ *   · CI 的工作流里关掉了 autocrlf ⇒ 检出是 **LF**（所以 CI 绿）；
+ *   · Windows 上任何人做一次普通 `git clone`（默认 autocrlf=true）⇒ 检出是 **CRLF**。
+ * 判据里只要有一处逐字比较（例如 `mutateOnce` 的 needle 含 `\n` + 缩进），
+ * 就会在"默认 clone"上假红 —— 而且看起来像真失败。**这是"CI 绿、默认 clone 红"，
+ * 正好是 tavern 那次"本机绿、CI 红"的镜像。**
+ *
+ * 本仓 AGENTS §12 早有这条规矩：别用字符窗口定位代码，窗口会被 `\r` 撑破，
+ * **匹配前先 `.replace(/\r\n/g, '\n')`**。这里把它固化成入口处的一次归一化。
+ *
+ * ★ 为什么放在**每个入口**而不是只放在 `tokenize`：本文件里有若干处会**按 token 偏移
+ *   去切 `src`**（`findFunctionsIn` / `enclosingBindingsIn`）。如果 token 来自归一化文本
+ *   而切片用的是原始文本，偏移会差 CR 的个数 ⇒ **静默切错**。所以"喂进来的文本"与
+ *   "拿来切片的文本"必须是同一份：入口归一化后全程只用那一份。
+ */
+export const lf = (s) => String(s == null ? '' : s).replace(/\r\n/g, '\n')
+
+/** 读一份源码并归一化行尾。**读源码一律走它**，别在各处自己 `readFileSync`。 */
+export function readSourceText(pathOrUrl) {
+  return lf(fs.readFileSync(pathOrUrl, 'utf8'))
+}
 
 // ── 保留字：不是"引用"，不进自由标识符集合 ──────────────────────────────
 const RESERVED = new Set([
@@ -95,6 +138,7 @@ const REGEX_PREFIX_KEYWORDS = new Set([
  * @returns {Array<{type:string,value:string,start:number,end:number}>}
  */
 export function tokenize(src) {
+  src = lf(src)
   const tokens = []
   let i = 0
   // 'code' = 普通代码；'template' = 模板字面量的**原文段**。
@@ -249,7 +293,8 @@ export function matchBrace(tokens, openIdx) {
  *   一个同名空壳函数就能让"提取成功"这件事失去意义。调用方（常驻测试）显式断言唯一。
  */
 export function findFunctions(src, name) {
-  return findFunctionsIn(tokenize(src), src, name)
+  const text = lf(src)
+  return findFunctionsIn(tokenize(text), text, name)
 }
 
 export function findFunctionsIn(tokens, src, name) {
@@ -297,7 +342,8 @@ export function findFunctionsIn(tokens, src, name) {
 
 /** 提取唯一一个名为 `name` 的函数源码。**多候选直接失败**（重名 = 提取不可信）。 */
 export function extractFunction(src, name) {
-  return extractFunctionIn(tokenize(src), src, name)
+  const text = lf(src)
+  return extractFunctionIn(tokenize(text), text, name)
 }
 
 export function extractFunctionIn(tokens, src, name) {
@@ -665,7 +711,8 @@ function analyzeScopes(tokens, from, to) {
  * @returns {Map<string, number>} 名字 -> 第几层外层（1 = 最近）
  */
 export function enclosingBindings(src, atOffset) {
-  return enclosingBindingsIn(tokenize(src), atOffset)
+  const text = lf(src)
+  return enclosingBindingsIn(tokenize(text), atOffset)
 }
 
 export function enclosingBindingsIn(tokens, atOffset) {
@@ -758,7 +805,8 @@ function depthZeroDecls(tokens, from, to) {
  * @returns {Set<string>}
  */
 export function targetBindings(targetSrc) {
-  const tokens = tokenize(targetSrc)
+  const target = lf(targetSrc)
+  const tokens = tokenize(target)
   const out = new Set()
 
   // ① import 说明符（本地名）：`import d from` / `import {a, b as c} from` / `import * as ns from`
@@ -813,9 +861,12 @@ export function targetBindings(targetSrc) {
  * @param {string[]} [o.extraGlobals]
  */
 export function landingReport({ src, entries, provided = new Set(), targetSrc = '', extraGlobals = [] }) {
-  const left = wiringReport({ src, entries, provided, extraGlobals })
-  const landed = targetBindings(targetSrc)
-  // 真全局不需要落地（它们不是模块绑定）；其余 `provided` 里的名字必须找得到绑定
+  // 两端都归一化：wiringReport / targetBindings 内部也会归一化（幂等），这里显式写出意图
+  const left = wiringReport({ src: lf(src), entries, provided, extraGlobals })
+  const landed = targetBindings(lf(targetSrc))
+  // ★ `provided` 里的**每一个**名字都必须在新模块里找到绑定 —— 这里**不豁免任何名字**
+  //   （真全局本来就不该出现在 `provided` 里：它们走 `extraGlobals`）。
+  //   别把 `window` 这类顺手塞进 `provided`：它会被如实点名为"未落地"。
   const unlanded = [...provided].filter((n) => !landed.has(n)).sort()
   return {
     missing: left.missing,
@@ -840,6 +891,11 @@ export function landingReport({ src, entries, provided = new Set(), targetSrc = 
  * @returns {string}
  */
 export function mutateOnce(src, needle, replacement) {
+  // ★ 两边都归一化：检出形态是 CRLF 时，needle 里写死的 \n + 缩进会**原样命中 0 次**，
+  //   于是反证恒等抛错（看起来像真失败）。归一化后两种检出形态行为一致。
+  src = lf(src)
+  needle = lf(needle)
+  replacement = lf(replacement)
   const parts = src.split(needle)
   const hits = parts.length - 1
   if (hits !== 1) {
@@ -868,6 +924,8 @@ export function mutateOnce(src, needle, replacement) {
  * @param {string[]} [o.extraGlobals] 额外认可的真全局（每次都要在调用点写明理由）
  */
 export function scopeReport({ src, name, provided = new Set(), extraGlobals = [] }) {
+  // ★ 入口先归一化行尾：token 偏移与切片必须来自**同一份**文本（见 lf 的长注释）
+  src = lf(src)
   const tokens = tokenize(src)
   const cands = findFunctionsIn(tokens, src, name)
   if (!cands.length) throw new Error('源码里找不到函数：' + name)
@@ -932,6 +990,8 @@ export function scopeReport({ src, name, provided = new Set(), extraGlobals = []
  * @returns {{missing:string[], where:Map<string,string>, resolved:object, liveVariables:string[]}}
  */
 export function wiringReport({ src, entries, provided = new Set(), extraGlobals = [] }) {
+  // ★ 入口先归一化行尾：token 偏移与切片必须来自**同一份**文本（见 lf 的长注释）
+  src = lf(src)
   const tokens = tokenize(src)
   const entrySet = new Set(entries)
   const missing = new Set()

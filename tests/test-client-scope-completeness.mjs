@@ -22,11 +22,14 @@
 
 import { readFileSync } from 'node:fs'
 import {
-  extractFunction, findFunctions, landingReport, mutateOnce,
-  scopeReport, targetBindings, tokenize, wiringReport,
+  extractFunction, findFunctions, landingReport, lf, mutateOnce,
+  readSourceText, scopeReport, targetBindings, tokenize, wiringReport,
 } from '../tools/client-scope.mjs'
 
-const SRC = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+// ★ 读源码一律走 readSourceText（读 + **归一化行尾**）。见本文件【十三】——
+//   本仓 core.autocrlf=true 且无 .gitattributes ⇒ CI 检出是 LF、Windows 普通 clone 检出是 CRLF。
+//   不归一化就会变成"CI 绿、默认 clone 红"（看起来像真失败）。
+const SRC = readSourceText(new URL('../lib/client.js', import.meta.url))
 
 let pass = 0, fail = 0
 function check(name, cond, detail) {
@@ -231,7 +234,7 @@ console.log('\n【九】活变量：必须**从函数体反推**出来（不许�
 
 console.log('\n【十】判据自己是常驻测试（三类破坏之③）')
 {
-  const self = readFileSync(new URL(import.meta.url), 'utf8')
+  const self = lf(readFileSync(new URL(import.meta.url), 'utf8'))
   check('本判据位于 tests/ 下（会被 `node tools/run-each-test.mjs` 扫到）',
     /[\\/]tests[\\/]test-client-scope-completeness\.mjs$/.test(new URL(import.meta.url).pathname))
   check('本判据在**默认运行路径**上就会跑反证（没有藏在开关/环境变量后面）',
@@ -366,6 +369,60 @@ console.log('\n【十二】★ 右端校验：`provided` 里的名字，在新�
   check('★ 空目标模块 ⇒ 每个接线名都被点名为未落地（不许空绿）',
     emptyTarget.unlanded.length === group.required.length && emptyTarget.ok === false,
     JSON.stringify(emptyTarget.unlanded))
+}
+
+console.log('\n【十三】两种 EOL 形态（CI 是 LF、Windows 普通 clone 是 CRLF —— 不许只在一种形态下绿）')
+{
+  // ★ 为什么单独立这一节：本仓 `core.autocrlf = true` 且无 `.gitattributes` ⇒
+  //   CI 的工作流关掉了 autocrlf（检出 LF），而 Windows 上普通 `git clone` 检出 CRLF（实测 8831 个 CRLF）。
+  //   原先 `mutateOnce` 的 needle 含 `\n` + 12 空格缩进 ⇒ **CRLF 检出下原样命中 0 次** ⇒ 判据直接抛错，
+  //   表现是"CI 绿、默认 clone 红"，而且看起来像真失败。这是 tavern 那次"本机绿、CI 红"的镜像。
+  const CRLF = SRC.replace(/\n/g, '\r\n')
+  check('CRLF 样本只差 \\r、字符内容完全相同',
+    CRLF !== SRC && CRLF.length === SRC.length + SRC.split('\n').length - 1,
+    SRC.length + ' -> ' + CRLF.length)
+
+  // ★ 归一化是**有效变换**，不是空操作 —— 否则"修好了"是假的
+  const needle = '} finally {\n            _decorating = false\n          }'
+  check('CRLF 原文里该 needle 命中 0 次（⇒ 不归一化真的会红）',
+    CRLF.split(needle).length - 1 === 0)
+  check('归一化之后命中 1 次（⇒ 归一化真的在做事）',
+    lf(CRLF).split(needle).length - 1 === 1)
+
+  // 判据链在 CRLF 输入下必须给出一致结论
+  const freeLf = scopeReport({ src: SRC, name: 'muvKvKeyOf' }).freeNames
+  const freeCrlf = scopeReport({ src: CRLF, name: 'muvKvKeyOf' }).freeNames
+  check('CRLF 与 LF 两种形态下 scopeReport 结论一致（且非空）',
+    freeCrlf.length > 0 && freeLf.join(',') === freeCrlf.join(','), JSON.stringify(freeCrlf))
+
+  const groups = [MIGRATION_SETS[0], MIGRATION_SETS[3]]
+  for (const s of groups) {
+    const w = wiringReport({ src: CRLF, entries: s.entries, provided: new Set(s.required) })
+    check('CRLF 形态下 ' + s.label + ' 照常判绿', w.missing.length === 0, w.missing.join(','))
+  }
+
+  // 右端校验也要在 CRLF 下工作
+  const grp = MIGRATION_SETS[3]
+  const tgt = [
+    "import { messageTargets } from './sampling.js'",
+    "import { _decorateOne } from './one.js'",
+    'let _decorating = false',
+  ].join('\r\n')
+  const land = landingReport({
+    src: CRLF, entries: grp.entries, provided: new Set(grp.required), targetSrc: tgt,
+  })
+  check('CRLF 形态下两端联合判定照常 ok（左端 + 右端都归一化了）', land.ok,
+    JSON.stringify({ missing: land.missing, unlanded: land.unlanded }))
+  check('CRLF 形态下 targetBindings 照常认出绑定',
+    ['messageTargets', '_decorateOne', '_decorating'].every((n) => targetBindings(tgt).has(n)),
+    JSON.stringify([...targetBindings(tgt)].sort()))
+
+  // 最要紧的一处：在 CRLF 形态的目标模块上做一次受控变异，右端判据必须跟着变
+  const mut = mutateOnce(tgt, "import { messageTargets } from './sampling.js'", '')
+  check('CRLF 形态下 mutateOnce 仍能命中（原始故障点）', mut.indexOf('sampling.js') < 0, mut.slice(0, 60))
+  check('CRLF 形态下删掉落地后右端照常报红并点名',
+    landingReport({ src: CRLF, entries: grp.entries, provided: new Set(grp.required), targetSrc: mut })
+      .unlanded.includes('messageTargets'))
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)

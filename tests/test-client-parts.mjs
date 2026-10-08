@@ -14,7 +14,7 @@
 //
 // 运行：node tests/test-client-parts.mjs
 
-import { freshnessReport, loadFromDisk, assemble, refreshedManifest, moduleLevelReport, moduleUniquenessReport, moduleLedgerReport, EXPECTED_PARTS } from '../tools/build-client.mjs'
+import { freshnessReport, loadFromDisk, assemble, refreshedManifest, moduleLevelReport, moduleUniquenessReport, moduleLedgerReport, moduleRegistryReport, moduleWiringCaptureReport, EXPECTED_PARTS } from '../tools/build-client.mjs'
 import { tokenize } from '../tools/client-scope.mjs'
 
 /** 非空跑下限（实测：12 个分片 / 556776 字节）。低于它说明"什么都没分析到"。 */
@@ -493,6 +493,38 @@ console.log('\n⑧ 模块迁移账本（"函数被挪到同层别的模块 / 被
   // 反向自证：内容与账本一致 ⇒ 过（判据没被收废）
   check('反向自证：内容与账本一致 ⇒ 过',
     moduleLedgerReport({ parts: [modText], manifest: { modules: { [modText.path]: manifest.modules[modText.path] } } }).ok === true)
+}
+
+console.log('\n⑨ P1/P2/P3：模块**声明清单 + 非空下限 + 搬前作用域记账 + 不许值捕获**（档 B 前置）')
+{
+  const rg = moduleRegistryReport({ parts, manifest })
+  check('★ P1/P2：真实仓库 —— 声明清单与 parts 筛出的模块片一致、且非空', rg.ok, rg.problems.join(' | '))
+  check('P1 非空下限：模块 ≥1 且函数 ≥1', rg.stats.modules >= 1 && rg.stats.functions >= 1, JSON.stringify(rg.stats))
+  const noScope = Object.fromEntries(Object.entries(manifest.modules).map(([k, v]) => {
+    const c = { ...v }; delete c.preMoveScope; return [k, c]
+  }))
+  const rg2 = moduleRegistryReport({ parts, manifest: { ...manifest, modules: noScope } })
+  check('★ P2 反证：任一模缺 `preMoveScope` ⇒ 红并点名（事后补记无据，所以必须在动刀前落）',
+    rg2.ok === false && rg2.problems.some((p) => p.includes('preMoveScope') && p.includes('无据可查')),
+    rg2.problems.slice(0, 2).join(' | '))
+  const rg3 = moduleRegistryReport({ parts, manifest: { ...manifest, modules: {} } })
+  check('★ P1 反证：模块声明清单为空 ⇒ 红（"每个模块都合规"不许在空集上恒真）',
+    rg3.ok === false && rg3.problems.some((p) => p.includes('为空')), rg3.problems.join(' | '))
+  const rg4 = moduleRegistryReport({ parts: parts.filter((p) => !/mod-vr-ui/.test(p.path)), manifest })
+  check('P1 反证：清单数与 parts 筛出的模块片数不一致 ⇒ 红',
+    rg4.ok === false && rg4.problems.some((p) => p.includes('≠ parts 里筛出')), rg4.problems.join(' | '))
+
+  const w0 = moduleWiringCaptureReport({ parts })
+  check('P3：现有模块都还没有接线块 ⇒ 判据**不适用**（不是"跳过"，是不适用）',
+    w0.ok === true && w0.stats.modulesWithWiring === 0, JSON.stringify(w0.stats))
+  const bad = 'const __wiring = {\n  sbCss: MUV_SB_CSS,\n}\nfunction f() { return __wiring }\n'
+  const w1 = moduleWiringCaptureReport({ parts: [{ path: 'src/client/mod-probe.js', text: bad }] })
+  check('★ P3 反证：`sbCss: MUV_SB_CSS`（值捕获）⇒ 红并点名',
+    w1.ok === false && w1.problems.some((p) => p.includes('值捕获')), w1.problems.join(' | '))
+  const good = 'const __wiring = {\n  sbCss: () => MUV_SB_CSS,\n}\nfunction f() { return __wiring }\n'
+  const w2 = moduleWiringCaptureReport({ parts: [{ path: 'src/client/mod-probe2.js', text: good }] })
+  check('★ P3 正向：`sbCss: () => MUV_SB_CSS`（访问器）⇒ 通过',
+    w2.ok === true && w2.stats.modulesWithWiring === 1, w2.problems.join(' | '))
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)

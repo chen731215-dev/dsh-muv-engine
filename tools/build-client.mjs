@@ -447,6 +447,90 @@ export function moduleLedgerReport({ parts, manifest }) {
   return { ok: problems.length === 0, problems, entries }
 }
 
+/**
+ * ★★ **P1 + P2**：模块集合的「声明清单 + 非空下限」（P1）与「搬前作用域记账」（P2）。
+ *
+ * P1 为什么必须单独判：`moduleUniquenessReport` / `moduleLedgerReport` 都是**遍历"从 parts 里筛出来的
+ *   `mod-*` 片"**。档 B 之后模块不再是"产物的一段连续区间"，而是**带接线的单元** ⇒ 若它不再作为
+ *   `parts` 里的条目存在，这两个判据遍历的就是**空集** ⇒ **双双恒真**（一个都不违背 = 绿）。
+ *   ★ 而我们刚把"模块数/函数数"改成**派生断言** —— 那正好让这次退化**看不见**。
+ *   ⇒ 所以模块集合必须由**声明清单**给出（不靠 parts 里筛），并且**为空即红**。
+ *
+ * P2 为什么必须"动刀前"落：档 B 用 IIFE / 模块头**显式接收依赖**，包装器会把**作用域同质化** ——
+ *   任何东西塞进去都"同作用域" ⇒ "同段函数必须共享同一 enclosing scope"这条保护**不会红、只是不再保护**。
+ *   ⇒ 唯一的补救是**记录"搬前的作用域归属"**；而**事后补记无据**（那时原作用域已经看不见了）。
+ *
+ * @param {object} o
+ * @param {Array<{path:string,text:string}>} o.parts
+ * @param {object} o.manifest
+ */
+export function moduleRegistryReport({ parts, manifest }) {
+  const problems = []
+  const modEntries = (manifest && manifest.modules) || {}
+  const paths = Object.keys(modEntries)
+  // ── P1（非空下限）──
+  if (paths.length < 1) problems.push('模块声明清单为空（≥1 个模块是下限）⇒ 遍历空集会让"每个模块都合规"恒真')
+  const modParts = parts.filter((p) => /(^|\/)mod-[^/]+\.js$/.test(p.path))
+  if (modParts.length < 1) problems.push('按 parts 筛出来的模块片为空（≥1 是下限）')
+  if (paths.length !== modParts.length) {
+    problems.push('声明清单 ' + paths.length + ' 个 ≠ parts 里筛出的模块片 ' + modParts.length + ' 个'
+      + ' ⇒ 两者必须一致（否则判据遍历的对象与实际模块不是同一批）')
+  }
+  let fnTotal = 0
+  for (const p of paths) {
+    const spec = modEntries[p] || {}
+    const n = Object.keys(spec.functions || {}).length
+    fnTotal += n
+    // ── P2（搬前作用域记账，必须非空）──
+    if (!spec.preMoveScope || typeof spec.preMoveScope !== 'string') {
+      problems.push(p + ' 缺 `preMoveScope`（搬前的作用域归属）—— ★ 档 B 的包装器会把作用域同质化，'
+        + '这条一旦事后补记就**无据可查**；必须在动刀前落')
+    }
+    if (n === 0) problems.push(p + ' 的 functions 为空（每个模块至少要有 1 个函数）')
+  }
+  if (fnTotal < 1) problems.push('全部模块合计 0 个函数（≥1 是下限）')
+  return { ok: problems.length === 0, problems, stats: { modules: paths.length, functions: fnTotal } }
+}
+
+/**
+ * ★★ **P3**：模块的接线声明里**不许值捕获 / 不许顶层求值**。
+ *
+ * 为什么它能抓别人抓不到的：`wiringReport`（左端 missing）与 `landingReport`（右端 unlanded）判的都是
+ * **名字**，**都不看取值时机** ⇒ `x: MUV_X`（值捕获）与 `x: () => MUV_X`（访问器）**两端一样绿**。
+ * ⇒ 这是"五件等价性证据"里**唯一能抓"拿快照"**的一条（活变量全是 `var`，`muvFullpageFloor`
+ *   有 4 个净赋值点 ⇒ 快照**已经**会改语义）。
+ *
+ * 判定口径（**看值不看词**）：接线块里形如 `name: IDENT`（直接捕获）或 `name: IDENT(...)`（顶层求值）
+ * 一律**红**；只允许 `name: () => IDENT` / `name: function () { … }` 这类**延迟取值**的形态。
+ * 接线块的认法：`/* wiring *​/` 标记的注释块，或 `const __wiring = { … }` 形式的单层对象字面量。
+ * 没有接线块的模块（档 A）**不适用**，直接通过。
+ *
+ * @param {object} o
+ * @param {Array<{path:string,text:string}>} o.parts
+ */
+export function moduleWiringCaptureReport({ parts }) {
+  const problems = []
+  let checked = 0
+  for (const p of parts) {
+    if (!/(^|\/)mod-[^/]+\.js$/.test(p.path)) continue
+    const m = /\/\*\s*wiring\s*\*\/([\s\S]*?)\n\s*\}\s*$/.exec(p.text)
+      || /const\s+__wiring\s*=\s*\{([\s\S]*?)\n\s*\}/.exec(p.text)
+    if (!m) continue                       // 档 A 模块没有接线块 ⇒ 不适用
+    checked++
+    for (const line of m[1].split('\n')) {
+      const km = /^\s*([A-Za-z_$][\w$]*)\s*:\s*([\s\S]+?),?\s*$/.exec(line)
+      if (!km) continue
+      const rhs = km[2].trim()
+      const lazy = /^\(\s*\w*\s*\)\s*=>/.test(rhs) || /^function\b/.test(rhs)
+      if (!lazy) {
+        problems.push(p.path + ' 的接线声明 `' + km[1] + ': ' + rhs + '` **是值捕获/顶层求值**'
+          + '（活变量全是 var，快照会改语义）⇒ 必须写成访问器 `() => ' + rhs.replace(/\(.*\)\s*$/, '') + '`')
+      }
+    }
+  }
+  return { ok: problems.length === 0, problems, stats: { modulesWithWiring: checked } }
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2)
 // ★ 入口判定必须用 `pathToFileURL`，**不能**手拼 `'file://' + argv[1]`：

@@ -167,5 +167,22 @@
       "depthAtStart": 4,
       "depthAtEnd": 0
     }
-  ]
+  ],
+  "modules": {
+    "src/client/mod-text.js": {
+      "functions": {
+        "splitArgs": "717ccc3bc5782d496a8d276d4c8e1bddd5351987601f041a997370be39fb477d",
+        "findClosingFence": "7080d70289dae6654e3ac8c9b7d119fb8f13a739fad6324349d96ec0eff40270",
+        "readStartTag": "2ce276bd35a7803a04831095803a784421ba742cf746a9563037d3f87587673b"
+      }
+    },
+    "src/client/mod-vr-ui.js": {
+      "functions": {
+        "vrSidebarRoot": "7eddb2a076e43f59cb830bb85a6b7cac250ef16e969af2d13cf34fb086bd0e8f",
+        "vrNewSessionButton": "9968016b14c6a4a446f8a41e070acc73d9a970788d31d329634c5de854f7a288",
+        "vrCreateEntry": "70f72f8f685e590cf6be8e26c453a4044d93f94451fd7b7fc4a5987b4a8d36fc",
+        "vrCreatePanel": "f7238f772d98305c10c9cc2ad2f22b4ba8f29d50e659b4f5bbe8109f4df49cd4"
+      }
+    }
+  }
 }

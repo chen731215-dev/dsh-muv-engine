@@ -14,7 +14,7 @@
 //
 // 运行：node tests/test-client-parts.mjs
 
-import { freshnessReport, loadFromDisk, assemble, refreshedManifest, moduleLevelReport, moduleUniquenessReport, EXPECTED_PARTS } from '../tools/build-client.mjs'
+import { freshnessReport, loadFromDisk, assemble, refreshedManifest, moduleLevelReport, moduleUniquenessReport, moduleLedgerReport, EXPECTED_PARTS } from '../tools/build-client.mjs'
 import { tokenize } from '../tools/client-scope.mjs'
 
 /** 非空跑下限（实测：12 个分片 / 556776 字节）。低于它说明"什么都没分析到"。 */
@@ -416,6 +416,51 @@ console.log('\n⑦ 模块函数的全局唯一性（"搬了忘了删原处"的 g
       ],
       artifact: 'function shared() {}\nfunction other() {}\nfunction other() {}\n',
     }).ok === true)
+}
+
+console.log('\n⑧ 模块迁移账本（"函数被挪到同层别的模块 / 被顶替"的守卫，且不读 git）')
+{
+  const lg = moduleLedgerReport({ parts, manifest })
+  check('★ 真实仓库：每个模块里的函数都在、文本摘要都对得上', lg.ok, lg.problems.join(' | '))
+  check('账本覆盖了两个模块（mod-text 3 个 + mod-vr-ui 4 个 = 7）',
+    lg.entries.reduce((s, e) => s + e.ledgered, 0) === 7,
+    JSON.stringify(lg.entries.map((e) => e.path + ':' + e.ledgered)))
+
+  const modText = parts.find((p) => p.path.endsWith('mod-text.js'))
+  const others = () => parts.filter((p) => p.path !== modText.path)
+
+  // 反证 ①：模块里的函数文本被改动/顶替 ⇒ 必须红
+  {
+    const tampered = { ...modText, text: modText.text.replace('function splitArgs(src) {', 'function splitArgs(src, extra) {') }
+    const r = moduleLedgerReport({ parts: [...others(), tampered], manifest })
+    check('反证：模块内函数文本被改（顶替/改动）⇒ 红并点名该函数与两串摘要',
+      r.ok === false && r.problems.some((p) => p.includes('splitArgs') && p.includes('不符')), r.problems.join(' | '))
+  }
+  // 反证 ②：账本记的函数从模块里消失（被挪走）⇒ 必须红
+  {
+    const stripped = { ...modText, text: modText.text.replace(/\n\s*function splitArgs[\s\S]*?\n\s*\}\n/, '\n') }
+    const r = moduleLedgerReport({ parts: [...others(), stripped], manifest })
+    check('反证：账本记的函数从模块里消失（被挪走）⇒ 红并点名',
+      r.ok === false && r.problems.some((p) => p.includes('splitArgs')), r.problems.join(' | '))
+  }
+  // 反证 ③：整个 `modules` 账本都没了 ⇒ 不许空绿
+  {
+    const r = moduleLedgerReport({ parts, manifest: { parts: manifest.parts } })
+    check('反证：清单缺 `modules` 账本 ⇒ 红（不许"没得比"当绿）',
+      r.ok === false && r.problems.some((p) => p.includes('缺少 `modules`')), r.problems.join(' | '))
+  }
+  // 反证 ④：账本指向不存在的模块片 ⇒ 红
+  {
+    const r = moduleLedgerReport({
+      parts,
+      manifest: { ...manifest, modules: { ...manifest.modules, 'src/client/mod-gone.js': { functions: { x: 'ab' } } } },
+    })
+    check('反证：账本条目指向不存在的模块片 ⇒ 红',
+      r.ok === false && r.problems.some((p) => p.includes('mod-gone.js')), r.problems.join(' | '))
+  }
+  // 反向自证：内容与账本一致 ⇒ 过（判据没被收废）
+  check('反向自证：内容与账本一致 ⇒ 过',
+    moduleLedgerReport({ parts: [modText], manifest: { modules: { [modText.path]: manifest.modules[modText.path] } } }).ok === true)
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)

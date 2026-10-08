@@ -40,10 +40,18 @@ function check(name, cond, detail) {
  * @param {{partTexts:string[], fullText:string}} o
  */
 export function boundaryReport({ partTexts, fullText }) {
-  const toks = tokenize(fullText)
+  // ★ 边界合法性是**结构性质**（token 有没有被劈开、是不是落在语句之间），**与行尾形态无关**
+  //   ⇒ 一律在**归一化后**的文本上判。
+  //   —— 这与"分片 ↔ 产物要比原始字节"并不矛盾：那条是**字节性质**，这条是**结构性质**。
+  //   （第一版没归一化：默认检出是 LF 时全绿，而 CRLF 夹具里同一批边界被误报"劈开 token /
+  //     上一 token 是注释" —— 因为 CRLF 下注释 token 会把末尾的 `\r` 吃进去，
+  //     字节偏移与 token 边界就不再对齐。根因是"拿字节偏移去问结构问题"。）
+  const lf = (s) => s.replace(/\r\n/g, '\n')
+  const normParts = partTexts.map(lf)
+  const toks = tokenize(lf(fullText))
   const offs = []
   let acc = 0
-  for (let i = 0; i < partTexts.length - 1; i++) { acc += partTexts[i].length; offs.push(acc) }
+  for (let i = 0; i < normParts.length - 1; i++) { acc += normParts[i].length; offs.push(acc) }
   const problems = []
   // ★ 空输入必须报红：否则"什么都没切"会被当成"边界全合法"（空绿）
   if (partTexts.length === 0) problems.push('没有分片可判（空输入不许当绿）')
@@ -140,6 +148,28 @@ console.log('\n② ★ 双向反证：两个方向都必须红（防真相源漂
   // 空输入不许空绿
   const empty = freshnessReport({ parts: [], artifact: '', manifest: { parts: [] } })
   check('空输入 ⇒ 红（不许"什么都没分析到"当绿）', empty.ok === false, empty.problems.join(' | '))
+
+  // ★ EOL 形态无关性：把**产物与全部分片统一**改成 CRLF（= 模拟"attribute 没生效的检出"）⇒ 仍必须绿。
+  //   —— 这是"清单比内容（归一化）、产物比字节（不归一化）"那条口径的直接证据。
+  {
+    // ★ toCrlf 必须**幂等**：在 CRLF 形态的夹具里，从盘上读到的分片**本来就是 CRLF**，
+    //   无脑 replace 会做出 `\r\r\n` ⇒ 合成样本被自己弄坏，然后判据"报红"报的是夹具的错。
+    //   （第一版就是这么错的：CRLF 夹具里 2 条断言红，查下来是我的夹具，不是工具。）
+    const toCrlf = (s) => (s.includes('\r\n') ? s : s.replace(/\n/g, '\r\n'))
+    const c = clone()
+    c.parts = c.parts.map((p) => ({ ...p, text: toCrlf(p.text) }))
+    c.artifact = toCrlf(c.artifact)
+    const r = freshnessReport(c)
+    check('★ 产物与分片**统一**改成 CRLF ⇒ 仍然绿（判据不吃检出形态）', r.ok, r.problems.join(' | '))
+  }
+  // 反向：**只有一侧**是 CRLF（形态不一致）⇒ 必须红 —— .gitattributes 存在的理由
+  {
+    const c = clone()
+    c.artifact = c.artifact.replace(/\n/g, '\r\n')
+    const r = freshnessReport(c)
+    check('★ 只有**产物**一侧是 CRLF（形态不一致）⇒ 红（.gitattributes 存在的理由）',
+      r.ok === false, r.problems.join(' | '))
+  }
 }
 
 console.log('\n③ 分片边界合法性（"每片独立解析"不可满足 ⇒ 已作废，见 boundaryReport 注释）')

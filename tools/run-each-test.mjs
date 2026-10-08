@@ -41,6 +41,10 @@ const CORPUS_EXCLUDE = new Map([
   ['tools/verify/verify-shared.mjs', '共享库（导出 launchEdge / sleep / extractFunction / readEngineSource …）：无断言、无输出，跑了也只是一次 import'],
   ['tests/test-client-source.mjs', '共享库（导出 clientSource / extractFunction / loadClientRenderers …）：同上'],
   ['tools/verify/verify-guard-samples.gen.mjs', '生成器：会 fs.writeFileSync 回写 verify-guard-samples.json —— 当测试跑会**改仓库文件**'],
+  // ★ 与上面第一条同性质（共享库），只是随 task-21 新增。不排除它的后果很讽刺：
+  //   在 `--all` 这类会把 tools/verify/*.mjs 纳入语料的模式下，它会被当"测试"跑 ⇒
+  //   **0 断言 0 失败 ⇒ 空跑 ⇒ 判红** —— 与它自己要治的"退出码被读错"是同族问题。
+  ['tools/verify/verify-unverified.mjs', '共享库（导出 UNVERIFIED_EXIT / unverified）：无断言、无输出，跑了也只是一次 import'],
 ])
 
 const argv = process.argv.slice(2)

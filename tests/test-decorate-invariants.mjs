@@ -16,10 +16,13 @@
 //
 // 运行：node tests/test-decorate-invariants.mjs
 
-import { readFileSync } from 'node:fs'
-import { extractFunction, mutateOnce, scopeReport, tokenize, wiringReport } from '../tools/client-scope.mjs'
+import { extractFunction, lf, mutateOnce, readSourceText, scopeReport, tokenize, wiringReport }
+  from '../tools/client-scope.mjs'
 
-const SRC = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+// ★ 读源码一律走 readSourceText（读 + **归一化行尾**）。见本文件【⑥】——
+//   本仓 core.autocrlf=true 且无 .gitattributes ⇒ CI 检出是 LF、Windows 普通 clone 检出是 CRLF。
+//   不归一化就会变成"CI 绿、默认 clone 红"（看起来像真失败）。
+const SRC = readSourceText(new URL('../lib/client.js', import.meta.url))
 
 /**
  * ★ **非空跑下限**：本文件断言的是"这么多个函数被真的提取并执行了"。
@@ -377,6 +380,49 @@ console.log('\n⑤ 非空跑下限（否则"没问题"可能只是"什么都没�
   const emptyWiring = wiringReport({ src: '', entries: ['muvTurnOfEl'], provided: new Set() })
   checkRed('喂空源码 ⇒ wiringReport **点名**它找不到入口（而不是 missing=[] 的空绿）',
     emptyWiring.missing.includes('muvTurnOfEl'), JSON.stringify(emptyWiring.missing))
+}
+
+// ── ⑥ 两种 EOL 形态：判据必须在"默认 clone（CRLF）"下也跑得起来 ────────────
+
+console.log('\n⑥ 两种 EOL 形态（CI 是 LF、Windows 普通 clone 是 CRLF —— 不许只在一种形态下绿）')
+{
+  // 拿真实源码造一份 CRLF 形态的等價样本（只改行尾，不改任何字符）
+  const CRLF = SRC.replace(/\n/g, '\r\n')
+  check('CRLF 样本确实与 SRC 不同、且只差 \\r（换算正确）',
+    CRLF !== SRC && CRLF.length === SRC.length + SRC.split('\n').length - 1,
+    SRC.length + ' -> ' + CRLF.length)
+
+  // ★ 归一化真的在起作用（不是空操作）：同一颗 needle 在 CRLF 原文里**命中 0 次**，
+  //   归一化之后必须命中。如果哪天有人把 lf() 去掉，这一对断言立刻报红。
+  const needle = '} finally {\n            _decorating = false\n          }'
+  const rawHits = CRLF.split(needle).length - 1
+  const lfHits = lf(CRLF).split(needle).length - 1
+  check('CRLF 原文里该 needle 命中 0 次（所以"不归一化"这条是**真的会红**）',
+    rawHits === 0, 'rawHits=' + rawHits)
+  check('归一化之后命中 1 次（归一化是有效变换，不是空操作）', lfHits === 1, 'lfHits=' + lfHits)
+
+  // 走过完整判据链：CRLF 输入下，四条不变量的入口都必须照常工作
+  const kv = buildKvKeyOf(CRLF)(() => 'sess-A')
+  check('CRLF 形态下 muvKvKeyOf 照常提取并工作', kv('zkt2') === 'zkt2@sess-A', JSON.stringify(kv('zkt2')))
+
+  const reps = scopeReport({ src: CRLF, name: 'muvTurnOfEl' })
+  check('CRLF 形态下 scopeReport 照常给出结论（不是空集合）', reps.freeNames.length > 0,
+    JSON.stringify(reps.freeNames))
+
+  const wr = wiringReport({
+    src: CRLF, entries: ['muvKvKeyOf'], provided: new Set(['currentSessionId']),
+  })
+  check('CRLF 形态下 wiringReport 照常判绿（missing 为空）', wr.missing.length === 0, wr.missing.join(','))
+
+  // ★ 最要紧的一处：带 `\n` + 缩进的 needle 在 CRLF 形态下必须仍能命中
+  const mutated = mutateOnce(CRLF, 'if (!muvIsVisibleInDom(body)) continue', '')
+  check('CRLF 形态下 mutateOnce 仍能命中（这是"默认 clone 红"的那个原始故障点）',
+    mutated.indexOf('muvIsVisibleInDom(body)') < 0)
+
+  // 整条不变量②在 CRLF 形态下走一遍
+  const bodies = threeBodies()
+  const targetsCrlf = buildMessageTargets(CRLF, { querySelectorAll: () => bodies })()
+  check('CRLF 形态下不变量②照常成立（只留 1 条可见）', targetsCrlf.length === 1, 'len=' + targetsCrlf.length)
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)

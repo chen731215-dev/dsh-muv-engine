@@ -14,7 +14,7 @@
 //
 // 运行：node tests/test-client-parts.mjs
 
-import { freshnessReport, loadFromDisk, assemble, refreshedManifest, moduleLevelReport, EXPECTED_PARTS } from '../tools/build-client.mjs'
+import { freshnessReport, loadFromDisk, assemble, refreshedManifest, moduleLevelReport, moduleUniquenessReport, EXPECTED_PARTS } from '../tools/build-client.mjs'
 import { tokenize } from '../tools/client-scope.mjs'
 
 /** 非空跑下限（实测：12 个分片 / 556776 字节）。低于它说明"什么都没分析到"。 */
@@ -373,6 +373,48 @@ console.log('\n⑥ 模块层级纯度（S2 ③ 的搬迁前置检查：跨层搬
     moduleLevelReport({
       parts: [{ path: 'src/client/mod-z.js', text: 'function a() {}\nfunction b() {}\n' }],
       manifest: { parts: [{ path: 'src/client/mod-z.js', depthAtStart: 4 }] },
+    }).ok === true)
+}
+
+console.log('\n⑦ 模块函数的全局唯一性（"搬了忘了删原处"的 git-free 守卫）')
+{
+  const uq = moduleUniquenessReport({ parts, artifact })
+  check('★ 真实仓库：模块里的函数在产物里各只声明 1 次', uq.ok, uq.problems.join(' | '))
+  check('两个模块的函数都被数到了（mod-text 3 个 + mod-vr-ui 4 个 = 7）',
+    uq.moduleFns.reduce((s, m) => s + m.names.length, 0) === 7,
+    JSON.stringify(uq.moduleFns.map((m) => m.path + ':' + m.names.length)))
+
+  // 反证 ①：搬了但**没删原处** ⇒ 产物里声明两次 ⇒ 必须红并点名
+  {
+    const modText = '// mod-dup\nfunction movedFn() { return 1 }\n'
+    const dupArtifact = 'function movedFn() { return 1 }\nfunction movedFn() { return 2 }\n'
+    const r = moduleUniquenessReport({ parts: [{ path: 'src/client/mod-dup.js', text: modText }], artifact: dupArtifact })
+    check('反证：搬了没删原处（产物里声明 2 次）⇒ 红并点名',
+      r.ok === false && r.problems.some((p) => p.includes('movedFn') && p.includes('2 次')), r.problems.join(' | '))
+  }
+  // 反向自证：只声明 1 次 ⇒ 过
+  check('反向自证：只声明 1 次 ⇒ 过（判据没被收废）',
+    moduleUniquenessReport({
+      parts: [{ path: 'src/client/mod-ok.js', text: 'function onlyOnce() {}\n' }],
+      artifact: 'function onlyOnce() {}\n',
+    }).ok === true)
+  // 词法口径：字符串/注释里的 `function foo(` 不算声明 ⇒ 不许因此误判
+  {
+    const r = moduleUniquenessReport({
+      parts: [{ path: 'src/client/mod-str.js', text: 'function realFn() {}\n' }],
+      artifact: "function realFn() {}\nvar s = 'function realFn() {}'\n// function realFn() {}\n",
+    })
+    check('词法口径：字符串/注释里的 `function realFn(` **不算**声明（不许把它数成第 2 次）',
+      r.ok === true, r.problems.join(' | '))
+  }
+  // 不许要求"全产物唯一"：不同 IIFE 里的同名内部辅助是本仓合法现状
+  check('反向自证：同名函数在**别的非模块片**里合法存在时，本条判据不管它（只管模块片）',
+    moduleUniquenessReport({
+      parts: [
+        { path: 'src/client/mod-a.js', text: 'function shared() {}\n' },
+        { path: 'src/client/part-99.js', text: 'function other() {}\n' },
+      ],
+      artifact: 'function shared() {}\nfunction other() {}\nfunction other() {}\n',
     }).ok === true)
 }
 

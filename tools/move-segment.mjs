@@ -65,7 +65,10 @@ const arg = (n, d) => { const i = argv.indexOf('--' + n); return i >= 0 ? argv[i
 const allOf = (n) => argv.reduce((a, v, i) => (v === '--' + n ? a.concat([argv[i + 1]]) : a), [])
 const FN = arg('fn'); const MOD = arg('module'); const SCOPE = arg('scope'); const DRY = argv.includes('--dry')
 const SKIP_PARTS = !!process.env.MUV_MOVE_SKIP_PARTS_INSERT
-const BAD_INDEX = !!process.env.MUV_MOVE_BAD_INSERT_INDEX
+// ★ 原来这里还有一个 `BAD_INDEX = !!process.env.MUV_MOVE_BAD_INSERT_INDEX`（"把新片插到第 0 位"）
+//   —— **已删除**（Lead 裁定 A）：它与"**禁死代码**/判据的分支必须被真跑一次"冲突，且它产的
+//   "全绿但产物被重排"**永远不会红**、**无任何测试覆盖** ⇒ 留着就是一句活的误导。
+//   若将来要 B4（"不重算该片元数据"⇒ 连续性/行数和必破 ⇒ 必然红），**按新语义重加，并先证明会红**。
 
 function fail(msg) { console.error('❌ move-segment：' + msg); process.exit(1) }
 const WIRING = allOf('wiring').map((s) => {
@@ -132,7 +135,9 @@ if (newHostText === hostText) fail('从承载片里移除函数失败（逐字�
 // ── ★ 重切分：新 parts 顺序 + 逐片元数据（**显式职责**）──
 const baseParts = manifest.parts.map((p) => ({ ...p }))
 const newEntry = { path: modPath, startLine: 0, endLine: 0, lines: 0, bytes: 0, sha256: '', depthAtStart: 0, depthAtEnd: 0 }
-const insertAt = BAD_INDEX ? 0 : hostIdx + 1
+// ★ 插入位置恒为「承载片之后」—— 原来这里读过 `BAD_INDEX`（可插到第 0 位）的分支**已删除**，
+//   因为那个分支**永远不会红**（`concat(parts) === 产物` 对任何顺序都成立）且无测试覆盖。
+const insertAt = hostIdx + 1
 const ordered = SKIP_PARTS
   ? baseParts
   : [...baseParts.slice(0, insertAt), newEntry, ...baseParts.slice(insertAt)]

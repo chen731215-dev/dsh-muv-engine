@@ -92,12 +92,23 @@ if (onlyList) {
   process.exit(0)
 }
 
-/** 三种计数格式：node:test tap / node:test spec / 本仓原生摘要（`=== 结果|断言: N 通过, M 失败 ===`） */
+/** 三种计数格式：node:test tap / node:test spec / 本仓原生摘要（`=== 结果|断言: N 通过, M 失败[, K 跳过] ===`） */
 function parseCounts(text) {
   const spec = (k) => new RegExp('^(?:ℹ|#) ' + k + ' (\\d+)\\s*$', 'm').exec(text)
-  const native = /(?:结果|断言)\s*[:：]\s*(\d+)\s*通过\s*[,，/]\s*(\d+)\s*失败/.exec(text)
+  // ★ 「跳过」也要解析：本仓有脚本会打印 `=== 结果: 0 通过, 0 失败, 7 跳过 ===`
+  //   （环境不具备时整批 SKIP，例如网络不通的 verify-handoff-restore）。
+  //   旧写法把原生分支的 skipped 硬编码成 0 ⇒ 那种情况会撞上「报告器在场 0 断言」的空跑判据被标 ❔，
+  //   违反本仓自己的口径「skipped>0 不算空跑」（那条原先只在 node:test 分支有效）。
+  const native = /(?:结果|断言)\s*[:：]\s*(\d+)\s*通过\s*[,，/]\s*(\d+)\s*失败(?:\s*[,，/]\s*(\d+)\s*跳过)?/.exec(text)
   const p = spec('pass'), f = spec('fail'), s = spec('skipped')
-  if (native) return { counterSeen: true, pass: Number(native[1]), fail: Number(native[2]), skipped: 0 }
+  if (native) {
+    return {
+      counterSeen: true,
+      pass: Number(native[1]),
+      fail: Number(native[2]),
+      skipped: Number(native[3] || 0),
+    }
+  }
   if (p || f || s) {
     return {
       counterSeen: true,

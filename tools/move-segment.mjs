@@ -10,7 +10,10 @@
 //   `CORPUS_EXCLUDE` 的那条理由）。⇒ **挪目录必须同时加 `CORPUS_EXCLUDE` 条目**。
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// 当前状态：**可用**（2026-10-08 修好；此前 `261ef87` 的版本**会静默丢函数，勿用**）
+// 当前状态（★ 下面每句都**可自证**，不含任何"未经核查的可用性断言"）：
+//   · 经**沙盒**正/反证：`tests/test-move-segment.mjs`（正对照 + 一条真反证 + 脏树拒绝 + 自证清理）；
+//   · **真搬迁尚未发生**（本工具至今只被用于 `%TEMP%` 沙盒，主仓产物未被动过）；
+//   · 本工具**会写仓库** ⇒ 它**不自行宣告"可用"**。
 //   · 那个 bug 是它**自己的正向跑**抓出来的：产物 557532 → 557250、`--check` exit=1（分片数 19≠20）、
 //     `--ledger` exit=1。根因：`build-client` 按 MANIFEST 里**已有的 `parts` 数组**拼装（**不枚举目录**），
 //     而当时那版只写了模块**文件**、**没把新片插进 `parts`** ⇒ 函数被移除却没被拼回。
@@ -220,8 +223,15 @@ console.log('=== 自查（exit code + 各桶）===')
 let bad = 0
 for (const flag of ['--check', '--levels', '--uniqueness', '--ledger']) {
   const r = spawnSync(process.execPath, [BUILD, flag], { cwd: REPO, encoding: 'utf8' })
-  const tail = String(r.stdout || '').trim().split('\n').pop()
+  // ★ 修（原为 `.pop()` 取最后一行）：它**区分不了**两种情况 ——
+  //   「命令**没有任何输出**」vs「命令成功但**内容不在最后一行**」（原写法两者都显示"(无输出)"，
+  //   而 --check 的摘要其实在 stdout 里、只是不在末尾一条）。⇒ 打印 **exit code + 原始输出长度 + 前后几行**。
+  const raw = String(r.stdout || '') + String(r.stderr || '')
+  const lines = raw.split('\n').map((s) => s.trim()).filter(Boolean)
+  const head = lines.slice(0, 2).join(' ｜ ')
+  const last = lines.length > 2 ? lines[lines.length - 1] : ''
   if (r.status !== 0) bad++
-  console.log('  ' + flag.padEnd(13) + ' exit=' + r.status + '  ｜ ' + (tail || '(无输出)'))
+  console.log('  ' + flag.padEnd(13) + ' exit=' + r.status + ' ｜ 输出 ' + raw.trim().length + ' 字节'
+    + (lines.length === 0 ? ' ｜ **真的没有任何输出**' : ' ｜ 首: ' + head + (last ? ' ｜ 末: ' + last : '')))
 }
 process.exit(bad ? 1 : 0)

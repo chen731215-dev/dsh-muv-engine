@@ -193,8 +193,11 @@ console.log('\n⑧ ★ 守卫仍会响（加严后的反证）：把待查文本
 {
   const d = makeSandbox('tamper')
   const r = runGen(d, { MUV_MOVE_TAMPER_LOOKUP: '1' })
-  assertInjectionBanner(r, 'TAMPER_LOOKUP')
+  // ★ 这一支**不能**要求"注入横幅出现"：TAMPER 的**本意**就是让守卫在**打印横幅之前** fail-closed
+  //   （计数守卫在 ① 横幅之前）⇒ 横幅缺席是**预期结果**，不是失败。
+  //   "注入真的生效"的证据在这里是**守卫报的那句话本身**（"出现 0 次"）。
   const o = String(r.stderr || '') + String(r.stdout || '')
+  check('★ 注入自证：守卫按 TAMPER 后的计数报错（出现 0 次）', /出现 0 次/.test(o), fullOut(r))
   check('★ 守卫红并点名（该函数原文出现 0 次 / 找不到逐字原文）',
     r.status !== 0 && /恰好 1 次|找不到该函数的逐字原文/.test(o), fullOut(r))
   check('★ 被拒后没有产出半成品（不写新模块片）', !fs.existsSync(path.join(d, 'src', 'client', 'mod-status-css.js')))

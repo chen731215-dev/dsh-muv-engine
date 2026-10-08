@@ -1,745 +1,770 @@
+    /**
+     * 注入到每个卡 HTML iframe 尾部的引导脚本。
+     *
+     * 两条硬约束都是踩过的坑：
+     *  - **不含反引号**，且**字符串里不出现裸的 `</script>`**：插件客户端代码可能被
+     *    宿主内联进 `<script>` 标签，那样的字面量会当场把标签截断、整个插件报废。
+     *    收尾标签用 `'</' + 'script>'` 拼出来。
+     *  - **只发一个数字**，不发 HTML、不发卡内任何内容——父页因此永远不需要相信
+     *    卡里的东西，收到多少都只是"多高"。
+     *
+     * ★ 量什么：**内容包围盒**，不是 `scrollHeight`。
+     * 这些卡普遍写着 `html,body{height:100%}`，实测 `documentElement.scrollHeight` 与
+     * `body.scrollHeight` **都等于视口高**（也就是 iframe 当前高度）。拿它当结果报回去
+     * 是个**不动点**：起始 600 报 600、起始 900 报 900。实测「正文美化」的内容只有
+     * ~241px，却被永远留在起始值上（起始 600/900/1500 → 报 600/900/1500，逐行相等）。
+     * 所以这里遍历 body 后代算 `top + max(height, scrollHeight)` 的最大值：
+     *  - 排除 `fixed` / `sticky`（视口相关，会把视口高算成内容高）；
+     *  - 排除 display:none / visibility:hidden / 零尺寸元素；
+     *  - 每个元素取 `max(rect.height, el.scrollHeight)`，这样被父级 `overflow` 裁掉的
+     *    静态子元素也被算进去（这正是当初想用 `body.scrollHeight` 兜的那一类）。
+     * 包围盒量不出来（`extent()===0`，例如主视觉全是 `position:fixed`）时**不报任何值**、
+     * 帧高保持不动 —— **不用 `body.scrollHeight` 兜底**，那是视口回声（§15.3 第 2 条禁用它）。
+     * 见 `muvFrameBootstrap` 里 `function m()` 上方的长注释。
+     * 起始高度 600/900/1500 三档实测收敛到同一值，见 verify-frame-height.mjs。
+     *
+     * 遍历放在 150ms 去抖后的 setTimeout 里（不在 ResizeObserver 回调里同步跑），
+     * 卡再大也不会把滚动/改高的那帧拖住。
+     *
+     * 重测触发面：`load` / `DOMContentLoaded` / `ResizeObserver(documentElement)` /
+     * 700·1600ms / 四次低频补量（到 10.9s）/ **媒体落定事件**（img `load`·`error`、
+     * video `loadedmetadata`·`loadeddata`·`durationchange`）。
+     * 最后那一类带一枚一次性令牌，让这次测量可以走**测量修正通道**（棘轮一次丢弃、报真实值）
+     * —— 语义、边界与实测数字见 `extent()` 里「测量修正通道」那段注释。
+     * @returns {string}
+     */
+    function muvFrameBootstrap() {
+      return '<script>(function(){' +
+        'if(window.__muvH)return;window.__muvH=1;' +
+        'var t=0;' +
+        // ★ 棘轮的"首帧已过"闸。为什么要它：`load` 之前 `getBoundingClientRect()` 对未 decode
+        //   的远程插图返回 0 或占位高，此时记下的值就是坏读数，而 reset 是
+        //   `overflow:hidden!important` ⇒ 坏读数会变成**永久裁切**。
+        //
+        //   ★★ 但闸门**也不能放宽**。试过两版"更宽容"的闸，**都实测更差**：
+        //     `document.readyState!=="loading"`（`interactive` 就记账）
+        //        → `verify-frame-size` 稳定 **30 通过 / 2 失败**（3 次以上复现）
+        //     同一版再加"6 秒超时提闸"
+        //        → **31 通过 / 1 失败**、**30 通过 / 2 失败**（两次）
+        //     只有回到 `==="complete"` 才是 **32 通过 / 0 失败**。
+        //   所以**记账的判据就是 `complete`**，不加例外、不加超时。
+        //
+        //   ★★★ "complete 永远不到"那个担忧**没有实测支持**：真卡（含 7 处远程插图 +
+        //   一支 28.5MB 的 PV）在夹具里都能到 `complete`。既然放宽有代价、而收益未被观测到，
+        //   就不放 —— 宁可某张卡一直不记账（帧高停在报告值上，只是不高），
+        //   也不要记一个**偏小的**值把内容永久裁掉（reset 是 `overflow:hidden!important`）。
+        //   写成函数、每次测量时**现读**（不是启动时算一次的快照）——读不到 `readyState`
+        //   的环境（逐字提取执行的门禁里的假 document）按"已过闸"处理，保持旧行为。
+        'function RL(){try{return String(document.readyState)==="complete"}catch(e){return true}}' +
+        // ★★ 媒体落定判据 `MS()`：这张卡里**所有**媒体都已"内容尺寸定死"了吗？
+        //   它是「测量修正通道」的**前置条件**（见下面 extent() 里那段长注释），只在这一条
+        //   通道上用，别的路径一概不看它。
+        //   - `img.complete`：图已 load 或已 error（**无 src / 尚未取源的 lazy 图是 false**）；
+        //   - `video.readyState>=1`：已 HAVE_METADATA（拿到时长/尺寸）。
+        //   有意**不看** `naturalHeight>0`：404 的图 `complete===true` 且 `naturalHeight===0`，
+        //   它的盒子会塌成 0 高 —— 那正是需要被修正的一种形态，不能把它排除在外。
+        //   读不到（假 document、异常）一律按"未落定"处理 ⇒ 退回老的 3 次观测语义，宁保守。
+        //   ★ 已知的**收窄**（有意接受，不是遗漏）：`preload="none"` 的 video 永远到不了
+        //   `readyState>=1`、`loading="lazy"` 且从未取源的 img `complete===false`
+        //   ⇒ 这类卡上这条通道**一直关闭**，行为与 `2026-09-22t` 完全一致（只是没修好，
+        //   不会更坏）。宁可少修几张卡，也不要放宽判据去动收缩方向的语义。
+        'function MS(){try{' +
+        'var a=document.getElementsByTagName("img");' +
+        'for(var i=0;i<a.length;i++){if(!a[i].complete)return false}' +
+        'var v=document.getElementsByTagName("video");' +
+        'for(var j=0;j<v.length;j++){if(!(v[j].readyState>=1))return false}' +
+        'return true}catch(e){return false}}' +
+        'function extent(mf){' +
+        'var body=document.body;if(!body)return 0;' +
+        'var de=document.documentElement;' +
+        'var all=body.getElementsByTagName("*"),y=window.scrollY||0,maxB=0;' +
+        'for(var i=0;i<all.length;i++){var el=all[i],cs=getComputedStyle(el);' +
+        'if(cs.position==="fixed"||cs.position==="sticky")continue;' +
+        'if(cs.display==="none"||cs.visibility==="hidden")continue;' +
+        // ★ 透明浮层不贡献"可见"高度（2026-09-23 苍玄界实测）：`.cx-detail-page` 是
+        //   opacity:0 **且** pointer-events:none 的隐藏详情浮层，内含 max-width:850px 大盒子 ——
+        //   不跳过它，内容包围盒被撑大 ~400px，封面下方一大片白。
+        //   判据必须**两条件同时满足**：只看 opacity==="0" 会误伤"入场动画前的内容"
+        //   （vh-E 真卡实测被误伤 79px）；加 pointer-events:none（隐藏浮层标配）后只命中真浮层。
+        //   ★★ 2026-09-24 第二层实锤：**祖先链**。苍玄界「开局」弹窗
+        //   `.cx-modal{position:absolute;inset:0;opacity:0;pointer-events:none}` 里装着
+        //   1575px 的角色创建表单（.cx-modal-box）—— **opacity 不继承**，子元素自身
+        //   computed opacity=1，逐元素检查放过了整棵被祖先隐藏的子树 ⇒ 幽灵高度撑满
+        //   视口 ⇒ iframe 永远等于视口高。改用 `checkVisibility({checkOpacity:true,
+        //   checkVisibilityCSS:true})`（沿祖先链累计，Chromium 105+），老浏览器回退到
+        //   元素自身双条件判断。
+        'if(el.checkVisibility?!el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}):(cs.opacity==="0"&&cs.pointerEvents==="none"))continue;' +
+        'var r=el.getBoundingClientRect();' +
+        'if(r.height===0&&r.width===0)continue;' +
+        'var b=r.top+y+Math.max(r.height,el.scrollHeight||0);' +
+        'if(b>maxB)maxB=b}' +
+        // ★① body / html **自己**的 `min-height`：卡把 `min-height:100vh` 写在 body 上（我们已在
+        //   rewriteVhMinHeight 里改写成 px），而上面那个循环是 `body.getElementsByTagName("*")`，
+        //   **不含 body 自己** ⇒ 整卡被报矮到内容高度、再被 body 的 min-height 撑开 ⇒ 永远是内部
+        //   滚动条（实测：正文美化 报 251 / 文档 1198）。只取 **px** 值：`100vh` 那种视口相对
+        //   阈值正是刚消掉的东西，拿它当结果会把不动点带回来。
+        'var bmh=parseFloat(getComputedStyle(body).minHeight);' +
+        'if(isFinite(bmh)&&bmh>maxB)maxB=bmh;' +
+        'var hmh=de?parseFloat(getComputedStyle(de).minHeight):0;' +
+        'if(isFinite(hmh)&&hmh>maxB)maxB=hmh;' +
+        // ★② 溢出学习：观测到文档滚得动时，记下当时的 scrollHeight 当作高度下界。收掉两类任何
+        //   DOM 遍历都看不见的溢出：CSS 伪元素（`::after` 撑出去的），以及子元素 margin 折叠出
+        //   body 的（实测 正文美化 差 118px、开场白 差 5px、开场白2 差 20px。逐个 CSS 开关的隔离
+        //   实验见 verify-frame-gap.mjs）。`extent()` 取每个元素的 `max(rect, scrollHeight)`
+        //   只覆盖能遍历到的元素；伪元素与折叠 margin 生成的溢出没有对应元素，只有滚动区自己知道。
+        //
+        //   为什么要"记住"而不是每次现算：**不溢出时 scrollHeight 等于视口高**，现算会得到
+        //   「内容高 → 收缩 → 又溢出 → 再长高」的来回振荡（振幅就是那 118px，一眼可见的抽动）。
+        //
+        // ★ 但这把尺子**必须能降**（原来不能，是一把只增不减的棘轮，两个真实反例）：
+        //   ① 内容缩小后帧高永不回落：棘轮记下 1200 → 用户折叠了卡里面板、内容只剩 300 →
+        //      `bOver` 为假、`__muvHFit` 仍是 1200 ⇒ 卡片底下常年一大片死白。
+        //   ② 一次坏读数把高度锁死（更危险）：`load` 之前远程插图还没 decode、
+        //      `getBoundingClientRect()` 高度是 0 或占位高，首帧就记下一个偏小值；而 reset 是
+        //      `overflow:hidden!important` ⇒ 内容被**永久裁掉**，且此后再没有降回路径。
+        //   所以记的三个条件缺一不可：**只在「首帧已过」之后记**（见下面 `RL` 那道闸）、
+        //   连续 3 次「不溢出且内容比已学值小 24px 以上」才清零重学并用 24px 滞回防抖、
+        //   判据用 `extent()`（真实内容高，见③）而不是 `body.scrollHeight`。
+        //   收缩方向的门禁见 verify-frame-height.mjs（内容缩小后报数必须回落）。
+        //
+        //   ★★ 滞回**只作用在收缩方向**。只要 `bOver||dOver` 为真（**观测到**溢出），
+        //   `need > fit` 就**无条件**提升 —— 没有阈值、没有等待、没有"下次再说"。
+        //   这是硬要求：reset 是 `overflow:hidden!important`，溢出的那几像素如果没被
+        //   立刻补上就是**永久裁掉**（实测 `ERA 状态栏` 内容 929 / 帧高 923，差 5px）。
+        //   反过来，这 5px 也是"棘轮为什么必须存在"的活例子：`extent()` 量到 923 而真实
+        //   内容要 929，只有滚动区自己（body 溢 5px）看得见。
+        //
+        // ★ body 与 html **两个**滚动区都要看：reset 把两者都啃成了 `overflow:hidden!important`
+        //   （照 ST），于是 body 是独立滚动容器，它的溢出**不再传导**到
+        //   `documentElement.scrollHeight` —— 只看 html 会漏（实测 ERA 状态栏：html 报 923、
+        //   body 自己滚到 929）。`overflow:hidden` 只是不显示滚动条，**`scrollHeight` 依旧报告
+        //   溢出距离**，所以这两个比较照旧有效。而"有没有溢出"这个**前提**仍然是必须的：body
+        //   若是 `height:100%`，`body.scrollHeight` 就等于视口高，无条件采用它就回到不动点。
+        'var bOver=body.scrollHeight>body.clientHeight+1;' +
+        'var dOver=de?(de.scrollHeight>de.clientHeight+1):false;' +
+        'var need=Math.max(body.scrollHeight,de?de.scrollHeight:0);' +
+        'var fit=window.__muvHFit||0;' +
+        'if(RL&&(bOver||dOver)){if(need>fit){window.__muvHFit=need;fit=need}window.__muvHReset=0}' +
+        'else if(RL&&fit>0&&maxB>0&&(fit-maxB)>24){' +
+        // ★★★ 测量修正通道（2026-09-22u）。与上面那条"内容增长"的棘轮**语义并列、互不干扰**：
+        //
+        //   · **内容增长**（棘轮，铁律不动）：只要**观测到**溢出（`bOver||dOver`）就无条件提升，
+        //     没有阈值、没有等待 —— 因为 reset 是 `overflow:hidden!important`，溢出的那几像素
+        //     不立刻补上就是**永久裁掉**。上面那个分支一个字符没变。
+        //   · **测量修正**（本条）：媒体**全部落定**（`MS()`）+ 「首帧已过」（`RL`）+ **没有**
+        //     观测到溢出 + 已学值比实测内容高 24px 以上 ⇒ 这次收缩是**修正一次坏读数**，不是
+        //     内容真的缩了，所以**一次就够**，直接把棘轮丢掉、报真实内容高。
+        //
+        //   为什么必须有这条（真卡/合成取证见 HANDOFF §34，数字是实测的）：
+        //   收缩方向的常规路径要求**连续 3 次**观测（下面 `rc>=3`）才清零重学，而媒体落定
+        //   引起的收缩常常**只有一次**观测机会 —— 引导脚本的定时补量到 10.9s+150ms 就停了，
+        //   而 RO 只在**盒子**尺寸变化时 fire（本节上文已记：媒体引起的包围盒变化可以完全
+        //   不动任何盒子）。合成夹具实测（img 用 `width/height` 属性预留 600×2000 的高盒子、
+        //   真实图片是 600×200 的扁图、src 在 11.5s 才设）：
+        //     帧高先被撑到 **2300**（内容确实是 2300，没记错），图片到位后内容缩到 **500**，
+        //     此后**再也没有第二次观测** ⇒ 帧高永久停在 2300 ⇒ **1800px 死白**
+        //     （同一文档把 src 提前到 400ms → 靠 2500/5300/8100 三次补量能凑够 3 次 → 正常回落）。
+        //   ⇒ 这条通道不是把滞回拆掉，是**给"媒体落定"这个终态信号补上一次它本来就该有的修正**：
+        //     媒体事件是浏览器给的"这个元素的内容尺寸定了"的同步信号，落定之后不会再有一次
+        //     **由媒体引起**的重排，等第 2、第 3 次观测就是等一个不会再来的事件。
+        //
+        //   边界（缺一不可，任何一条不满足都退回老的 3 次语义）：
+        //   ① `mf` —— 本次测量必须由**媒体事件**触发（`sf()` 挂的一次性令牌）。定时补量、
+        //      RO、卡自己的 JS 引起的测量都不带它 ⇒ **非媒体**的异步收缩照旧 3 次确认；
+        //   ② `MS()` —— 媒体全部落定；只要还有一张图在加载（含 lazy 未取源），这条通道关闭；
+        //   ③ `RL` + `!bOver && !dOver` —— 与老路径同一条闸门：**观测到溢出就绝不收缩**；
+        //   ④ 只有**收缩**方向有这条通道，增长方向一个字没动。
+        //
+        //   修正之后的**安全复核**：`sf()` 在 +700ms 还会再挂一次令牌重量一次（见 `sf` 的注释）
+        //   —— 万一这次修正量偏小（内容其实还要更多），那一次会走增长分支无条件补上，
+        //   不会因为这条通道把内容永久裁掉。
+        'if(mf&&MS()){window.__muvHFit=0;fit=0;window.__muvHReset=0}else{' +
+        'var rc=(window.__muvHReset||0)+1;' +
+        'if(rc>=3){window.__muvHFit=0;fit=0;window.__muvHReset=0}else{window.__muvHReset=rc}}}' +
+        'else{window.__muvHReset=0}' +
+        'if(fit>maxB)maxB=fit;' +
+        'return Math.ceil(maxB)}' +
+        // ★ 量不出来（`extent()===0`）时**什么都不报**，帧高保持不动。
+        //
+        // 原来这里回退到 `document.body.scrollHeight` —— 那正是 HANDOFF §15.3 第 2 条
+        // **明确禁用**的值：卡普遍写着 `html,body{height:100%}`，此时 body.scrollHeight
+        // **等于 iframe 当前高度**（视口回声）。拿它当结果报回去就是把起始值当答案，
+        // 而且它会和下一轮"按内容改高度"打架 ⇒ 帧高在 视口高 ↔ 内容高 之间来回跳。
+        //
+        // 这条路径不是理论上的：`extent()` 会跳过 `position:fixed/sticky` 的元素
+        // （它们是视口相关的，算进去会把视口高当成内容高），而真卡 `_足控天堂2` 的
+        // ERA 状态栏里有 **9 处 `position:fixed`**。所以「整卡主视觉都是 fixed」时
+        // `extent()` 就是 0 —— 正是最容易踩到它的卡。
+        //
+        // `h>0` 这个条件本来就在（原来写的是 `var h=e>0?e:(…scrollHeight)`，把 0 换成了猜测）。
+        // 现在 0 就是 0：**不报**。帧高停在已有值上，等下一次（700ms / 1600ms / RO / load）
+        // 量出来再改。宁可暂时矮/高一点，也不写一个错的、会自我放大的值进去。
+        //   ★ 记账只在 `readyState==='complete'` 之后（`load` 已触发、远程插图已 decode）：
+        //   `load` 之前 `getBoundingClientRect()` 对未 decode 的插图返回 0 或占位高，此时记下的
+        //   任何值都是坏读数 —— 而 reset 是 `overflow:hidden!important`，坏读数会变成永久裁切。
+        //   ★ 记账只在「首帧已过」（`RL`，见上面那段）之后；`m()` 仍然照报 ——
+        //   早报一次能让帧高尽快贴近内容，只是那一次**没有棘轮可记**。
+        'function m(){try{' +
+        // ★ 一次性令牌：本次测量是不是由**媒体落定事件**触发的？
+        //   读走就清（consume-once）—— 下一个定时/RO 触发的测量绝不会继承它，
+        //   否则"测量修正"会退化成"任何测量都能一次收缩"，那正是要避免的语义漂移。
+        'var mf=window.__muvHMediaFix?1:0;window.__muvHMediaFix=0;var e=extent(mf);' +
+        'if(e>0)window.parent.postMessage({__muvFrameHeight:e},"*");' +
+        // ★ 注入判据用的**专属 token**（见 withFrameHeightBootstrap 的守卫注释）：
+        //   它只出现在引导脚本里，卡自己的 `window.__muvH=1` 或 `__muvHello` 都**不含**它，
+        //   所以"注入了几次"数这个才数得准（数 `window.__muvH=1` 会被卡自己的拷贝污染，
+        //   断言会**因为错误的原因通过**）。它是 `postMessage(…)` 语句的一部分，任何
+        //   `"*"` 结尾的 postMessage 断言照旧成立。
+        'window.__muvHFitProbe=1;' +
+        '}catch(err){}}' +
+        'function s(){if(t)clearTimeout(t);t=setTimeout(m,150)}' +
+        'window.addEventListener("load",function(){m();s()});' +
+        'document.addEventListener("DOMContentLoaded",s);' +
+        'try{if(window.ResizeObserver)new ResizeObserver(s).observe(document.documentElement)}catch(e){}' +
+        // ★ 媒体事件重测（2026-09-22p）。为什么 RO 不够（取证见 HANDOFF §29）：
+        //   RO 只在**盒子**（边框盒）尺寸变化时 fire，而媒体引起的**包围盒**变化可以完全不
+        //   动任何盒子 —— 两种真实形态（真卡 _足控天堂2「主页」两条都占）：
+        //   ① 媒体元素自身 position:absolute（该卡画廊 `.polaroid img{position:absolute;inset:0}`，
+        //      父盒用 aspect-ratio 预留尺寸）：媒体加载只改绝对定位元素自己的盒子，
+        //      html/body 的盒子纹丝不动 ⇒ RO 一次都不 fire；而 `extent()` 对绝对定位元素
+        //      单独取 `rect.top + height`，媒体到位后包围盒**确实变大** —— 帧高却不跟。
+        //   ② 卡的 JS 在 load 之后才把 img 插进 DOM（该卡画廊就是运行时拼的）：
+        //      固定补量到 10.9s 就停，之后插入的媒体没有任何触发器。
+        //   媒体事件是浏览器给「这个元素的内容尺寸定了/变了」的同步信号（error 也算——
+        //   404 的图会塌成 0 高，包围盒同样要重量），接到就 sf() 走 150ms 去抖。
+        //   对已有元素挂一遍；卡运行时再插入的媒体由 MutationObserver 兜底补挂
+        //   （只挂事件，不额外测量 —— 测量仍由 s() 统一去抖）。
+        //
+        //   ★★ 为什么走 `sf()` 而不是直接 `s()`（2026-09-22u）：媒体事件触发的这一次测量
+        //   要带上一枚**一次性令牌** `__muvHMediaFix`，让 extent() 知道"这次读数来自媒体落定、
+        //   可以走一次测量修正"（语义与边界见 extent() 里那段长注释）。令牌由 m() 读走即清。
+        //   `sf()` 另外还在 **+700ms** 补挂一次同样的令牌重量一次：这一次是**修正的安全复核**
+        //   —— 落定瞬间的布局若还没走完（transition/字体替换），修正量可能偏小，那次复核会走
+        //   增长分支把它补回来。定时器用同一个句柄去重，媒体再多也只留一个待复核。
+        'function sf(){window.__muvHMediaFix=1;s();' +
+        'if(window.__muvHMediaT)clearTimeout(window.__muvHMediaT);' +
+        'window.__muvHMediaT=setTimeout(function(){window.__muvHMediaFix=1;s()},700)}' +
+        'function mw(el){try{' +
+        'if(el.tagName==="IMG"){el.addEventListener("load",sf);el.addEventListener("error",sf)}' +
+        'else if(el.tagName==="VIDEO"){el.addEventListener("loadedmetadata",sf);el.addEventListener("loadeddata",sf);el.addEventListener("durationchange",sf)}' +
+        '}catch(e){}}' +
+        'try{var mqs=document.getElementsByTagName("img"),mqvv=document.getElementsByTagName("video");' +
+        'for(var mqi=0;mqi<mqs.length;mqi++)mw(mqs[mqi]);' +
+        'for(var mqv=0;mqv<mqvv.length;mqv++)mw(mqvv[mqv])}catch(e){}' +
+        'try{if(window.MutationObserver)new MutationObserver(function(mrs){' +
+        'for(var mra=0;mra<mrs.length;mra++){var mrn=mrs[mra].addedNodes||[];' +
+        'for(var mrb=0;mrb<mrn.length;mrb++){var mre=mrn[mrb];if(mre.nodeType!==1)continue;' +
+        'if(mre.tagName==="IMG"||mre.tagName==="VIDEO")mw(mre);' +
+        'if(mre.querySelectorAll){var mrq=mre.querySelectorAll("img,video");for(var mrc=0;mrc<mrq.length;mrc++)mw(mrq[mrc])}}}})' +
+        '.observe(document.documentElement,{childList:true,subtree:true})}catch(e){}' +
+        'setTimeout(m,700);setTimeout(m,1600);' +
+        // ★ 后期补量（有限次，到点就停）。为什么需要：内容**在最后一次测量之后**还在长高时
+        //   （远程插图 decode 完、字体替换、卡自己的定时器改 DOM），棘轮就一次都没观测到那次
+        //   溢出，而 reset 是 `overflow:hidden!important` ⇒ 那几像素**永久裁掉**，表现为
+        //   「同一张卡、同一份源码，跑两次一次红一次绿」的间歇性失败
+        //   （实测 `ERA 状态栏` 内容 929 / 帧高 923，差 5px，只在部分运行里出现）。
+        //   700/1600 两次太早：真卡的主视觉要 2~3 秒才落定。这里补四次低频补量覆盖到 11 秒；
+        //   RO 已经覆盖"内容一长高就报"，所以这四次只是**兜底**，不是主路径。
+        //   有意不写成 `setInterval`：稳态之后每秒重扫整棵子树是纯浪费，而棘轮已经收敛，
+        //   没有新信息可拿。
+        'for(var i=0;i<4;i++)setTimeout(m,2500+i*2800);' +
+        '})();</' + 'script>'
+    }
 
     /**
-     * ── 卡 app 的 **ST 兼容层**（注入卡 iframe 内部的垫片） ────────────────────
+     * 把引导脚本插到**不在任何 `<script>` 里的最后一个** `</body>` 之前；
+     * 没有这样的 body 就接在末尾。
      *
-     * 背景：ST 的卡 iframe **没有 `sandbox`**（同源），所以卡作者的 app 顺手就用
-     * `localStorage`、`SillyTavern.getContext()`、`window.parent`。我们的沙箱是
-     * `allow-scripts`（不透明来源，安全决策见上面 `MUV_CARD_SANDBOX` 的长注释），
-     * 于是这些 API 要么抛 `SecurityError`、要么够不着。
-     *
-     * 症状是**静默**的（真卡 `_足控天堂2` 实测）：`cgGetCache`/`cgSaveCache` 都被
-     * `try{…}catch(e){}` 包着 ⇒ 不报错、永远返回空缓存 ⇒ CG 画廊永不解锁 ⇒
-     * 那 18 个远程插图和视频永不显示。用户看到的只是"图/视频没出来"。
-     *
-     * 为什么不用 `allow-same-origin` 解决：那张卡的代码**主动探测** `window.parent.document`
-     * （见 §9 事故记录）。同源后这三行立刻变活：
-     *   `if(window.parent&&window.parent!==window)parentDocs.push(window.parent.document)`
-     *   `if(window.opener)parentDocs.push(window.opener.document)`
-     *   `if(window.parent.parent&&… )parentDocs.push(window.parent.parent.document)`
-     * 卡就能读写 DSH 前端 DOM、带凭据打 `/api/*`。**所以只能垫片，不能放开沙箱。**
-     *
-     * ★ 关键的可行性依据（已实测，别丢）：卡的 `cgScanChat` 是从 `window` **起步**的 ——
-     *   ```js
-     *   var targetWindow=window;
-     *   try{if(window.parent&&window.parent.SillyTavern)targetWindow=window.parent;}catch(e){}
-     *   if(targetWindow.SillyTavern&&targetWindow.SillyTavern.getContext){ … }
-     *   ```
-     *   它只在 `window.parent.SillyTavern` 存在时才"升级"到父页。我们**跨源无法**给
-     *   `window.parent` 挂属性，但**完全可以在 iframe 内部定义 `window.SillyTavern`** ⇒
-     *   卡会采纳它。所以不用同源也能满足这条路径。
-     *
-     * 已实测**不需要**垫的两样（省掉就是少两处风险，理由都来自真数据）：
-     *  - `$`/`jQuery`：全卡只有 2 处，且都写着 `if(typeof $ !== 'undefined' && $(el).length){…}`
-     *    —— 已被 feature-detect 短路，没 jQuery 也不抛。
-     *  - `indexedDB`：不透明源下 `indexedDB.open()` 是**同步抛** `SecurityError`
-     *    （"access to the Indexed Database API is denied in this context"），
-     *    而卡的 `cgImgDbOpen()` 正是 `try{…}catch(e){fail(e)}` —— 抛被接住、Promise reject、
-     *    `cgLoadImg` 的 `.catch` 回退远程 URL。行为与 ST 只差"第二次打开走本地 blob 缓存"。
-     *
-     * 垫片的**形态约定**（沿用 `muvFrameBootstrap` 那两条硬约束，踩过）：
-     *  - 整段是**单引号字符串**，所以内部一律用 `"` 引号，且**不含反引号**；
-     *  - 字符串里**不出现裸的 `</script>`**（收尾标签用 `'</' + 'script>'` 拼）。
-     * @returns {string} 只有 JS 正文，不含 script 标签
+     * 两个"只做末尾追加、绝不改卡内内容"的约束：
+     *  - 绝不去改卡自己的 `<script>` —— 那正是 renderMediaTags 踩过的坑
+     *    （正则改写卡内 JS → `&#39;&#39;` → 语法错误 → 整页脚本报废）；
+     *  - 注入点也只认**不在 `<script>` 范围内**的 `</body>`：卡自己的 JS 里完全可能
+     *    写着 `document.write('</body>')` 这样的字符串，插进去就把卡的代码切断了。
+     * @param {string} html
+     * @returns {string}
      */
-    function muvCardCompatScript() {
-      return '(function(){' +
-        // 幂等标记用 `__muvCompatOn`（不是 `__muvCompat`）：它同时是父页守卫查的
-        // **专属 token**，见 `withCardCompat` 的注释。卡自己写 `window.__muvCompat=1`
-        // 不再能顶掉整段垫片。
-        'if(window.__muvCompatOn)return;window.__muvCompatOn=1;' +
-        'function S(v){return v==null?"":String(v)}' +
-        'function post(m){try{window.parent.postMessage(m,"*")}catch(e){}}' +
-        // ── 0. 首屏遮蔽的「我初始化完了」信号（2026-09-25，足控天堂主题闪烁）──────
-        // 宿主给"自带初始主题属性"的卡文档起了遮蔽（`iframe.muv-iframe[data-muv-mask]`
-        // 的 `opacity:0`），免得用户看到卡的**未初始化态**。足控天堂实测：
-        //   `<body data-theme="night">` 是写死的默认值，而**已保存的主题只在卡自己的
-        //   DOMContentLoaded 里落** —— 那一刻又被卡自己的 35 条 CDN 模块链拖到
-        //   4.3–6.8 秒 ⇒ 每次切回都先看 2–6 秒夜色、再跳白天（夹具把窗口量成 2.1–3.0s）。
-        // ★ 为什么必须"排后报"：本垫片是文档里**最早**的脚本，所以我们的监听器排在卡的
-        //   **前面**；而 `setTimeout(…,0)` 的回调排在**全部** DOMContentLoaded 监听器
-        //   之后 ⇒ 消息发出去时卡的主题已经落好，"显形即终态"。
-        //   （夹具 fixture-theme-flash.mjs 的 B 臂实证：显形那一刻 `data-theme` 已是 day。）
-        // 只发一个字面量，不带任何卡内数据；宿主侧只把它当"可以显形了"用。
-        'document.addEventListener("DOMContentLoaded",function(){setTimeout(function(){post({__muvReady:1})},0)},false);' +
-        // ── 1. KV：localStorage / sessionStorage 的内存实现 ──────────────────
-        // 命名空间靠**前缀**区分（"L:" / "S:"），前缀首字符就不同 ⇒ 不可能串键。
-        'var seed=(window.__muvKvSeed&&typeof window.__muvKvSeed==="object")?window.__muvKvSeed:{};' +
-        'var mem={};' +
-        'for(var k0 in seed){if(Object.prototype.hasOwnProperty.call(seed,k0))mem[k0]=S(seed[k0])}' +
-        'function keysOf(ns){var a=[];for(var k in mem){if(k.indexOf(ns)===0)a.push(k.slice(ns.length))}return a}' +
-        'function push(op,k,v){var m={__muvKv:op,k:S(k)};if(op==="set")m.v=S(v);post(m)}' +
-        'function makeStore(ns){' +
-        'var api={};' +
-        'api.getItem=function(k){try{k=S(k);return Object.prototype.hasOwnProperty.call(mem,ns+k)?mem[ns+k]:null}catch(e){return null}};' +
-        'api.setItem=function(k,v){try{k=S(k);v=S(v);mem[ns+k]=v;push("set",k,v)}catch(e){}};' +
-        'api.removeItem=function(k){try{k=S(k);delete mem[ns+k];push("remove",k)}catch(e){}};' +
-        'api.clear=function(){try{var ks=keysOf(ns);for(var i=0;i<ks.length;i++)delete mem[ns+ks[i]];push("clear")}catch(e){}};' +
-        'api.key=function(i){try{var ks=keysOf(ns);i=Number(i);if(!isFinite(i))return null;return(i>=0&&i<ks.length)?ks[i]:null}catch(e){return null}};' +
-        'try{Object.defineProperty(api,"length",{configurable:true,get:function(){try{return keysOf(ns).length}catch(e){return 0}}})}catch(e){}' +
-        'return api}' +
-        // 只在**真 API 不可用**时才覆盖：这样万一哪天沙箱回到同源，真实存储不会被我们顶掉。
-        // 覆盖走 defineProperty（`window.localStorage` 在 Chrome/Edge 下是**自有且
-        // configurable** 的访问器 —— 已实测 `own configurable=true`），
-        // 不是 try/catch 包一层，也不是裸赋值（卡里是 'use strict'）。
-        'function def(name,val){' +
-        'try{Object.defineProperty(window,name,{configurable:true,get:function(){return val},set:function(){}});return true}catch(e){}' +
-        'try{window[name]=val;return true}catch(e2){}return false}' +
-        // `defGet`：与 `def` 同一套口径，但落位的是**每次取值都重算**的 getter。
-        // 为什么需要（第 36 轮）：ST 的 `iframe/predefine.js:26-34` 里 `SillyTavern` 就是
-        // `Object.defineProperty(window,'SillyTavern',{get:()=>({...SillyTavern.getContext(),getContext})})`
-        // —— 逐次重算。它的 `chat` 因此永远是**当前**那个数组；而我们的 `hostChat` 会被
-        // 宿主整条替换（`hostChat=d.__muvChat.list`），用 `def` 固定成一个快照会让
-        // `SillyTavern.chat` 永远停在初始的空数组上（静默的假数据，比 undefined 更坏）。
-        'function defGet(name,getter){' +
-        'try{Object.defineProperty(window,name,{configurable:true,get:getter,set:function(){}});return true}catch(e){}return false}' +
-        'function usable(name){' +
-        'try{var s=window[name];if(!s)return false;s.setItem("__muvP","1");var ok=s.getItem("__muvP")==="1";s.removeItem("__muvP");return ok}catch(e){return false}}' +
-        'if(!usable("localStorage")){def("localStorage",makeStore("L:"))}' +
-        'if(!usable("sessionStorage")){def("sessionStorage",makeStore("S:"))}' +
-        // ── 2. window.SillyTavern：卡从 getContext().chat 里扫 <img> 解锁 CG ──
-        // chat 由**宿主**通过 postMessage 送进来（宿主才有消息文本）。取不到就空数组，
-        // **必须不抛错** —— 卡的 cgScanChat 只做 `ctx.chat||[]`。
-        'var hostChat=[];' +
-        // ── 2.1 `SillyTavern.saveChat`（第 36 轮补）与 `SillyTavern` 的**形状** ────────
-        // 症状（同一条真机控制台）：`lodash.min.js:84 Uncaught TypeError: Expected a function`。
-        // 取证的结论是它**不是** lodash 的问题，也不是卡"调了不存在的 lodash 方法"：
-        //   MVU bundle（573,299 字节）顶层有一句
-        //       const wt = _.debounce(SillyTavern.saveChat, 1e3);
-        //   `SillyTavern` 在 ST 的卡 iframe 里是 `{...SillyTavern.getContext(), getContext}`
-        //   （`iframe/predefine.js:26-34`），而 ST 的 context **有** `saveChat` ⇒ 传进 lodash 的
-        //   是函数。DSH 这边我们的垫片只给了 `{getContext}` ⇒ 传进去的是 `undefined` ⇒
-        //   lodash 的 `debounce` 守卫（`pl=TypeError`,`en="Expected a function"`，
-        //   `lodash@4.18.1/lodash.min.js:84` 那一行**只此一处**抛它）当场抛 ⇒ **整个 bundle
-        //   的模块求值中断**（就是"MVU 框架一行都没跑起来"）。
-        //   ⇒ 修的是**我们垫片缺的能力**，不是 lodash。
-        // 语义（如实说明）：ST 的 `saveChat` 把当前聊天落盘到 ST 的会话存储。DSH 里聊天与
-        //   变量都**由 DSH 自己持久化**（变量走 `__muvVarWrite` → 宿主落库），这里没有第二份
-        //   要写的账 ⇒ 最小实现 = **不落盘、返回一个已完成的 Promise**（卡的 `.then()` 链
-        //   不会因为返回值不是 thenable 而崩），并**在第一次调用时留一条痕**（不静默）。
-        'var __stSaveChatWarned=false;' +
-        'function stSaveChat(){try{if(!__stSaveChatWarned){__stSaveChatWarned=true;' +
-        'warnShim("SillyTavern.saveChat：DSH 没有等价的落盘动作（聊天与变量由 DSH 自己持久化），本次只返回已完成")}}catch(e){}' +
-        'return Promise.resolve()}' +
-        'function getContext(){' +
-        'try{return{chat:hostChat,name1:"User",name2:"",characters:[],characterId:0,chatId:"",' +
-        'eventSource:null,eventTypes:{},extensionSettings:{},getRequestHeaders:function(){return{}},' +
-        'getCharacters:function(){return hostChat},saveChat:stSaveChat}' +
-        '}catch(e){return{chat:[],saveChat:stSaveChat}}}' +
-        // 形状按 ST：`{...getContext(), getContext}`，逐次重算（`defGet`）。
-        'if(!window.SillyTavern)defGet("SillyTavern",function(){' +
-        'try{var o=getContext();o.getContext=getContext;return o}' +
-        'catch(e){return{chat:[],saveChat:stSaveChat,getContext:getContext}}});' +
-        // ── 3. 事件总线：eventOn/eventEmit/eventOnce/eventClearAll ────────────
-        // 卡用这套协议收发 ERA 数据（它只 emit 请求，应答者另有其人）。
-        // `eventClearAll` 这个名字是 ST 的 `predefine.js` 第 47 行要求的：
-        // `$(window).on("pagehide",function(){eventClearAll()})` —— 名字对不上会当场抛。
-        // ★ `on` 返回**取消订阅函数**（ST/酒馆助手同口径）：实测新卡
-        //   `var unsub = on(name, handler); _eventBindings.push({name, unsub: typeof unsub === 'function' ? unsub : null})`
-        //   —— 它自己就带 null 兜底，所以返回值只是"能用上更好"，不影响老卡。
-        'var handlers={};' +
-        'function on(n,f){try{n=S(n);if(typeof f!=="function")return undefined;(handlers[n]=handlers[n]||[]).push(f);return function(){try{off(n,f)}catch(e){}}}catch(e){return undefined}}' +
-        'function off(n,f){try{var a=handlers[S(n)]||[];var i=a.indexOf(f);if(i>=0)a.splice(i,1)}catch(e){}}' +
-        'function once(n,f){try{var w=function(d){try{off(n,w)}catch(e){}try{f(d)}catch(e){}};on(n,w)}catch(e){}}' +
-        // 派发只在**卡内**做。宿主回灌的事件走这里，**不走 emit** —— 否则一个来回就成正反馈
-        // （宿主 → 卡 → 转发回宿主 → 宿主再回 …），所以两处入口必须分开。
-        'function fire(n,d){try{var a=(handlers[S(n)]||[]).slice();for(var i=0;i<a.length;i++){try{a[i](d)}catch(e){}}}catch(e){}}' +
-        // 卡的 `eventEmit` = 卡内派发 + 把请求**转发给宿主**。
-        // ★ 为什么必须转发：ERA 的数据在宿主那一侧（卡的 `eraGet()` 只读卡内的 `currentStat`，
-        //   而 `currentStat` 完全靠事件喂）。宿主不在 iframe 里、也进不去（不透明来源），
-        //   所以子 → 父这一跳是唯一的通路。
-        'function emit(n,d){fire(n,d);out(n,d)}' +
-        'function out(n,d){' +
-        'try{' +
-        'if(typeof n!=="string"||!n||n.length>64)return;' +
-        // 只送可结构化克隆的纯数据：函数/DOM 节点/循环引用会让 postMessage 当场抛。
-        // 先 stringify 再 parse，顺带得到一个体积上限（恶意卡不能靠一个巨大的 detail 撑爆父页）。
-        'var s=null;try{s=JSON.stringify(d===undefined?null:d)}catch(e){s=null}' +
-        'if(s===undefined)return;' +
-        'if(s!==null&&s.length>65536)return;' +
-        'var v=null;if(s!==null){try{v=JSON.parse(s)}catch(e){v=null}}' +
-        'post({__muvEventOut:{name:n,detail:v}})' +
-        '}catch(e){}}' +
-        'function clearAll(){try{handlers={}}catch(e){}}' +
-        'if(typeof window.eventOn!=="function")def("eventOn",on);' +
-        'if(typeof window.eventEmit!=="function")def("eventEmit",emit);' +
-        'if(typeof window.eventOnce!=="function")def("eventOnce",once);' +
-        'if(typeof window.eventOff!=="function")def("eventOff",off);' +
-        'if(typeof window.eventClearAll!=="function")def("eventClearAll",clearAll);' +
-        // ── 4. 视口变量（ST §5 的 --TH-viewport-height）────────────────────
-        'function setVh(px){try{px=Number(px);if(!isFinite(px)||px<200)return;document.documentElement.style.setProperty("--TH-viewport-height",Math.round(px)+"px")}catch(e){}}' +
-        'setVh(window.__muvVH);' +
-        // ── 5. 收宿主的消息 ────────────────────────────────────────────────
-        // 只认 `window.parent` 发来的（沙箱里子文档的 origin 是 "null"，拿 origin 当凭据
-        // 没有意义；用 source 比对才是有效凭据）。
-        'window.addEventListener("message",function(ev){' +
-        'try{' +
-        'if(ev.source!==window.parent)return;' +
-        'var d=ev.data;if(!d||typeof d!=="object")return;' +
-        'if(d.__muvVH!==undefined)window.__muvVH=d.__muvVH;' +
-        'if(d.type==="TH_UPDATE_VIEWPORT_HEIGHT"||d.__muvVH!==undefined)setVh(window.__muvVH);' +
-        'if(d.__muvKvSeed&&typeof d.__muvKvSeed==="object"){var s2=d.__muvKvSeed;for(var k2 in s2){if(Object.prototype.hasOwnProperty.call(s2,k2))mem[k2]=S(s2[k2])}}' +
-        'if(d.__muvChat&&d.__muvChat.list&&typeof d.__muvChat.list.length!=="undefined")hostChat=d.__muvChat.list;' +
-        // 宿主→卡的事件注入：宿主 postMessage 这个形状，卡的 eventOn("era:queryResult")
-        // 就收到（不需要同源）。
-        // ★ 走 `fire` 而**不是** `emit`：这是「防环」的唯一开关。用 emit 的话宿主回灌的事件会被
-        //   再转发回宿主，宿主照协议再回一次 —— 一个来回就成正反馈，父页被自己打满。
-        // ★ 同一个 detail 再喂一份给**变量缓存**（`__muvAbsorb`）：MVU 卡的
-        //   `Mvu.getMvuData()` / `TavernHelper.getVariables()` 是**同步**读，不喂缓存的话
-        //   它们只能回初始值 —— 就是"服务端有真值、卡上是空的"那个症状。
-        //   写成两条并列 if 而不是一条 if 里塞两句：`…__muvEvent.name)fire(` 这个形状是
-        //   verify-era-bridge 的「防环」断言逐字盯着的（它认的就是"入站直接 fire"），
-        //   合并成 `{fire(...);…}` 会把那条断言打红 —— 别为了少几个字节去动既有门禁口径。
-        'if(d.__muvEvent&&d.__muvEvent.name)fire(d.__muvEvent.name,d.__muvEvent.detail);' +
-        'if(d.__muvEvent&&d.__muvEvent.name)__muvAbsorb(d.__muvEvent.name,d.__muvEvent.detail);' +
-        '}catch(e){}},false);' +
-        // ── 5.5 音频兜底：CDN 文件名带序号，而预设「音乐列表」写的是裸类别名 ──
-        // 实测（2026-09-22，直接 HEAD 那个 CDN）：
-        //   `音频/日常.mp3` = **404**，而 `音频/日常1.mp3` / `日常2` / `日常3` = 200；
-        //   搞笑 / 欢快 / 暧昧 同样（裸名 404、带序号 200）。
-        // 而卡模板的 `processAudio()` 就是按消息里 `<audio>日常</audio>` 拼
-        // `${BASE_URL}音频/日常.mp3` ⇒ 必然 404，播放器一片空白（卡自己的 error
-        // 处理只是把提示语调暗）。ST 侧同一张卡、同一个 URL，同样会静默 —— 这一条
-        // **不是我们的偏差**，但既然命名规律是确定的，就顺手兜住。
-        // 策略：只在**真的加载失败**时兜，且只对"不以数字结尾"的 .mp3 名字动手，
-        // 依次试 `<名字>1 / 2 / 3`；名字已经带序号（日常1）时**不猜**，绝不改坏正解。
-        'var __muvAudioTried={};' +
-        'function __muvAudioFix(el){' +
-        'try{' +
-        'var a=el;if(a&&String(a.tagName||"").toLowerCase()==="source")a=a.parentNode;' +
-        'if(!a||String(a.tagName||"").toLowerCase()!=="audio")return;' +
-        'var sEl=a.querySelector?a.querySelector("source"):null;' +
-        'var src=(sEl&&sEl.getAttribute("src"))||a.getAttribute("src")||"";' +
-        'var m=/^(.*\\/)([^\\/]+)\\.mp3$/i.exec(String(src).split("?")[0]);' +
-        'if(!m)return;' +
-        'var name="";try{name=decodeURIComponent(m[2])}catch(e){name=String(m[2])}' +
-        // 别名记号挂在**元素自己**身上（`a.__muvAudioBase`），不能用全局名字表：
-        // 全局表会让另一个元素上**合法**的 `日常1.mp3` 被当成我们的候选，被继续改掉
-        // （门禁 B 档实测抓到的）。名字带数字结尾时**不猜** —— 除非它就是本元素上一轮兜出来的。
-        'var base=a.__muvAudioBase||name;' +
-        'if(!a.__muvAudioBase&&/\\d$/.test(name))return;' +
-        'var n=__muvAudioTried[base]||0;' +
-        'if(n>=3)return;__muvAudioTried[base]=n+1;' +
-        'var cand=m[1]+encodeURIComponent(base+(n+1))+".mp3";' +
-        // 改写方式很讲究：**只改 `<source>` 的 src 再 `load()` 不会重新触发**资源选择算法
-        // （实测：重试一次之后就不再报错，等于没重试）。规范里媒体元素**有 `src` 属性时
-        // 会忽略 `<source>` 子节点**，所以清空子节点 + 直接设 `src` 才能保证真的重新选源，
-        // 而且之后的错误会打在媒体元素上（本函数的两个分支都收）。
-        'if(sEl){try{while(a.firstChild)a.removeChild(a.firstChild)}catch(e){}}' +
-        'a.setAttribute("src",cand);' +
-        'try{a.__muvAudioBase=base}catch(e){}' +
-        'try{console.log("[muv-engine] 音频兜底 "+name+".mp3 → "+name+(n+1)+".mp3")}catch(e){}' +
-        'try{a.load()}catch(e){}' +
-        'try{var p=a.play();if(p&&p.catch)p.catch(function(){})}catch(e){}' +
-        '}catch(e){}}' +
-        'document.addEventListener("error",function(ev){__muvAudioFix(ev&&ev.target)},true);' +
-        // ── 6. 开工：向宿主报名（要 chat / 视口高 / KV 快照）─────────────────
-        'post({__muvHello:1});' +
-        // ── 7. 用户消息桥：卡里「发送到酒馆」的首选路径 ─────────────────────
-        // 真卡 sendToTavern 的三级降级（ERA 状态栏 2998-3054 行实测）：① 宿主注入的
-        // 全局函数 sendUserMessage(msg)（首选）② DOM 直插父文档 #send_textarea +
-        // #send_but（跨源必被拒）③ 剪贴板。①在这里兑现：postMessage 给宿主，由宿主
-        // 填 DSH 的聊天输入框（mode=send 再代发，mode=fill 只填不发送）。
-        // 另一类卡（主页.html 的 fillSendTextarea）先搜**自己文档**里的 #send_textarea：
-        // 给它一个隐藏收件箱，卡用原生 setter 写值 + input/change 事件时这里捕获后按
-        // fill 转发 —— 卡自己的提示语就是「已填入消息输入框，请检查后手动发送」。
-        // 收件箱只在卡源码真的用到这套约定时才装（避免无关卡里多一个幽灵元素）。
-        'function __muvUserSend(msg,mode){try{var s=S(msg);if(!s||s.length>20000)return false;' +
-        'post({__muvUserSend:{text:s,mode:mode==="fill"?"fill":"send"}});return true}catch(e){return false}}' +
-        'if(typeof window.sendUserMessage!=="function")def("sendUserMessage",function(m){return __muvUserSend(m,"send")});' +
-        'function __muvInbox(){try{' +
-        'var src="";try{src=document.documentElement.innerHTML}catch(e){}' +
-        'if(src.indexOf("send_textarea")===-1&&src.indexOf("sendUserMessage")===-1&&src.indexOf("fillSendTextarea")===-1)return;' +
-        'if(document.getElementById("send_textarea"))return;' +
-        'var t=document.createElement("textarea");t.id="send_textarea";t.setAttribute("data-muv-inbox","1");' +
-        't.style.cssText="position:absolute!important;left:-9999px!important;top:0;width:10px;height:10px;opacity:0!important;pointer-events:none!important";' +
-        'document.body.appendChild(t);' +
-        'var h=function(){if(!t.value)return;__muvUserSend(t.value,"fill")};' +
-        't.addEventListener("input",h);t.addEventListener("change",h);}catch(e){}}' +
-        'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",__muvInbox)}else{__muvInbox()}' +
-        // ── 8. 变量宿主 API 垫片：window.TavernHelper / window.Mvu / 裸全局 ──────────
-        // 形态来源是**实测**（2026-09-22，新卡 `1.txt` 的 DOM 快照 + 依赖计数），不是照文档想象：
-        //   · 卡里 `var W = (function(){ try{ return window.parent && window.parent.document ?
-        //     window.parent : window; }catch(e){ return window; } })();`
-        //     —— 跨源时 `window.parent.document` **抛异常** ⇒ `W === window` ⇒ 卡的
-        //     `W.TavernHelper` / `W.Mvu` **正好落到我们这一份**。这就是"父页探测回落"
-        //     能成立的原因（不需要、也做不到去写父页的对象）。
-        //   · 卡的 `pickStat(o)` 只在 `o.stat_data` 是**非空对象**时才算数 ⇒ 我们缓存/回送的
-        //     必须是 `{stat_data:{…}}` 形状（宿主侧 `muvMvuWrap` 负责包；平铺路径由
-        //     `readVar` 的第二跳兜底命中）。少了这一层包装 ⇒ 卡的读链四跳全落空 ⇒ 面板空。
-        //   · 卡的读链：`Mvu.getCurrentMvuData()` → `Mvu.getMvuData(scope)` →
-        //     `TH.getVariables(scope)` → `ST.chat[i].variables[sw].stat_data`；
-        //     写链：`Mvu.replaceMvuData(full, scope)` → `TH.replaceVariables(full, scope)` →
-        //     `TH.insertOrAssignVariables(payload, scope)`。所以这四个方法都要有。
-        //   · 卡用 `Mvu.events.VARIABLE_UPDATE_ENDED` / `'mag_variable_update_ended'` /
-        //     `'mag_variable_initialized'` 订阅刷新 ⇒ 宿主在状态变化后 emit
-        //     `mag_variable_update_ended`（见 `muvEraPushNow`），这里吸收进缓存。
-        //   · 裸全局 `insertOrAssignVariables(payload,{type:"global"})` 与 `W.triggerSlash` 也是
-        //     卡的真实调用点（酒馆助手在 ST 里就是注入裸全局的）⇒ 一并提供。
-        'var mvuData={stat_data:{}};' +
-        'function mergeDeep(a,b){try{var o={};var k;for(k in a){if(Object.prototype.hasOwnProperty.call(a,k))o[k]=a[k]}for(k in b){if(!Object.prototype.hasOwnProperty.call(b,k))continue;var x=o[k],y=b[k];if(y&&typeof y==="object"&&!Array.isArray(y)&&x&&typeof x==="object"&&!Array.isArray(x)){o[k]=mergeDeep(x,y)}else{o[k]=y}}return o}catch(e){return b}}' +
-        'function cloneDeep(v){try{return JSON.parse(JSON.stringify(v))}catch(e){return v}}' +
-        'function getPath(root,p){try{if(p==null||p==="")return root;var a=S(p).split(".");var c=root;for(var i=0;i<a.length;i++){if(c==null||typeof c!=="object")return undefined;c=c[a[i]]}return c}catch(e){return undefined}}' +
-        'function setPathIn(root,p,v){try{var a=S(p).split(".");if(!a.length||!a[0])return root;var out=(root&&typeof root==="object"&&!Array.isArray(root))?cloneDeep(root):{};var c=out;for(var i=0;i<a.length-1;i++){var k=a[i];if(!c[k]||typeof c[k]!=="object")c[k]={};c=c[k]}c[a[a.length-1]]=v;return out}catch(e){return root}}' +
-        // 变量树视图：整体优先；查路径时先整体、再退到 `stat_data` 里（卡两种写法都能命中）。
-        'function readVar(p,def){var v=getPath(mvuData,p);if(v===undefined&&mvuData&&mvuData.stat_data)v=getPath(mvuData.stat_data,p);return v===undefined?def:v}' +
-        'function mvuWrap(tree){try{var t=(tree&&typeof tree==="object"&&!Array.isArray(tree))?tree:{};if(t.stat_data&&typeof t.stat_data==="object")return t;return {stat_data:t}}catch(e){return {stat_data:{}}}}' +
-        'function mvuSet(tree){try{mvuData=mvuWrap(tree)}catch(e){}}' +
-        // 事件里的变量树：`era:queryResult` / `era:writeDone` 是宿主**已经算好**的那份，
-        // `mag_variable_update_ended` 是 MVU 口径的推送（宿主已包过一层，这里再包是幂等的）。
-        'function __muvAbsorb(n,d){try{if(n==="era:queryResult"&&d&&d.result&&d.result.stat){mvuSet(d.result.stat);return}if(n==="era:writeDone"&&d&&d.statWithoutMeta){mvuSet(d.statWithoutMeta);return}if(n==="mag_variable_update_ended"&&d){mvuSet(d);return}}catch(e){}}' +
-        // MVU 数据是**宿主**持有的（卡内没有第二份真值）⇒ 先问一次；节流防卡循环问。
-        'var mvuReqAt=0;' +
-        'function mvuReq(){try{var n=Date.now();if(n-mvuReqAt<1000)return;mvuReqAt=n;post({__muvMvuReq:1})}catch(e){}}' +
-        // 写回：只发"要写什么"，落库由宿主做（`__muvVarWrite` → POST /api/muv-engine/state）。
-        // `replace=true` 只在"载荷自带 stat_data"时用 —— 那说明它是**整棵树**（见宿主侧注释）。
-        'function varWrite(data,replace){try{if(!data||typeof data!=="object")return false;post({__muvVarWrite:{data:data,replace:!!replace}});return true}catch(e){return false}}' +
-        'function warnShim(m){try{console.warn("[muv-engine] "+S(m))}catch(e){}}' +
-        // ── 8.1 TavernHelper 的最小可用集 ────────────────────────────────────
-        // ★ `getAllVariables()`（第 40 轮补，**本次两个硬故障之一**）：
-        //   真机控制台 `Uncaught ReferenceError: getAllVariables is not defined`
-        //   （`about:srcdoc` 的 `populateData`，`异世界农场` 卡的状态栏 HUD）——
-        //   卡的 HUD 入口就是 `const all_vars = getAllVariables();
-        //   const data = _.get(all_vars,'stat_data',{})`，**第一行就抛** ⇒ HUD 永远空。
-        //   ST 侧签名（只读源码）：`JS-Slash-Runner/src/function/variables.ts:106`
-        //     `export function _getAllVariables(this: Window): Record<string, any>`
-        //     —— **同步**、**无参**、返回 `global → character → script → chat` 四层
-        //     `_.assign` 合并后的**整棵变量树**（不是 `stat_data` 子树；子树由卡自己 `_.get`）。
-        //     挂法：`src/function/index.ts:252` 把它放进 `TavernHelper._bind` 表，
-        //     `src/iframe/predefine.js:14-18` 用 `key.replace('_','')` 去掉前导下划线后
-        //     `value.bind(window)` ⇒ 卡里同时存在**裸全局**与 `TavernHelper.getAllVariables`
-        //     两种写法（与既有 `getVariables` / `waitGlobalInitialized` 同一族）。
-        //   我们只有一份树（`mvuData`）⇒ 直接回它（形状已是 `{stat_data:{…}}`，
-        //   卡的 `_.get(all_vars,'stat_data')` 命中）。scope 差异照 §8.1 口径忽略。
-        //   与 `getMvuData` 一样先 `mvuReq()` 问一次宿主（节流内 ⇒ 不会打满）。
-        'function thGetAllVariables(){try{mvuReq();return mvuData}catch(e){return {}}}' +
-        // `getVariables(scopeOrPath, opts)`：**两种调用形态都要认**（实测卡里两种都有）：
-        //   `TH.getVariables({type:"message",message_id:"latest"})` ⇒ 回整树（卡的 pickStat 走这条）；
-        //   `TH.getVariables("公司.总现金", {defaultValue:0})`    ⇒ 回路径值。
-        // scope 的 type（global/character/chat/message）**我们只有一份树** ⇒ 一律忽略，
-        // 在注释与文档里写明（这是与 ST 的**已知差异**，不是等价实现）。
-        'function thGetVariables(a,b){try{' +
-        'if(a&&typeof a==="object")return mvuData;' +
-        'if(a===undefined||a===null||a==="")return mvuData;' +
-        'var d=(b&&typeof b==="object"&&Object.prototype.hasOwnProperty.call(b,"defaultValue"))?b.defaultValue:undefined;' +
-        'return readVar(a,d)' +
-        '}catch(e){return undefined}}' +
-        // 写 API 的落库口径（写在注释与文档里）：
-        //   · 载荷自称整树（顶层有 stat_data）⇒ `replace`（宿主整树替换）；
-        //   · 否则（平铺/增量）⇒ `merge`（深合并，**不抹**另一来源的键）。
-        // 本地缓存**一律深合并** —— 缓存少一个键就会让卡的同步读链瞬间变空。
-        'function thReplaceVariables(obj){try{if(!obj||typeof obj!=="object")return false;mvuData=mergeDeep(mvuData,obj);return varWrite(obj,!!(obj.stat_data&&typeof obj.stat_data==="object"))}catch(e){return false}}' +
-        'function thInsertOrAssign(obj){try{if(!obj||typeof obj!=="object")return false;mvuData=mergeDeep(mvuData,obj);return varWrite(obj,false)}catch(e){return false}}' +
-        'function getLastId(){try{return hostChat.length?hostChat.length-1:-1}catch(e){return -1}}' +
-        'function findMsg(all,id){try{if(typeof id==="number"){var i=id<0?all.length+id:id;return (i>=0&&i<all.length)?all[i]:null}if(typeof id==="string"){for(var j=0;j<all.length;j++){if(String(all[j].message_id)===id)return all[j]}return null}return null}catch(e){return null}}' +
-        'function chatMsgs(){try{var out=[];for(var i=0;i<hostChat.length;i++){var m=hostChat[i]||{};out.push({message_id:i,name:m.name||"",mes:String(m.mes==null?"":m.mes),is_user:!!m.is_user,role:m.is_user?"user":"assistant"})}return out}catch(e){return []}}' +
-        // `getChatMessages`：形态尽量贴 ST（number/string ⇒ 单条；数组 ⇒ 子集；无参 ⇒ 全部；
-        // 负下标从尾部数）。数据源是宿主喂进来的 `hostChat`（**只有文本**，没有 swipe /
-        // 变量 / 时间戳 —— 那些键一律不出现，别伪造）。
-        'function thGetChatMessages(ids){try{var all=chatMsgs();if(ids===undefined||ids===null)return all;if(Array.isArray(ids)){var out=[];for(var i=0;i<ids.length;i++){var h=findMsg(all,ids[i]);if(h)out.push(h)}return out}return findMsg(all,ids)}catch(e){return Array.isArray(ids)?[]:null}}' +
-        // `formatAsTavernRegexedString`：**最小实现 = 原样返回**。为什么不做真正则：
-        //   ST 那个 API 要按消息深度跑卡的正则脚本，我们这边**同步**函数里没有可用的
-        //   服务端往返（它是同步签名，卡拿返回值直接用）。原样返回是**保守正确**：
-        //   不假装渲染过，也不会把文本改坏。真正需要正则渲染的卡请走消息管线本身。
-        'function thFormatRegex(t){return S(t)}' +
-        // ── 8.2 triggerSlash：**白名单**（不在名单里的一律不执行） ────────────
-        // 名单：`/send <文本>`（走已有的用户消息桥）、`/setvar k=v`、`/getvar k`、`/echo <文本>`。
-        // `/send` 的 rest 会带卡的复合命令尾巴（真卡写法 `/send 选项|/trigger`，2026-09-25 实测
-        // 涩涩提瓦特状态栏选项），必须把 `|` 后跟另一条 `/命令` 的部分剥掉，否则脏尾巴会
-        // 一起发出去；文本里真正的 `|`（后面不是 `/命令`）保留。
-        // 其余（含实测卡里在用的 `/inject`）**只警告、不执行**：`triggerSlash` 在 ST 里能驱动
-        // 宿主做很多事（注入提示词、改楼层、触发生成），我们没有等价能力，就**如实不做**——
-        // 静默装作做过会让卡以为成功、后面每一步都错。
-        'function parseScalar(s){try{var t=S(s).trim();if(/^-?(?:\\d+\\.?\\d*|\\.\\d+)$/.test(t))return Number(t);if(t==="true")return true;if(t==="false")return false;if(t==="null")return null;var m=/^(["\'])([\\s\\S]*)\\1$/.exec(t);if(m)return m[2];return t}catch(e){return s}}' +
-        'function triggerSlash(cmd){' +
-        'try{' +
-        'var s=S(cmd).trim();' +
-        'var m=/^\\/([A-Za-z_][A-Za-z0-9_]*)\\s*([\\s\\S]*)$/.exec(s);' +
-        'if(!m){warnShim("triggerSlash 未支持："+s);return Promise.resolve(null)}' +
-        'var name=m[1].toLowerCase();var rest=m[2]||"";' +
-        'if(name==="send"){var seg=rest;var pi=seg.indexOf("|");while(pi!==-1){var nxt=seg.slice(pi+1).replace(/^\\s+/, "");if(nxt.charAt(0)==="/"){seg=seg.slice(0,pi);break}pi=seg.indexOf("|",pi+1)}__muvUserSend(seg,"send");return Promise.resolve("")}' +
-        'if(name==="echo"){try{console.log("[muv-engine] /echo "+rest)}catch(e){}return Promise.resolve("")}' +
-        'if(name==="setvar"){' +
-        'var eq=/^([^=\\s]+)\\s*=?\\s*([\\s\\S]*)$/.exec(rest);' +
-        'if(!eq){warnShim("triggerSlash /setvar 缺参数："+rest);return Promise.resolve(null)}' +
-        'var v2=parseScalar(eq[2]);mvuData=setPathIn(mvuData,eq[1],v2);' +
-        'var w=setPathIn({},eq[1],v2);varWrite(w,false);' +
-        'return Promise.resolve("")}' +
-        'if(name==="getvar"){var gv=readVar(rest.trim(),"");return Promise.resolve(gv===undefined||gv===null?"":String(gv))}' +
-        'warnShim("triggerSlash 未支持："+s);' +
-        'return Promise.resolve(null)' +
-        '}catch(e){warnShim("triggerSlash 异常："+S(e&&e.message));return Promise.resolve(null)}}' +
-        // ── 8.1.5（第 36 轮）两个 ST 有、我们缺的全局：`errorCatched` / `tavern_events` ──
-        //
-        // 症状（用户真机控制台，构建 2026-09-22v，**异世界农场**那张卡）：
-        //   [muv-engine] 卡脚本报错：（未知脚本）Uncaught ReferenceError: errorCatched is not defined
-        //   （反复出现 —— 每渲染一条消息、状态栏那个 iframe 就再抛一次）
-        //   Uncaught ReferenceError: tavern_events is not defined（§33.5 记的同一个缺口）
-        // 两条都是**顶层**裸引用 ⇒ 该脚本/该模块**整段不执行**（不是"少个功能"）。
-        //
-        // ── ST 侧证据（只读源码 `JS-Slash-Runner`）───────────────────────────
-        // · `errorCatched`：`src/function/util.ts:17` 是**纯函数版**，`:43` 是同名的
-        //   **iframe 绑定版** `_errorCatched`；`src/iframe/predefine.js:14-18` 把 `_bind`
-        //   表的每个键 `key.replace('_','')` 再 `value.bind(window)` ⇒ 卡 window 上拿到的是
-        //   **去掉前导下划线的裸全局 `errorCatched`**（= 绑定版）。
-        //   语义（两个版本一致，逐条照抄）：
-        //     ① 入参是函数、**返回一个包装函数**（不是就地执行！）；
-        //     ② 包装函数调用时：同步抛 ⇒ `toastr.error(堆栈, 名字)` 之后 **rethrow**（不吞）；
-        //     ③ 返回值是 thenable ⇒ 走 `then(undefined, onError)`（成功后原值透传，
-        //        被拒时同样 toastr + 抛出 ⇒ **返回的 promise 变成 rejected**）；
-        //     ④ 绑定版比纯函数版多一步「写进 iframe 日志」（`this._th_impl._log`）与
-        //        `[iframe_name]` 前缀 —— 我们没有 iframe 日志面板，等价物是控制台留痕。
-        //   卡侧证据（本机真卡）：`异世界农场` 的两条状态栏正则产物（`角色状态双端` 21,200 字符
-        //   / `双端` 12,120 字符）末尾都是 `$(errorCatched(init));` —— jQuery 的 `$(fn)` 是
-        //   ready 回调 ⇒ **返回值必须是函数**（这就是上面 ① 在真卡上的兑现）。
-        //
-        // · `tavern_events`：`src/function/event.ts:180` 的常量表；`src/function/index.ts:311`
-        //   把它挂在 `TavernHelper` 上，而 `predefine.js:13` 用 `_.omit(TavernHelper,'_bind')`
-        //   把整个对象 merge 进卡 window ⇒ 卡里同样是**裸全局**。
-        //   卡侧证据：MVU bundle（`MagicalAstrogy/MagVarUpdate/artifact/bundle.js`，573,299 字节，
-        //   `异世界农场` 与 `魔法少女MVU测试` 两条卡脚本都 import 它）里 `tavern_events` **×17**，
-        //   顶层就有（`kt(tavern_events.MESSAGE_DELETED, …)`）⇒ 缺它整个 bundle 一行都跑不到。
-        //   同一份 bundle 里 `iframe_events` **×0**、本机真卡里也是 0 处 ⇒ **故意不补**
-        //   （与 §32「卡不用的 API 加了只会让 DSH 比 ST 更宽松」同一口径，真遇到再取证）。
-        //
-        // ── 语义边界（如实写在这里与 HANDOFF 里）─────────────────────────────
-        // 这里补的是**常量表与工具函数**，不是事件的发生源。卡的
-        // `eventOn(tavern_events.MESSAGE_RECEIVED, …)` 从此能**注册成功**（此前连注册那一步
-        // 都因 ReferenceError 跑不到），但宿主目前只在 ERA / MVU 那几条链路上广播
-        // （`__muvEvent`）⇒ ST 那批**原生命名**的事件**多数仍然不会响**。
-        // 那是"事件名 → 我们的事件面"的映射工作，需要单独取证（§33.5 的结论不变），本轮不做。
-        'function errorCatched(fn){' +
-        'function isP(v){return v!=null&&(typeof v==="object"||typeof v==="function")&&typeof v.then==="function"}' +
-        'function onError(error){' +
-        'try{' +
-        'var e=error||{};' +
-        'var msg=(e.stack?String(e.stack):String(e.message||e));' +
-        'if(window.toastr&&typeof window.toastr.error==="function")window.toastr.error(msg,"[card] "+String(e.name||"Error"));' +
-        'warnShim("errorCatched 接住的报错："+msg)' +
-        '}catch(x){}' +
-        'throw error}' +
-        'return function(){' +
-        'try{' +
-        'var result=fn.apply(null,arguments);' +
-        'if(isP(result))return result.then(undefined,function(error){return onError(error)});' +
-        'return result' +
-        '}catch(error){return onError(error)}' +
-        '}}' +
-        // 表体见下（逐字照抄 ST，82 条，含 `SMOOTH_STREAM_TOKEN_RECEIVED` / `STREAM_TOKEN_RECEIVED`
-        // 这种**取值相同的别名** —— 别名是 ST 自己留的，删掉任何一个都会让走它的卡拿到 undefined）。
-        'var tavernEvents={' +
-        '"APP_READY":"app_ready",' +
-        '"EXTRAS_CONNECTED":"extras_connected",' +
-        '"MESSAGE_SWIPED":"message_swiped",' +
-        '"MESSAGE_SENT":"message_sent",' +
-        '"MESSAGE_RECEIVED":"message_received",' +
-        '"MESSAGE_EDITED":"message_edited",' +
-        '"MESSAGE_DELETED":"message_deleted",' +
-        '"MESSAGE_UPDATED":"message_updated",' +
-        '"MESSAGE_FILE_EMBEDDED":"message_file_embedded",' +
-        '"MESSAGE_REASONING_EDITED":"message_reasoning_edited",' +
-        '"MESSAGE_REASONING_DELETED":"message_reasoning_deleted",' +
-        '"MESSAGE_SWIPE_DELETED":"message_swipe_deleted",' +
-        '"MORE_MESSAGES_LOADED":"more_messages_loaded",' +
-        '"IMPERSONATE_READY":"impersonate_ready",' +
-        '"CHAT_CHANGED":"chat_id_changed",' +
-        '"GENERATION_AFTER_COMMANDS":"GENERATION_AFTER_COMMANDS",' +
-        '"GENERATION_STARTED":"generation_started",' +
-        '"GENERATION_STOPPED":"generation_stopped",' +
-        '"GENERATION_ENDED":"generation_ended",' +
-        '"SD_PROMPT_PROCESSING":"sd_prompt_processing",' +
-        '"EXTENSIONS_FIRST_LOAD":"extensions_first_load",' +
-        '"EXTENSION_SETTINGS_LOADED":"extension_settings_loaded",' +
-        '"SETTINGS_LOADED":"settings_loaded",' +
-        '"SETTINGS_UPDATED":"settings_updated",' +
-        '"MOVABLE_PANELS_RESET":"movable_panels_reset",' +
-        '"SETTINGS_LOADED_BEFORE":"settings_loaded_before",' +
-        '"SETTINGS_LOADED_AFTER":"settings_loaded_after",' +
-        '"CHATCOMPLETION_SOURCE_CHANGED":"chatcompletion_source_changed",' +
-        '"CHATCOMPLETION_MODEL_CHANGED":"chatcompletion_model_changed",' +
-        '"OAI_PRESET_CHANGED_BEFORE":"oai_preset_changed_before",' +
-        '"OAI_PRESET_CHANGED_AFTER":"oai_preset_changed_after",' +
-        '"OAI_PRESET_EXPORT_READY":"oai_preset_export_ready",' +
-        '"OAI_PRESET_IMPORT_READY":"oai_preset_import_ready",' +
-        '"WORLDINFO_SETTINGS_UPDATED":"worldinfo_settings_updated",' +
-        '"WORLDINFO_UPDATED":"worldinfo_updated",' +
-        '"CHARACTER_EDITOR_OPENED":"character_editor_opened",' +
-        '"CHARACTER_EDITED":"character_edited",' +
-        '"CHARACTER_PAGE_LOADED":"character_page_loaded",' +
-        '"USER_MESSAGE_RENDERED":"user_message_rendered",' +
-        '"CHARACTER_MESSAGE_RENDERED":"character_message_rendered",' +
-        '"FORCE_SET_BACKGROUND":"force_set_background",' +
-        '"CHAT_DELETED":"chat_deleted",' +
-        '"CHAT_CREATED":"chat_created",' +
-        '"GENERATE_BEFORE_COMBINE_PROMPTS":"generate_before_combine_prompts",' +
-        '"GENERATE_AFTER_COMBINE_PROMPTS":"generate_after_combine_prompts",' +
-        '"GENERATE_AFTER_DATA":"generate_after_data",' +
-        '"WORLD_INFO_ACTIVATED":"world_info_activated",' +
-        '"TEXT_COMPLETION_SETTINGS_READY":"text_completion_settings_ready",' +
-        '"CHAT_COMPLETION_SETTINGS_READY":"chat_completion_settings_ready",' +
-        '"CHAT_COMPLETION_PROMPT_READY":"chat_completion_prompt_ready",' +
-        '"CHARACTER_FIRST_MESSAGE_SELECTED":"character_first_message_selected",' +
-        '"CHARACTER_DELETED":"characterDeleted",' +
-        '"CHARACTER_DUPLICATED":"character_duplicated",' +
-        '"CHARACTER_RENAMED":"character_renamed",' +
-        '"CHARACTER_RENAMED_IN_PAST_CHAT":"character_renamed_in_past_chat",' +
-        '"SMOOTH_STREAM_TOKEN_RECEIVED":"stream_token_received",' +
-        '"STREAM_TOKEN_RECEIVED":"stream_token_received",' +
-        '"STREAM_REASONING_DONE":"stream_reasoning_done",' +
-        '"FILE_ATTACHMENT_DELETED":"file_attachment_deleted",' +
-        '"WORLDINFO_FORCE_ACTIVATE":"worldinfo_force_activate",' +
-        '"OPEN_CHARACTER_LIBRARY":"open_character_library",' +
-        '"ONLINE_STATUS_CHANGED":"online_status_changed",' +
-        '"IMAGE_SWIPED":"image_swiped",' +
-        '"CONNECTION_PROFILE_LOADED":"connection_profile_loaded",' +
-        '"CONNECTION_PROFILE_CREATED":"connection_profile_created",' +
-        '"CONNECTION_PROFILE_DELETED":"connection_profile_deleted",' +
-        '"CONNECTION_PROFILE_UPDATED":"connection_profile_updated",' +
-        '"TOOL_CALLS_PERFORMED":"tool_calls_performed",' +
-        '"TOOL_CALLS_RENDERED":"tool_calls_rendered",' +
-        '"CHARACTER_MANAGEMENT_DROPDOWN":"charManagementDropdown",' +
-        '"SECRET_WRITTEN":"secret_written",' +
-        '"SECRET_DELETED":"secret_deleted",' +
-        '"SECRET_ROTATED":"secret_rotated",' +
-        '"SECRET_EDITED":"secret_edited",' +
-        '"PRESET_CHANGED":"preset_changed",' +
-        '"PRESET_DELETED":"preset_deleted",' +
-        '"PRESET_RENAMED":"preset_renamed",' +
-        '"PRESET_RENAMED_BEFORE":"preset_renamed_before",' +
-        '"MAIN_API_CHANGED":"main_api_changed",' +
-        '"WORLDINFO_ENTRIES_LOADED":"worldinfo_entries_loaded",' +
-        '"WORLDINFO_SCAN_DONE":"worldinfo_scan_done",' +
-        '"MEDIA_ATTACHMENT_DELETED":"media_attachment_deleted",' +
-        // ⚠ 这里的 `;` **不能省**：整条垫片最终拼成**一行**，而自动分号插入（ASI）
-        // 只在「下一个词元前面有换行」或「下一个词元是 `}`」时才补分号。`}` 后面直接
-        // 跟同一行的 `var TH=` 不满足任何一条 ⇒ `SyntaxError: Unexpected token 'var'`，
-        // 而且**从这一句起整段垫片都不执行**（TH / Mvu / toastr / 收尾的 mvuReq() 全丢）。
-        // 第 36 轮踩过一次：`verify-card-libs.mjs` 的「产物必须可解析」断言就是为此加的。
-        '};' +
-        'var TH={version:"3.0.0",getVariables:thGetVariables,getAllVariables:thGetAllVariables,' +
-        'replaceVariables:thReplaceVariables,' +
-        'insertOrAssignVariables:thInsertOrAssign,updateVariablesWith:thUpdateVariablesWith,' +
-        'deleteVariable:thDeleteVariable,triggerSlash:triggerSlash,' +
-        'eventOn:on,eventEmit:emit,eventOnce:once,eventOff:off,eventClearAll:clearAll,' +
-        'getChatMessages:thGetChatMessages,formatAsTavernRegexedString:thFormatRegex,' +
-        'getLastMessageId:getLastId,getCurrentChatId:function(){return ""},getContext:getContext,' +
-        // ST 的 `TavernHelper` 上这两个成员**本来就有**（index.ts:433 / :311）⇒ 一并给上，
-        // 让 `TavernHelper.errorCatched(...)` / `TavernHelper.tavern_events.X` 两种写法都能跑。
-        // `getScriptId` 的**定义**在 8.4.0（与占位 id 常量写在一起），此处只挂引用 ——
-        // 整段垫片最终拼成**一行**顺序执行，定义在对象字面量之前 ⇒ 不是 TDZ 问题。
-        'errorCatched:errorCatched,getScriptId:thGetScriptId,tavern_events:tavernEvents};' +
-        // 只在卡**自己没定义**时落位（卡若自带一套，尊重卡的）。
-        'if(!window.TavernHelper)def("TavernHelper",TH);' +
-        // 裸全局（ST 的 predefine.js 就是这么给的）：同样只在**缺失**时补。
-        // 判据是 `typeof !== "function"` / 不是对象，而不是真假值 —— 卡自己写了一个同名
-        // 变量（哪怕是 null）我们都不动它。
-        'if(typeof window.errorCatched!=="function")def("errorCatched",errorCatched);' +
-        'if(!window.tavern_events||typeof window.tavern_events!=="object")def("tavern_events",tavernEvents);' +
-        // ── 8.3 window.Mvu 的最小可用集 ─────────────────────────────────────
-        // `events` 的名字**逐字照抄** MVU 真 bundle 的那张常量表（2026-09-23 取证：
-        // `MagVarUpdate@master/artifact/bundle.js` 里的
-        //   {VARIABLE_INITIALIZED:'mag_variable_initialized',
-        //    VARIABLE_UPDATE_STARTED:'mag_variable_update_started',
-        //    COMMAND_PARSED:'mag_command_parsed',
-        //    VARIABLE_UPDATE_ENDED:'mag_variable_update_ended',
-        //    BEFORE_MESSAGE_UPDATE:'mag_before_message_update',
-        //    SINGLE_VARIABLE_UPDATED:'mag_variable_updated'}）。
-        // ★ 修前这里写的是 `BEFORE_MESSAGE_UPDATE:"mag_variable_update_before"` ——
-        //   一个从没由任何一方发射过的值 ⇒ 卡一旦走 `Mvu.events.BEFORE_MESSAGE_UPDATE`
-        //   （而不是退化到字符串字面量）就订阅到一个**永生不响**的事件。同一次取证还
-        //   发现缺三个成员，卡片侧 `Mvu.events.X` 会拿到 undefined。
-        'var Mvu={version:"3.0.0",' +
-        'events:{VARIABLE_INITIALIZED:"mag_variable_initialized",' +
-        'VARIABLE_UPDATE_STARTED:"mag_variable_update_started",' +
-        'COMMAND_PARSED:"mag_command_parsed",' +
-        'VARIABLE_UPDATE_ENDED:"mag_variable_update_ended",' +
-        'BEFORE_MESSAGE_UPDATE:"mag_before_message_update",' +
-        'SINGLE_VARIABLE_UPDATED:"mag_variable_updated"},' +
-        'getMvuData:function(){mvuReq();return mvuData},' +
-        'getCurrentMvuData:function(){mvuReq();return mvuData},' +
-        'getMvuVariable:function(p,d){return readVar(p,d)},' +
-        'replaceMvuData:function(obj){try{if(!obj||typeof obj!=="object")return false;mvuData=mergeDeep(mvuData,obj);return varWrite(obj,!!(obj.stat_data&&typeof obj.stat_data==="object"))}catch(e){return false}}};' +
-        'if(!window.Mvu)def("Mvu",Mvu);' +
-        // ── 8.4 裸全局（酒馆助手在 ST 里就是注入裸全局；实测卡里两种写法都有） ──
-        // ★★ 8.4.0 `getScriptId()`（第 40 轮补，**本次两个硬故障之一**）：
-        //   真机控制台 `Uncaught ReferenceError: getScriptId is not defined`。
-        //   HANDOFF §30.8 / 排错手册 §L 曾把它记为「故意未伪造（我们没有等价物）」——
-        //   那时的影响面是"框架级开关不开"；2026-09-23 真机实测是 **Uncaught ReferenceError**，
-        //   即 MVU bundle 的**顶层**取它就抛 ⇒ 已从"功能缺失"升级成"硬故障"，故本轮补最小桩。
-        //
-        //   ST 侧签名（只读源码）：`src/function/util.ts:97`
-        //     `export function _getScriptId(this: Window): string`
-        //     —— 读 iframe 的 `id`/`window.name`，要求以 `TH-script--` 开头，否则
-        //     `throw new Error('你只能在脚本 iframe 内获取 getScriptId!')`；
-        //     返回 `iframe_name.replace(/TH-script--.+--/, '')`（**脚本库的真实 id**）。
-        //     挂法同 `getAllVariables`：`_bind` 表 → 去前导下划线 → 裸全局 + `TavernHelper` 成员。
-        //
-        //   ⚠ 语义半途（如实记录，不掩盖）：我们**没有脚本库**，也没有 `TH-script--…` 命名
-        //     的 iframe ⇒ 这里返回的是**稳定的占位 id**（同一张卡内恒定），
-        //     **不是** ST 那个真实脚本库 id。它能顶住的用法：作为 key/命名空间/后缀拼接
-        //     （bundle 里 `mvu_VariableUpdate_${getScriptId()}`、`div[script_id]`、
-        //     `th_unique_check.*` 的去重集合）—— 只要**稳定且非空**就语义成立。
-        //     它**顶不住**的用法：拿它去换"我是不是那个被启用的脚本"这类判定
-        //     （bundle 里 `listenPreferenceState(e => d.value = e === getScriptId())`）。
-        //     ★ `listenPreferenceState` **照旧不伪造**（铁律）：它一旦返回假值就等于凭空
-        //       打开一条我们接不住的更新管线。它在本环境里仍然未定义 ⇒ 那条判定会抛，
-        //       由 bundle 自己的 `Promise.allSettled` / `errorCatched` 兜住（真机观察项）。
-        'var MVU_PLACEHOLDER_SCRIPT_ID="dsh-script";' +
-        'function thGetScriptId(){return MVU_PLACEHOLDER_SCRIPT_ID};' +
-        // ── 8.4.1 第 41 轮：updateVariablesWith + 脚本按钮族（取证 → 全部有真实裸调用）──
-        //
-        // 取证方法照 §8.4.0 / 排错手册 §L：解两张真卡（异世界农场 / _足控天堂2）的
-        // tEXt chara，把卡里 `import '<绝对URL>'` 的远端脚本**拉下来一起数**（§31.2 铁律），
-        // 再拿 ST `JS-Slash-Runner` 的 `_bind` 全表（src/function/index.ts ~229-260，34 个名字）
-        // 对三条脚本做**系统化普查**（不是只看实录的那几个名字）。实录 + 普查的重合结论：
-        //
-        //   名字                          裸调用次数(bundle/ERA脚本/自动更新)   ST 定义处
-        //   updateVariablesWith           8 / 3 / 0    variables.ts:203（非下划线版）+ :229（_bind 版）
-        //   getButtonEvent                1 / 3 / 3    script.ts:54
-        //   replaceScriptInfo             0 / 0 / 1    script.ts:143
-        //   getScriptButtons              3 / 0 / 2    script.ts:58
-        //   replaceScriptButtons          3 / 0 / 2    script.ts:71
-        //   appendInexistentScriptButtons 1 / 0 / 0    script.ts:110
-        //   eventClearEvent               0 / 0 / 2    event.ts:145
-        //   eventMakeFirst / eventMakeLast 2+1 / 0 / 0 event.ts:88-107
-        //   eventRemoveListener           6 / 4 / 0    event.ts:130（= 我们的 eventOff 同义）
-        //   deleteVariable                1 / 0 / 0    variables.ts:281（返回 {variables, delete_occurred}）
-        //   getCurrentMessageId           2 / 0 / 0    util.ts:105
-        //
-        // 卡里怎么用（实录对应的现场）：
-        //   · ERA 变量框架顶层：`eventOn(getButtonEvent('写入变量修改'),…)` —— **顶层裸引用**，
-        //     缺它整条框架脚本不执行（这就是用户实录的 ReferenceError）。
-        //   · MVU bundle 初始化把按钮注册函数 push 进清理表：`appendInexistentScriptButtons(…)` →
-        //     `eventOn(getButtonEvent(e.name),e.function)` → `getScriptButtons()` —— **同一条
-        //     执行路径**，只补 getButtonEvent 会让它死在下一个名字上 ⇒ 按钮族一起补。
-        //   · bundle 大量 `await updateVariablesWith(t=>{…mutate…return t},{type:'chat'|
-        //     'message',message_id:…})`；自动更新脚本 `replaceScriptInfo(README文本)`。
-        //
-        // ST 侧挂载口径（照 §8.4.0 同一套）：`_bind` 表 → predefine.js 去前导下划线 ⇒
-        // **裸全局**；其中 `updateVariablesWith` / `deleteVariable` 在 ST 的 TavernHelper
-        // 对象上**本来就有成员**（index.ts:440 / variables 段）⇒ 一并挂 TH。
-        // 按钮族四个 + replaceScriptInfo + eventMakeFirst/Last + eventRemoveListener +
-        // eventClearEvent + getCurrentMessageId 在 ST 是 _bind 专属 ⇒ **只给裸全局**
-        //（ST 的 TavernHelper 上本来就没有这些成员，挂上反而偏离）。
-        //
-        // ★ `updateVariablesWith(updater, option)`：ST 语义 = 取该 scope 变量树 → updater
-        //   （同步或返回 Promise）→ replaceVariables 写回 → 返回 updater 的结果。
-        //   我们只有一棵树（§8.1 已知口径）：updater 收 `cloneDeep(mvuData)`（它会在上面
-        //   mutate），落库走与 thReplaceVariables 相同的 merge + varWrite 通道。
-        //   ⚠ 已知偏差（如实）：ST 是整树 replace，我们是 merge ⇒ updater 里 `_.unset`
-        //   的删除写不回缓存（bundle 的清理路径会受此影响；与 §8.1 replace/merge 口径一致，
-        //   换 replace 会引入"旧楼 iframe 用陈旧快照整树覆盖"的串楼风险，两害取轻）。
-        //   option 的 scope（type/message_id）照 §8.1 口径忽略（单树）。
-        'function thUpdateVariablesWith(updater,opt){try{' +
-        'if(typeof updater!=="function")return undefined;' +
-        'var snap=cloneDeep(mvuData);var r=updater(snap);' +
-        'function apply(x){try{if(x&&typeof x==="object"){mvuData=mergeDeep(mvuData,x);varWrite(x,!!(x.stat_data&&typeof x.stat_data==="object"))}}catch(e){}return x}' +
-        'if(r&&(typeof r==="object"||typeof r==="function")&&typeof r.then==="function")return r.then(apply);' +
-        'return apply(r)}catch(e){try{warnShim("updateVariablesWith 异常："+S(e&&e.message))}catch(x){}return undefined}}' +
-        // ★ `getButtonEvent(button_name)`：ST = `getButtonId(getScriptId(), name)` =
-        //   `script_id + '_' + getStringHash(name)`（store/iframe_runtimes/script.ts:6）。
-        //   getStringHash 抄自 ST `public/scripts/utils.js:522`（murmur3 收尾，逐字复刻）⇒
-        //   事件 id 与 ST **逐字节一致**（`dsh-script_<hash>`）。哈希只要求确定性 + 与
-        //   `getAllEnabledScriptButtons` 那侧一致，我们没有按钮面板 ⇒ 无跨侧引用，但复刻零成本。
-        'function thStrHash(str,seed){try{if(typeof str!=="string")return 0;var h1=0xdeadbeef^(seed||0),h2=0x41c6ce57^(seed||0),i,ch;' +
-        'for(i=0;i<str.length;i++){ch=str.charCodeAt(i);h1=Math.imul(h1^ch,2654435761);h2=Math.imul(h2^ch,1597334677)}' +
-        'h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);' +
-        'h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);' +
-        'return 4294967296*(2097151&h2)+(h1>>>0)}catch(e){return 0}}' +
-        'function thGetButtonEvent(name){try{return String(MVU_PLACEHOLDER_SCRIPT_ID)+"_"+thStrHash(String(name),0)}catch(e){return String(MVU_PLACEHOLDER_SCRIPT_ID)+"_0"}}' +
-        // ★ 按钮族三个：ST 在「脚本运行时不存在」时本来就是**静默退化分支**
-        //   （script.ts:61/76 的 `if (!script) return []` / `return;`）—— 我们没有酒馆助手
-        //   脚本面板 ⇒ 提供的正是这个分支：getScriptButtons 回 []（bundle 用
-        //   `_.intersectionBy(getScriptButtons(),Fo,…)` 消费，[] 语义正确），
-        //   replaceScriptButtons / appendInexistentScriptButtons 静默 no-op。
-        //   按钮不会出现在任何 UI 是**如实**（我们没有面板可显示），不是伪造成功。
-        'function thGetScriptButtons(){return []}' +
-        'function thReplaceScriptButtons(){return undefined}' +
-        'function thAppendInexistentScriptButtons(){return undefined}' +
-        // ★ `replaceScriptInfo(info)`：script.ts:143 写 `script.info`（脚本面板的说明区）。
-        //   我们没有脚本面板/脚本库 ⇒ 同上取 ST 的"无脚本"静默分支：no-op。
-        //   ⚠ 语义半途（如实）：info 被丢弃，不持久化、不显示；自动更新脚本拿它写 README
-        //   纯属面板展示，不影响任何数据/逻辑路径。
-        'function thReplaceScriptInfo(){return undefined}' +
-        // ★ `eventClearEvent(event_type)`：event.ts:145 = 移除该事件的**全部**监听器。
-        //   对我们的 handlers 表就是整键删除（与 eventOn/off/emit 同一张表，语义精确对齐）。
-        'function thEventClearEvent(n){try{delete handlers[S(n)]}catch(e){}}' +
-        // ★ `eventMakeFirst/Last(event_type, listener)`：event.ts:88-107 = 把该监听器挪到
-        //   派发序列的头/尾。我们的 handlers 数组就是派发序列 ⇒ 精确实现。
-        //   **返回 undefined**（新版 ST 返回带 stop() 的句柄；bundle 侧是 `C?.stop()` 可选链，
-        //   undefined 走短路，安全）。
-        'function thEventMakeFirst(n,f){try{var a=handlers[S(n)];if(a&&a.length){var i=a.indexOf(f);if(i>0){a.splice(i,1);a.unshift(f)}}}catch(e){}}' +
-        'function thEventMakeLast(n,f){try{var a=handlers[S(n)];if(a&&a.length){var i=a.indexOf(f);if(i>=0&&i<a.length-1){a.splice(i,1);a.push(f)}}}catch(e){}}' +
-        // ★ `deleteVariable(variable_path)`：variables.ts:281，返回 `{variables, delete_occurred}`。
-        //   在整树上删路径键（ST 就是删 scope 树根上的键）；删完 varWrite 整树（replace=true，
-        //   因为载荷就是整棵树）。路径不存在 ⇒ 原样返回 + false（与 ST 的 _.unset 语义一致）。
-        'function thDeleteVariable(p){try{var a=S(p).split("."),i;if(!a.length||!a[0])return {variables:mvuData,delete_occurred:false};' +
-        'var root=cloneDeep(mvuData),c=root;for(i=0;i<a.length-1;i++){if(c==null||typeof c!=="object")return {variables:mvuData,delete_occurred:false};c=c[a[i]]}' +
-        'if(c==null||typeof c!=="object"||!Object.prototype.hasOwnProperty.call(c,a[i]))return {variables:mvuData,delete_occurred:false};' +
-        'delete c[a[i]];mvuData=root;varWrite(root,true);return {variables:mvuData,delete_occurred:true}}catch(e){return {variables:mvuData,delete_occurred:false}}}' +
-        // ★ `getCurrentMessageId()`：util.ts:105 从 iframe 名 `TH-message--<id>--…` 解析本楼 id。
-        //   ⚠ 语义半途（如实）：我们的卡 iframe 是每楼一份，但垫片拿不到楼层号 ⇒ 回最后一楼
-        //   （getLastId）。消费方（bundle 的 getCurrentMvuData）走 getVariables(scope) 时
-        //   scope 本来就被 §8.1 口径忽略 ⇒ 该偏差被现有口径吸收，不产生新行为差。
-        'function thGetCurrentMessageId(){return getLastId()}' +
-        'if(typeof window.getAllVariables!=="function")def("getAllVariables",thGetAllVariables);' +
-        'if(typeof window.getScriptId!=="function")def("getScriptId",thGetScriptId);' +
-        'if(typeof window.updateVariablesWith!=="function")def("updateVariablesWith",thUpdateVariablesWith);' +
-        'if(typeof window.deleteVariable!=="function")def("deleteVariable",thDeleteVariable);' +
-        'if(typeof window.getButtonEvent!=="function")def("getButtonEvent",thGetButtonEvent);' +
-        'if(typeof window.getScriptButtons!=="function")def("getScriptButtons",thGetScriptButtons);' +
-        'if(typeof window.replaceScriptButtons!=="function")def("replaceScriptButtons",thReplaceScriptButtons);' +
-        'if(typeof window.appendInexistentScriptButtons!=="function")def("appendInexistentScriptButtons",thAppendInexistentScriptButtons);' +
-        'if(typeof window.replaceScriptInfo!=="function")def("replaceScriptInfo",thReplaceScriptInfo);' +
-        'if(typeof window.eventClearEvent!=="function")def("eventClearEvent",thEventClearEvent);' +
-        'if(typeof window.eventMakeFirst!=="function")def("eventMakeFirst",thEventMakeFirst);' +
-        'if(typeof window.eventMakeLast!=="function")def("eventMakeLast",thEventMakeLast);' +
-        'if(typeof window.eventRemoveListener!=="function")def("eventRemoveListener",off);' +
-        'if(typeof window.getCurrentMessageId!=="function")def("getCurrentMessageId",thGetCurrentMessageId);' +
-        'if(typeof window.getVariables!=="function")def("getVariables",thGetVariables);' +
-        'if(typeof window.replaceVariables!=="function")def("replaceVariables",thReplaceVariables);' +
-        'if(typeof window.insertOrAssignVariables!=="function")def("insertOrAssignVariables",thInsertOrAssign);' +
-        'if(typeof window.triggerSlash!=="function")def("triggerSlash",triggerSlash);' +
-        'if(typeof window.getLastMessageId!=="function")def("getLastMessageId",getLastId);' +
-        'if(typeof window.formatAsTavernRegexedString!=="function")def("formatAsTavernRegexedString",thFormatRegex);' +
-        'if(typeof window.getChatMessages!=="function")def("getChatMessages",thGetChatMessages);' +
-        // ── 8.5 两个"框架要开局先验明正身"的全局（缺了不是"少个功能"，是**整个框架不启动**）──
-        // ★ `getTavernHelperVersion()`：MVU bundle 的入口第一行就是
-        //   `await checkVersion('3.4.17', {message:…, title:…})`，内部
-        //   `compare(await getTavernHelperVersion(), '3.4.17','<')` ——
-        //   这个全局在 bundle 里**没有定义**（它属于酒馆助手），不提供就是
-        //   `ReferenceError` ⇒ 那个顶层 `await` 所在的 async IIFE 直接拒 ⇒ 后面
-        //   一行都跑不到（事件订阅、面板、变量钩子全部零）。MVU 的 HUD 就是这么没的。
-        //   返回值取 **3.4.17**（MVU 要求的最低版本）而不是我们 TH.version 的 3.0.0：
-        //   低了只会触发它那条"请先升级酒馆助手"的报错 toast，那是**误导**（DSH 里
-        //   没有可升级的酒馆助手）。真实覆盖半途的地方都写在本文件与 HANDOFF 里。
-        'if(typeof window.getTavernHelperVersion!=="function")def("getTavernHelperVersion",function(){return "3.4.17"});' +
-        // ★ `toastr`：ST 宿主页的提示条库（bundle 里 78 处、真卡的 MVU 脚本里也有）。
-        //   卡 iframe 里本来就没有那套 DOM ⇒ 最小实现 = **照发到控制台**
-        //   （不假装弹过，也不让它在每个报错分支上再抛一次 TypeError）。
-        'if(!window.toastr)def("toastr",{' +
-        'info:function(m,t){try{console.log("[muv-engine] 卡提示 "+(t||"")+"："+m)}catch(e){}},' +
-        'success:function(m,t){try{console.log("[muv-engine] 卡提示 "+(t||"")+"："+m)}catch(e){}},' +
-        'warning:function(m,t){try{console.warn("[muv-engine] 卡警告 "+(t||"")+"："+m)}catch(e){}},' +
-        'error:function(m,t){try{console.warn("[muv-engine] 卡报错 "+(t||"")+"："+m)}catch(e){}}});' +
-        // ── 8.6 `waitGlobalInitialized`：ST 在 predefine.js 的 `_bind` 表里注入 ────
-        //   ★ ST 侧证据：`dist/index.js` 的 `_bind` 表里有 `_waitGlobalInitialized`，
-        //     `src/iframe/predefine.js:14-18` 用 `key.replace('_','')` 去掉前导下划线后
-        //     `value.bind(window)` ⇒ 卡 iframe 里存在**裸全局** `waitGlobalInitialized`。
-        //   ★ 卡侧证据：真卡 8 处**探测式**调用（`星辉MVU核心` 3 / 事件推进器 2 / …）：
-        //       const wait = roots.map(x => x.waitGlobalInitialized).find(...)
-        //         || (typeof waitGlobalInitialized === 'function' ? waitGlobalInitialized : null);
-        //       if (wait) { await wait('Mvu'); }
-        //     —— 它自带兜底，缺了**不抛**，所以这条不是"缺了就崩"那一类。
-        //   补它的理由不是防崩，是让卡走 ST 的**主路径**：它等的是 `Mvu`，而我们的
-        //   `Mvu` 垫片是**同步**就位的（数据由宿主推）⇒ 立即 resolve 是**语义正确**的，
-        //   不是"假装就绪"。名字取不到时**不 reject**（最多轮询 2 秒后 resolve
-        //   undefined）—— 卡的 `.then` 不会因我们而掉进 catch 分支。
-        'if(typeof window.waitGlobalInitialized!=="function"){' +
-        'var __wgi=function(name){try{var v=window[String(name)];if(v!==undefined&&v!==null)return Promise.resolve(v)}catch(e){}' +
-        'return new Promise(function(res){var n=0;var t=setInterval(function(){try{var v=window[String(name)];n++;' +
-        'if((v!==undefined&&v!==null)||n>=40){clearInterval(t);res(v)}}catch(e){clearInterval(t);res(undefined)}},50)})};' +
-        'def("waitGlobalInitialized",__wgi);}' +
-        // 开工就先问一次 MVU 数据（此刻宿主可能还没预热完 ⇒ 回来后走 `__muvMvuReq` 的补齐队列）。
-        'mvuReq();' +
-        '})();'
+    function withFrameHeightBootstrap(html) {
+      var s = String(html == null ? '' : html)
+      // ★ 守卫查的是**引导脚本专属 token**（`__muvHFitProbe` 只出现在上面那个 postMessage 语句里），
+      //   **不是** `window.__muvH=1` —— 后者是卡随时能写的公共标记：
+      //   卡的原始 HTML 里只要出现 `window.__muvH=1`（模型跑题、作者抄别家 shim、卡里内嵌文档），
+      //   整段引导脚本就被**静默跳过**，iframe 再也不发 `__muvFrameHeight`，高度永远停在
+      //   cardHtmlIframe 的默认 900px。检查这个 token 时按**整句**匹配（带上后半句），
+      //   卡的拷贝要一字不差才会误命中。
+      //
+      //   ★ 真正的根治在**父页记账**（见 cardHtmlIframe 的 `__muvInjectCache`）：同一个 `raw`
+      //   只在这里组装一次，重复调用直接命中缓存。子文档侧这条守卫只是第二道保险。
+      //   注入链见 cardHtmlIframe：compat 在内层先跑，产物里没有这个 token，不会互相顶掉。
+      if (s.indexOf('__muvHFitProbe=1;') !== -1) return s
+      var ranges = scriptRangesOf(s)
+      var re = /<\/body\s*>/gi
+      var m, last = null
+      while ((m = re.exec(s))) {
+        if (!rangesContain(ranges, m.index)) last = m
+      }
+      if (!last) return s + muvFrameBootstrap()
+      return s.slice(0, last.index) + muvFrameBootstrap() + s.slice(last.index)
+    }
+
+    /**
+     * 安装父页监听。全局只装一次；装饰器重跑、反复建 iframe 都无害。
+     *
+     * 幂等标记挂在 `window` 上（而不是闭包变量），理由同 muvFrameHeightLimits()：
+     * 这个函数会被回归测试从源码里提取执行，闭包变量在提取物里不存在。
+     *
+     * ★ 标记存的是**监听器本身**，不是 `true`（brief P2）：插件重载后这个函数会被新的闭包
+     *   重新求值，`onMuvFrameHeightMessage` 是新函数对象，而**旧监听器仍挂在页面上**。
+     *   只写 `true` 的话旧监听器永远不被解绑、也永远不被识别 ⇒ 它继续处理消息（写进旧的
+     *   孤儿状态），而且旧闭包永不回收。存引用就能看出"换了人"：不一致时先解绑旧的。
+     * @returns {void}
+     */
+    function ensureFrameHeightListener() {
+      try {
+        if (typeof window === 'undefined' || !window.addEventListener) return
+        var old = window.__muvFrameHListener
+        if (old === onMuvFrameHeightMessage) return
+        if (typeof old === 'function') {
+          try { window.removeEventListener('message', old, false) } catch (_) {}
+        }
+        window.addEventListener('message', onMuvFrameHeightMessage, false)
+        window.__muvFrameHListener = onMuvFrameHeightMessage
+      } catch (_) {}
+    }
+
+    /**
+     * 父页收到子文档报来的高度后，只做一件事：改那个 iframe 的高度。
+     *
+     * 安全约束（红队会照这几条打）：
+     *  - `event.source` 必须**就是**某个 `iframe.muv-iframe` 的 contentWindow，否则丢弃；
+     *    伪造的、别的窗口/扩展发的消息都进不来（不查 origin：沙箱是不透明来源，
+     *    它的 origin 恒为 "null"，拿它当凭据没有意义）；
+     *  - 只接受有限正数，并夹到 [160, 12000]，畸形卡不能把页面撑到不可用；
+     *  - **不 eval、不插入内容、不转发、不读卡内任何东西**。
+     * @param {MessageEvent} ev
+     * @returns {void}
+     */
+    function onMuvFrameHeightMessage(ev) {
+      var data = ev && ev.data
+      if (!data || typeof data !== 'object' || data.__muvFrameHeight === undefined) return
+      var n = Number(data.__muvFrameHeight)
+      if (!isFinite(n) || n <= 0) return
+      var frames
+      try { frames = document.querySelectorAll('iframe.muv-iframe') } catch (_) { return }
+      var frame = null
+      for (var i = 0; i < frames.length; i++) {
+        if (frames[i].contentWindow === ev.source) { frame = frames[i]; break }
+      }
+      if (!frame) return
+      var lim = muvFrameHeightLimits()
+      var h = Math.round(n)
+      if (h < lim.min) h = lim.min
+      if (h > lim.max) h = lim.max
+      // ★ 死区**只作用在收缩方向** —— 与孩子侧棘轮同一条铁律（见 muvFrameBootstrap 里
+      //   「滞回只作用在收缩方向」那段）。
+      //
+      //   为什么增长必须无条件生效：孩子侧报上来的"溢出学习"值是 `body.scrollHeight`
+      //   （**精确**的溢出下沿，不是估值）。实测真卡 `_足控天堂2` 的 ERA 状态栏：
+      //   内容 894 / 帧 889 —— 差 5px，被这个 8px 死区丢掉 ⇒ **卡底部永久少一条**
+      //   （reset 把 html/body 啃成 `overflow:hidden!important`，连滚动条都没有）。
+      //   `extent()` 量到的是元素包围盒（**不含 margin**），所以"最后那几个像素"只有
+      //   滚动区自己看得见 —— 那正是死区最容易吃掉的一段。
+      //   收缩方向照旧留 8px：亚像素抖动、卡内动画的 ±几像素不该引发连续重排。
+      //
+      //   ★ 但有一个例外通道（2026-09-23 苍玄界实测）：**大幅下修**（落差 ≥ 300px）不受
+      //     滞回限制、直接采纳。理由：extent() 的可见性过滤（透明浮层跳过）或媒体落定
+      //     会让测量值**一次性**回落几百像素 —— 这不是抖动，是结构修正；而滞回要求
+      //     连续多次观测，浮层类页面往往只给一次机会 ⇒ 不放行就永久留白
+      //     （实测：vh-F 夹具 extent 报 500 一次，宿主帧高停在 900）。
+      //     300px 阈值远大于任何合理抖动；误触发最多让帧高贴合真实内容，无破坏面。
+      var cur = parseFloat(frame.style.height)
+      if (isFinite(cur) && h <= cur && (cur - h) < 8 && (cur - h) < 300) return
+      try { frame.style.height = h + 'px' } catch (_) {}
+    }
+
+    /**
+     * 把卡文档里 `min-height:…vh` 的声明**重写成固定像素**。
+     *
+     * ★ 这是「卡片塌成默认高度 + 框里永远有滚动条」的**根因**，也是照 ST 平价的关键一条。
+     *
+     * 循环定义长这样：卡的 CSS 写 `#app{min-height:100vh}`（`主页` / `正文美化` / `食人世界·开场白`
+     * 三份都有）。`100vh` 在我们的 iframe 里 = **iframe 自己的高度**，而我们又要「以内容包围盒
+     * 决定 iframe 的高度」—— 两边互为因果：iframe 起手 900 ⇒ vh=900 ⇒ 内容至少 900 ⇒ 报 900 ⇒
+     * 不动点；可一旦某次报小了（高度测量有漏算，见 verify-frame-gap.mjs），内容跟着缩，
+     * **再也长不回去**。用户的观感就是"卡片塌了、立绘很小、框里还有滚动条"。
+     *
+     * ST 的做法（`C:\_st_spec\SPEC.md`，另一个人真机实测抽出）：把 `min-height:100vh` 改写成
+     * `min-height:var(--TH-viewport-height)`，值取**父窗口的 innerHeight**。我们照做，但直接落成
+     * 像素值、不用 CSS 变量（少一层依赖，也少一处可能取不到变量的地方）：
+     *
+     *   vh 的取用顺序：**父窗口 innerHeight** → 拿不到就**不重写**。
+     *   宁可不改，也不写一个错的固定值 —— 写错比不改更糟（卡会被钉死在错误高度上）。
+     *
+     * 只改 `min-height`，**不动** `max-height:…vh` / `height:…vh`（与 ST 一致，实测残留
+     * `max-height:86vh` 是正常的）。`<script>` 里的同名文本**不碰**：卡自己可能在拼样式字符串，
+     * 改了会让它的逻辑与实际样式不一致。
+     * @param {string} html 卡自带的整页 HTML
+     * @returns {string}
+     */
+    function rewriteVhMinHeight(html) {
+      var s = String(html == null ? '' : html)
+      var vh = 0
+      try {
+        if (typeof window !== 'undefined' && window.innerHeight) vh = Number(window.innerHeight) || 0
+      } catch (_) {}
+      if (!(vh >= 200)) return s          // 拿不到可信视口高：宁可保持原样
+      var ranges = scriptRangesOf(s)
+      var out = ''
+      var last = 0
+      var hits = 0
+      var lower = s.toLowerCase()
+      var i = 0
+      // ★ 这里用**逐字符扫描**而不是正则字面量，是有原因的（踩过，别改回去）：
+      //   `test-client-source.mjs` 与 `verify-shared.mjs` 都要把本函数**逐字提取出来执行**，
+      //   而它们的词法扫描器按「`/` 在代码位置就是正则开头」处理。本函数里有
+      //   `vh * parseFloat(x) / 100` 这个**除号**，于是扫描器进正则态、一路吃到后面某处，
+      //   切片越界到下一个函数 ⇒ `new Function` 报
+      //   `SyntaxError: Unexpected token 'function'`（报错位置在 test-client-source.js 里，
+      //   看起来像源码坏了，真因在这行除号）。
+      //   改成纯字符串扫描后，**两个提取器都不再需要词法判断**，同时也省掉了
+      //   每次循环重建 RegExp 对象。`rewriteVhMinHeight` 因此可以逐字被提取验证。
+      // 行为与原来的 `min-height\s*:\s*([0-9.]+)\s*(vh|dvh|svh|lvh)\b` 等价：
+      //   大小写不敏感（这里靠整串 toLowerCase 后比对）、允许空白、值必须是数字，
+      //   单位后**不接标识符字符**（`vhx` 不算）。只改 min-height，
+      //   `max-height:…vh` / `height:…vh` 一律不碰（与 ST 一致）。
+      while (i < s.length) {
+        var at = lower.indexOf('min-height', i)
+        if (at < 0) break
+        var j = at + 10
+        while (j < s.length && (s[j] === ' ' || s[j] === '\t' || s[j] === '\n' || s[j] === '\r')) j++
+        if (s[j] !== ':') { i = at + 10; continue }
+        j++
+        while (j < s.length && (s[j] === ' ' || s[j] === '\t' || s[j] === '\n' || s[j] === '\r')) j++
+        var numStart = j
+        while (j < s.length && ((s[j] >= '0' && s[j] <= '9') || s[j] === '.')) j++
+        if (j === numStart) { i = at + 10; continue }
+        var numText = s.slice(numStart, j)
+        while (j < s.length && (s[j] === ' ' || s[j] === '\t' || s[j] === '\n' || s[j] === '\r')) j++
+        var unitStart = j
+        while (j < s.length) {
+          var cu = lower[j]
+          if (cu >= 'a' && cu <= 'z') j++
+          else break
+        }
+        var unit = lower.slice(unitStart, j)
+        // 值与单位必须是**同一个** `min-height` 声明里的东西：单位后不许再接标识符字符
+        // （`min-height:100vhx` / `min-height:100vh_foo` 都不算），这正是原正则 `\b` 的作用。
+        // ⚠ `_` 也属于标识符字符。少了它，`100vh_foo` 会被当成**命中**并写成 1080px
+        //   （差分测试抓到的唯一一处不一致）。
+        if (!(unit === 'vh' || unit === 'dvh' || unit === 'svh' || unit === 'lvh')) { i = at + 10; continue }
+        if (j < s.length && /[A-Za-z0-9_$]/.test(s[j])) { i = at + 10; continue }
+        var tokenEnd = j
+        if (rangesContain(ranges, at)) { i = tokenEnd; continue }   // 落在 <script> 里：跳过，但别打乱切片
+        // ★ 写成 `* 0.01` 而不是 `/ 100`：**本函数里不能出现代码位置的除号**。
+        //   测试的 `sliceBalanced`（test-client-render.mjs / test-client-source.mjs /
+        //   verify-shared.mjs）在 code 态看到 `/` 就进正则态，一路吃到下一个 `/`，于是
+        //   花括号配平跑偏、切片错位，`extractFunction('rewriteVhMinHeight')` 抛
+        //   `Invalid regular expression: missing /`。而 `buildFrom` 的自动发现是
+        //   `try{…}catch(_){ null }` ⇒ **静默跳过**这个依赖，最后表现为
+        //   `cardHtmlIframe` 在 eval 沙箱里 `ReferenceError: rewriteVhMinHeight is not defined`
+        //   （报错位置指向 cardHtmlIframe，真因在这个除号 —— 极难反查）。
+        //   本函数开头的注释已经记过一次这个坑，这里是当时漏改的第二处。别改回去。
+        var px = Math.round(vh * parseFloat(numText) * 0.01)
+        out += s.slice(last, at) + 'min-height:' + px + 'px'
+        last = tokenEnd
+        hits++
+        i = tokenEnd
+      }
+      return hits ? out + s.slice(last) : s
+    }
+
+    // 主题快照缓存。**故意放在函数之前**（`var` 提升在这里不能靠）：
+    // 回归测试会把 `dswThemeSnapshotCss` 的函数体逐字提取出来执行，闭包外的变量在
+    // 提取物里不存在 —— 放在同一段顶层源码里，提取器才能把它们一起带上。
+    var __muvThemeCss = ''
+    var __muvThemeSig = ''
+
+    /**
+     * 宿主主题变量 `--dsw-alias-*` 的**当前值快照**，供 srcdoc 里的卡使用。
+     *
+     * 为什么需要：iframe 不继承父页的 CSS 变量 —— 卡里写 `var(--dsw-alias-bg-l1)` 会
+     * 全部落到 fallback（或者干脆是空/黑），于是**今天所有 iframe 化的卡都没有主题**
+     * （宿主主题只作用于宿主 DOM）。用户看到的就是"卡片和外面的聊天气泡不像一套东西"。
+     *
+     * 只取**有值的**变量：`getComputedStyle` 对未声明的自定义属性返回空串，把空串原样
+     * 写进 `:root{--x:}` 会让这条声明变成无效声明，反而把卡自己的 fallback 链条弄脏。
+     *
+     * 值做一道**去尖括号**：`<style>` 里出现 `</style>` 会当场把样式表截断并把后面
+     * 整段当 HTML 解析。主题变量是我们自己的调色板、正常不会带尖括号，但这条防线
+     * 成本为零，而且它防的是"渲染整页毁掉"这个量级的后果。
+     *
+     * 结果按连接串缓存：只在**首次**注入时算一次（单个 iframe 内调一次 `getComputedStyle`
+     * 够用，省掉每个 frame 重新枚举一遍全部变量）。
+     * @returns {string} `:root{…}` 形式，取不到就返回空串
+     */
+    function dswThemeSnapshotCss() {
+      try {
+        if (typeof window === 'undefined' || typeof document === 'undefined' || !document.documentElement) return ''
+        var cs = window.getComputedStyle(document.documentElement)
+        if (!cs) return ''
+        var names = []
+        for (var i = 0; i < cs.length; i++) {
+          var p = cs[i]
+          if (typeof p === 'string' && p.indexOf('--dsw-alias-') === 0) names.push(p)
+        }
+        if (!names.length) return ''
+        var sig = names.join(',')
+        if (__muvThemeSig === sig && __muvThemeCss) return __muvThemeCss
+        var out = ''
+        for (var k = 0; k < names.length; k++) {
+          var v = cs.getPropertyValue(names[k])
+          if (typeof v !== 'string') continue
+          v = v.replace(/[<>]/g, '').trim()
+          if (!v) continue
+          out += names[k] + ':' + v + ';'
+        }
+        __muvThemeCss = out ? ':root{' + out + '}' : ''
+        __muvThemeSig = sig
+        return __muvThemeCss
+      } catch (_) { return '' }
+    }
+
+    /**
+     * 注入卡文档的 **reset 样式**（照 ST 平价，`C:\_st_spec\SPEC.md` 真机实测抽出）。
+     *
+     * ST 原文（`ST-IFRAME-SPEC.md` §3，`b1()` 里那一段，逐字）：
+     *   `*,*::before,*::after{box-sizing:border-box;}`
+     *   `html,body{margin:0!important;padding:0;overflow:hidden!important;max-width:100%!important;}`
+     *
+     * ★ `overflow` 从 `auto` 改回 **ST 的 `hidden`**（原来那一版是 `overflow-y:auto`）。
+     *
+     * 旧那版留了 `auto` 当"退路"：怕跨源的高度是估的、估短了会静默裁掉内容。
+     * 但那条退路的**代价**是用户真的会看到：卡自己的滚动条出现在卡片里面（截图里右侧那条），
+     * 而且 `body` 一旦是可滚动容器，`body.scrollHeight` 与帧高的关系就被搅乱。
+     * 现在的取舍是：`hidden` + **保证帧高 ≥ 内容高**（见 `muvFrameBootstrap` 的度量：
+     * 内容包围盒 ∪ 观测到的 `body.scrollHeight` 溢出 ∪ body/html 的 px `min-height`，
+     * 三者取最大；**只要有任何一项超过帧高就抬帧高**）。
+     * 也就是说裁切不再可能：报给父页的值**只会 ≥ 真实内容高**。
+     * 实测 9 份真卡 × 3 档起始高度：内容底边 ≤ 帧高 全部成立（verify-frame-size.mjs /
+     * verify-frame-height.mjs）。横向一直是 `hidden`（照 ST），没变。
+     * @returns {string}
+     */
+    /**
+     * 卡 iframe **画布的底色** —— 从宿主（DSH）当前主题里取，烘进 reset。
+     *
+     * ★ 为什么要这一段（第 40 轮真机对照实验，`tools/dsh-live22.mjs`）：
+     *   iframe 是**独立文档**，宿主页面的 `--dsw-alias-*` 与 `data-ds-dark-theme`
+     *   都传不进去；而 srcdoc 文档只要**没有声明任何背景**，UA 就会按自己的默认
+     *   画一张**白画布**。宿主是深色时实测三个探针（`sandbox=allow-scripts`、
+     *   父页 `background:transparent`，宿主页面本身 rgb(21,21,23)）：
+     *     · 不声明背景          ⇒ 画布 rgb(253,253,253)  ← 就是用户说的「白框」
+     *     · `background:transparent` ⇒ 画布 rgb(252,252,252)（**没用**，UA 画布照白）
+     *     · `html{background:#151517;color-scheme:dark}` ⇒ 画布 rgb(24,24,26) ✓
+     *   也就是说「白框」和 §39.2 修的「白边（幽灵高度）」是两件事：那一处是高度被
+     *   隐藏弹窗顶高，这一处是**画布本身是白的**。
+     *
+     * ★ 为什么不硬编码深色值：只给 `html` 一个**低优先级**声明（插在 `<head>` 最前，
+     *   且**不带** `!important`），卡自己的 `html{background}` / `body{background}`
+     *   仍然照旧赢 —— 卡的配色不动（ST 保真度）。只有**没自带背景**的卡才吃到这个
+     *   兜底，那种卡本来就是一块刺眼的白。
+     *
+     * ★ `color-scheme` 同源：它决定 iframe 内的滚动条/表单控件的 UA 配色，跟着宿主
+     *   走才不会出现「深色页里嵌一条浅色滚动条」。
+     * @returns {string} 空串表示取不到（测试里没有真 document 时）——那就保持 ST 原样。
+     */
+    function muvCardResetCss() {
+      // ★ 宿主皮肤兜底（同上）：整段**内联**而不是拆成第二个函数 —— `buildFrom` 只把
+      //   列进依赖表的函数抽出来求值，多一层函数声明在那些门禁里会是 ReferenceError。
+      var skin = ''
+      try {
+        if (typeof document !== 'undefined' && document.body && typeof getComputedStyle === 'function') {
+          var dark = document.body.hasAttribute('data-ds-dark-theme')
+          var de = document.documentElement
+          if (!dark && de && de.style && de.style.colorScheme === 'dark') dark = true
+          var cs = getComputedStyle(document.body)
+          var bg = (cs.getPropertyValue('--dsw-alias-bg-base') || '').trim()
+          if (!bg || bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent') bg = cs.backgroundColor
+          if (!bg || bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent') bg = dark ? '#151517' : '#ffffff'
+          skin = 'html{background:' + bg + ';color-scheme:' + (dark ? 'dark' : 'light') + '}'
+        }
+      } catch (_) { skin = '' }
+      return '*,*::before,*::after{box-sizing:border-box}' +
+        'html,body{margin:0!important;padding:0;max-width:100%!important;' +
+        'overflow:hidden!important}' + skin
+    }
+
+    /**
+     * ★ 卡 iframe 的 **ST 同款前端库**注入开关（Tailwind / jQuery / jQuery-UI /
+     * Vue / Vue-Router / FontAwesome）。**默认开 —— 不要顺手关掉。**
+     *
+     * 事实依据（`ST-IFRAME-SPEC.md` §3 / §7；这次是直接从 ST 的 `dist/index.js`
+     * 里把 `v1` 常量原文取出来的，不是推测）。ST 的 iframe 文档模板 `b1()`
+     * **无条件**把 `${v1}` 塞进**每一个**卡 iframe，`v1` 的原文是：
+     *
+     *   <link rel="stylesheet" href="…/@fortawesome/fontawesome-free/css/all.min.css">
+     *   <script src="…/lib/tailwindcss.min.js">            （= @tailwindcss/browser@4.1.12）
+     *   <script src="…/jquery/dist/jquery.min.js">
+     *   <script src="…/jquery-ui/dist/jquery-ui.min.js">
+     *   <link rel="stylesheet" href="…/jquery-ui/themes/base/theme.min.css">
+     *   <script src="…/jquery-ui-touch-punch">
+     *   <script src="…/vue/dist/vue.runtime.global.prod.min.js">
+     *   <script src="…/vue-router/dist/vue-router.global.prod.min.js">
+     *
+     * ⇒ ST 里的卡 HTML **天然拥有** Tailwind 工具类（`class="w-full"`）、`$()`、
+     * `$.ui`、Vue / Vue-Router、`fa-solid fa-xxx` 图标。写卡的人**直接依赖**这些、
+     * 从不自己引 —— 所以「卡里东西出不来」有一条**独立**原因就是我们一个都没注入：
+     *   · Tailwind 类没有任何 CSS 规则 ⇒ 布局按"没有样式"塌掉；
+     *   · `$` / `Vue` 未定义 ⇒ 卡的脚本第一行就抛 ⇒ **界面照常渲染、功能全废**
+     *     （与 §18 / §21 那两次 `$'` / `$&` 打坏卡脚本是同一类观感，极难查）。
+     *
+     * 关掉会发生什么：部分卡布局缺失、交互失效（"显示不全 / 点了没反应"）。
+     * 只在**确认**某张卡被这些库干扰时才关；关法就是把这个常量改成 `false`，
+     * **不要删代码**（删了就再也回不到 ST 平价）。
+     *
+     * 为什么走 CDN 而不是打包进插件：这六个库合计 ~600KB，打包会让每条消息多背
+     * 一份；而卡的 iframe 本来就在拉远程图片/视频，网络能力不是新增的攻击面。
+     * 失败形态是**安全的**：`script src` 取不到只是该全局为 `undefined`，卡里
+     * 现成的 `typeof $ !== 'undefined'` 检测照旧短路 —— 不会比"从不注入"更差。
+     * @type {boolean}
+     */
+    var MUV_CARD_LIBS = true
+
+    /**
+     * 库注入开关的读取口。
+     *
+     * 做成**函数**而不是直接引用常量：回归门禁是「从源码里逐字提取函数体再执行」
+     * 的，闭包变量不在提取物里，裸引用 `MUV_CARD_LIBS` 会 `ReferenceError`
+     * （这一片的每个 helper 都保持自足，测的才是真实代码）。
+     * `typeof` 保护让它在"没有那个闭包"的提取场景下退回**默认开**。
+     * @returns {boolean}
+     */
+    function muvCardLibsOn() {
+      try { if (typeof MUV_CARD_LIBS !== 'undefined') return !!MUV_CARD_LIBS } catch (_) {}
+      return true
+    }
+
+    /**
+     * ST `v1` 的等价物 —— 六个库，**顺序照抄 ST**：先 CSS 后 JS，jQuery 在 Vue 前
+     * （Vue-Router 依赖全局 `Vue`，jQuery-UI 依赖全局 `jQuery`，顺序错了就是静默
+     * 少一个库）。版本**钉死**而不是用 latest：卡的写法是针对某一代库调过的，
+     * 让 CDN 的 latest 自己往前走会引入无法复现的回归。
+     *
+     * 与 ST 的两处**有意**差异（都在注释里留痕，别当成 bug 修）：
+     *  - Vue 用**完整构建** `vue.global.prod.js` 而不是 ST 的 `vue.runtime.global.prod`
+     *    （runtime 版不含模板编译器）。完整版是它的**超集**：ST 能跑的写法这里都能跑，
+     *    额外还能跑 `template:` 字符串 —— 只会多救几张卡，不会少。
+     *  - 省略 jquery-ui 的 `theme.min.css` 与 `jquery-ui-touch-punch`（ST 有）：
+     *    两者只影响 `.ui-*` 控件与触屏拖拽，而每多一个远程资源就多一份失败面。
+     *    真遇到依赖它们的卡再补，补的时候照 ST 的顺序插（theme 在 jquery-ui 之后）。
+     *
+     * ★★ 2026-09-23（第 31 轮）追加两项 —— 它们**不在** ST 的 `v1` 里，而在
+     *    `predefine.js` 里（下表每行都是"ST 侧证据 + 卡侧证据"两条腿，缺一条就别加）：
+     *
+     *    | 全局 | ST 侧证据（只读源码） | 卡侧证据（真卡 grep，2026-09-23） |
+     *    |---|---|---|
+     *    | `_` (lodash) | `src/iframe/predefine.js:1` `window._ = window.parent._;` | 151 处裸引用 |
+     *    | `z` (zod)    | 同文件 `:12` `_.pick(window.parent, [...,'z'])` | 143 处裸引用（同一条脚本） |
+     *    | `YAML` (yaml) | 同文件 `:12` 的同一个 `_.pick` 清单里就有 `'YAML'` ★ | 27 处（见下，**第 32 轮**补） |
+     *
+     *    · `_`：ST 本体依赖 `lodash@4.18.1`（`SillyTavern/node_modules/lodash/package.json`
+     *      的 `"version": "4.18.1"`）⇒ **CDN 上也钉 4.18.1**（实测 jsdelivr 有这个版本，
+     *      73,234 字节，与 npm 的 latest 同物）。`predefine.js` 第 11–19 行整段用
+     *      `_.merge/_.pick/_.omit/_.get/_.set` 装配 `TavernHelper` ⇒ 它自己第一步就需要 `_`；
+     *      另有 `src/iframe/adjust_iframe_height.js:26` 的 `_.throttle(measureAndPost, 500)`。
+     *      卡侧：`星辉MVU核心` 一条就 74 处（`_.get(stat,'账本.待结算',{})` 这类）——
+     *      §30 记的「bundle 110 处用 `_`」就是同一件事的另一种统计口径。
+     *    · `z`：父页的 `z` 来自酒馆助手的 zod（`JS-Slash-Runner/package.json:89`
+     *      `"zod": "^4.4.3"`）。卡侧最凶的是「8.2·星辉zod·等级能力一致性与比例数值」：
+     *      它 `import { registerMvuSchema } from '…/mvu_zod.js'` 却**从不 import `z`**，
+     *      `z.object/z.record/z.preprocess/z.coerce/…prefault` 全是裸引用 ⇒ 缺 `z` 时
+     *      在**求值顶层 Schema 常量**时就 `ReferenceError`，`registerMvuSchema(Schema)`
+     *      永远跑不到。
+     *
+     *    · `YAML` ★ **第 32 轮补上**（上一轮记的是"卡侧 0 处引用、故意不补"，本轮被两路
+     *      新证据推翻）：① **ST 侧** —— ST 父页的 `window.YAML` 是**酒馆助手自己**装的
+     *      （`JS-Slash-Runner/dist/index.js` 里 `function Qne(){globalThis.YAML=dV,…}`，
+     *      `dV` 就是 `yaml@2` 的 ESM 命名空间：`parse/parseDocument/parseAllDocuments/
+     *      stringify/Document/YAMLMap/CST/…`）；版本取 `JS-Slash-Runner/pnpm-lock.yaml`
+     *      的 `yaml@2.9.0`（它 `package.json:59` 声明 `"yaml": "^2.9.0"`；ST 本体另有一份
+     *      `node_modules/yaml` = 2.8.3，但**父页那个全局来自酒馆助手的 bundle**，所以钉 2.9.0）。
+     *      ② **卡侧** —— `_足控天堂2` 的「外置手机」那条脚本是一行
+     *      `import 'https://phone-ctn.pages.dev/index.js'`，该远端模块（3,150,415 字节）里
+     *      有 **27 处裸引用 `YAML`**，全是 `YAML.parse(...)` / `YAML.stringify(...)` ——
+     *      控制台那条 `Uncaught ReferenceError: YAML is not defined` 就是它。上一轮
+     *      "卡侧 0 处"只 grep 了**卡里的内联脚本正文**，漏了「脚本文本只是一行 import、
+     *      真代码在远端」这一形态（§30.2 记过这种形态，本轮把它算进来）。
+     *    · 为什么不给 `dump` / `load`：ST 的 `YAML` 是 `yaml@2` 命名空间，**没有** `dump`
+     *      / `load`（那是 js-yaml 的 API 名）；卡侧 27 处只用 `parse` / `stringify`。
+     *      加别名会让 DSH 比 ST 更宽松（在 ST 里会炸的卡在这里悄悄跑起来），按本仓库
+     *      "ST 侧 + 卡侧两条腿"的口径**不加**。真遇到用 `YAML.dump` 的卡再按同样格式取证。
+     *
+     * ⚠ 同一个 `_.pick` 里的 `EjsTemplate` / `showdown`：卡侧实测 0 处引用，
+     *   所以**仍然故意不补**。它们分别是要宿主配合才跑得起来的 EJS 渲染 / markdown
+     *   渲染；给个空壳会让卡以为"渲染成功了"从而写错数据，比缺全局更坏。
+     *   真遇到依赖它们的卡再照 ST 补 —— 补之前先按上表的格式取证。
+     *
+     * 两条硬约束（与 `muvFrameBootstrap` 同源）：**不含反引号**；字符串里
+     * **不出现裸的 `</script>`**（收尾标签用 `'</' + 'script>'` 拼出来）。
+     * @returns {string}
+     */
+    function muvCardLibTags() {
+      var CDN = 'https://cdn.jsdelivr.net/npm/'
+      return '<link data-muv-libs="fa" rel="stylesheet" href="' + CDN + '@fortawesome/fontawesome-free@6.7.2/css/all.min.css">' +
+        '<script data-muv-libs="tw" src="' + CDN + '@tailwindcss/browser@4.1.12/dist/index.global.js"></' + 'script>' +
+        '<script data-muv-libs="jq" src="' + CDN + 'jquery@3.7.1/dist/jquery.min.js"></' + 'script>' +
+        '<script data-muv-libs="jqui" src="' + CDN + 'jquery-ui-dist@1.13.3/jquery-ui.min.js"></' + 'script>' +
+        '<script data-muv-libs="vue" src="' + CDN + 'vue@3.5.13/dist/vue.global.prod.js"></' + 'script>' +
+        '<script data-muv-libs="vr" src="' + CDN + 'vue-router@4.5.0/dist/vue-router.global.prod.js"></' + 'script>' +
+        // ── lodash：**三段**（存旧值 → 加载 → 还原），语义 = "只在缺失时补" ─────────
+        // ★ 为什么不能只写一个 `<script src="…lodash.min.js">`：lodash 的 UMD 收尾是
+        //   `root._ = lodash` —— **无条件**覆盖。而要求是"卡自己定义了 `_` 就不许动它"。
+        //   三段的分工：加载前把已存在的 `_` 存进 `__muvDashPrev`；加载后若当初存过，
+        //   就把它**放回去**。没存过（= 本来就没有 `_`）⇒ lodash 留下，正是我们要的。
+        //   覆盖的场景是"卡在 `<head>` 里就定义了 `_`"（顺序上早于本注入点，会被 UMD
+        //   盖掉）；卡在 `<body>` 里的赋值本来就晚于这里，天然是卡赢，三段不干涉它。
+        //   `__muvDashPrev` 用完即删，不给卡留一个会困惑的全局。
+        '<script data-muv-libs="dash-save">(function(){try{delete window.__muvDashPrev;if(typeof window._!=="undefined")window.__muvDashPrev=window._}catch(e){}})();</' + 'script>' +
+        '<script data-muv-libs="lodash" src="' + CDN + 'lodash@4.18.1/lodash.min.js"></' + 'script>' +
+        '<script data-muv-libs="dash-keep">(function(){try{if(Object.prototype.hasOwnProperty.call(window,"__muvDashPrev")){window._=window.__muvDashPrev;delete window.__muvDashPrev}}catch(e){}})();</' + 'script>' +
+        // ── zod：**只能走 module** —— 实测 zod@4.4.3 的 npm 包里**没有 UMD/IIFE 构建**
+        //    （`dist/zod.umd.js` / `dist/index.umd.js` 都是 404；只有 `+esm` 这种由
+        //    jsdelivr 现打的 ESM，328,955 字节）。所以这里是全篇唯一一个 `type="module"`
+        //    的库标签。
+        // ★ 顺序仍然成立：module 天然 defer，而本标签在 `<head>` 里、卡脚本在 `</body>`
+        //   之前 ⇒ 文档顺序决定它**先于**卡脚本执行（§30 那条"module 之间按文档顺序"
+        //   的结论在这里第二次兑现）。代价与 jQuery 那类阻塞式 CDN 同级：zod 拉得慢会
+        //   推迟卡脚本的**开始**，但不会让谁失败。
+        // ★ `import * as` 而不是 `import { z }`：`+esm` 是 jsdelivr 现打的包，具名导出的
+        //   名字不保证稳定（实测是 `object` / `z` + `default`）。落位取**命名空间本身**
+        //   （形状判据 `typeof MUVZ.object === "function"`），兜底才退到 `default` —— 卡那边
+        //   看到的是一个**能用的 zod 命名空间**，不是 `undefined`。
+        // ★ 仍然只在缺失时落位（卡自己定义了 `z` 就尊重卡的）。
+        // ★★ 第 32 轮定位 / 第 33 轮修（§32.7）：落位必须是**整个命名空间**，**不能**是
+        //   `MUVZ.z` 这个**子对象**。ST 父页那个 `z` 是整包命名空间
+        //   （`JS-Slash-Runner/dist/index.js` 的 `uk = bn({$brand,$input,…,ZodAny,…})`，
+        //   `Qne(){globalThis.z=uk}`）—— 它同时有 `z.object` **和** `z.z`；`MUVZ.z` 子对象
+        //   只有前者，于是**用 `z.z.object(...)` 写法**的模块抛
+        //   `TypeError: Cannot read properties of undefined (reading 'object')` —— 实测两处：
+        //   · `tavern_resource/dist/酒馆助手/自动更新角色卡/index.js`（单行压缩，`.object`
+        //     在偏移 367 ⇒ 正好是用户报的 `index.js:1:372`；那条脚本是 `const n=z, r=n.z.object({…})`）；
+        //   · `tavern_resource/dist/util/mvu_zod.js:553`（`r.z.object({stat_data:e})`，更常见）。
+        //   jsdelivr 的 `+esm` 导出表里 `mo as object` 与 `Os as z` **都在** ⇒ 命名空间是子对象的
+        //   **纯超集**：`z.object` / `z.z` / `z.record` / `z.preprocess` / `z.coerce` 全部成立，
+        //   与 ST 的形状一致（不是新行为）。
+        '<script type="module" data-muv-libs="zod">import * as MUVZ from "' + CDN + 'zod@4.4.3/+esm";' +
+        'try{if(typeof window.z==="undefined")window.z=(MUVZ&&typeof MUVZ.object==="function")?MUVZ:((MUVZ&&MUVZ.default)||MUVZ)}catch(e){}</' + 'script>' +
+        // ── YAML（第 32 轮补）：**也只能走 module**，理由与 zod 一字不差 ─────────────
+        //   实测 `yaml@2.9.0` 的 npm 包里**没有 UMD/IIFE**：`dist/index.js`（1,769 字节）
+        //   与 `dist/index.min.js`（1,892 字节）都只是 CJS 的 `require('./…')` 转发壳，
+        //   真正能当全局用的只有 jsdelivr 现打的那份（`+esm`，104,914 字节，源文件就是
+        //   `/npm/yaml@2.9.0/browser/index.js` = 官方的浏览器入口，包里没有任何 `require(`）。
+        //   ST 那边也是 module（酒馆助手是 vite 应用），所以我们这条 module 标签与 ST 同源。
+        // ★ 形状：`import * as MUVY` ⇒ 命名空间本身**就带 `parse`**（实测导出表里有
+        //   `parse / parseAllDocuments / parseDocument / stringify / Document / YAMLMap /
+        //   CST / Schema / Scalar / Pair / …`）。判据取 `MUVY.parse` 是不是函数而不是
+        //   "拿得到东西"：`+esm` 是现打的包，具名导出万一变成只有 `default` 的形态，也
+        //   要先落到 `default` 上，卡那边拿到的必须是一个**能 parse 的命名空间**。
+        // ★ 与 zod 一样**只在缺失时**落位（卡自己做了一份 YAML 就尊重卡的），并且顺序
+        //   同样安全：module 天然 defer、本标签在 `<head>`、卡脚本在 `</body>` 之前。
+        '<script type="module" data-muv-libs="yaml">import * as MUVY from "' + CDN + 'yaml@2.9.0/+esm";' +
+        'try{if(typeof window.YAML==="undefined")window.YAML=(MUVY&&typeof MUVY.parse==="function")?MUVY:((MUVY&&MUVY.default)||MUVY)}catch(e){}</' + 'script>'
     }

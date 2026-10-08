@@ -3541,3 +3541,43 @@ dsh-tavern-v2/tools/check-golden-origin.mjs:161            → %TEMP%/golden-ori
 ★ `dsh-restore-check-*` 的来源：`tools/verify/verify-handoff-restore.mjs` 每次运行都会 `mkdtemp` 一个
   `dsh-restore-check-<ts>` 作为恢复目标；它**不会**（也不该）自动删——那正是它要"验证恢复"的产物，
   需人工清理。⇒ 这一条请**按易失产物对待**，别当成"工具没清干净"。
+
+### 44.11 「钉错 sha ⇒ CI 红」的探针结果（含来源标注）+ UTF-8 BOM 危害记账
+
+**(A) 探针结果（步骤级证据，真机）**
+
+```
+run #16 @e1aa382c → failure
+  失败步骤 = 「同伴仓 dsh-muv-table（★ 显式钉死 sha；相对路径要兄弟目录，裸名要 node_modules 链接）」
+  下游 5 步全部 skipped：语法检查 / 全量测试 / 仓库卫生 / 产物与分片逐字节一致 / Post setup-node
+⇒ 钉错 sha ⇒ 该步红，且**没有任何"回退 tip 继续跑"的路径** ✓
+```
+
+**★ 来源标注（必须照实写，不许美化）**：
+
+```
+· 「失败步骤 + 下游全 skipped」= **CI 侧证据**（Lead 提供，来自 run #16 的步骤级状态）。
+· 「upload-pack: not our ref <sha>」这句报错文本 = **本机用同一套命令实测**的，
+  **不是** CI 日志原文 —— 该 job 日志匿名不可读（API 403）。
+  ⇒ 引用时务必写成"本机实测"，写成"CI 日志原文"就是伪证（本仓一路的规矩：证据来源要写准）。
+· 探针分支 probe/bad-table-sha-d3479c9：**已删净**（远端 + 本地）· 未合并 · 非交付物 ✓
+```
+
+**(B) UTF-8 BOM 危害（来自 Lead 的探针披露；本仓实测了一遍）**
+
+```
+起因：Lead 用 PowerShell `Set-Content -Encoding UTF8` 改工作流 ⇒ **给首行前置了 UTF-8 BOM**，
+      使探针的内容偏离了"逐字批准"的形态（结论不受影响，但形态越界）。
+本仓实测（107 个已跟踪文件逐一读首 3 字节）：**2 个带 UTF-8 BOM** —— `.gitignore`、`LICENSE`。
+★ 今天无害，已用 git 自己验证：`.gitignore` 首行是**注释**（`# 依赖`）⇒ BOM 不影响匹配；
+  `git check-ignore -v node_modules` 实测命中 `.gitignore:2:node_modules/` ⇒ 忽略规则正常生效。
+★ 但这是**潜在**危险：BOM 会贴着**第一条模式**。将来若有人在 `.gitignore` 第 1 行放一条规则，
+  BOM 会让那条规则**静默失效**（git 不剥 BOM，模式实际是 `\uFEFFpattern`）。
+★ 而**卫生门禁盖不到它**：`check-repo-hygiene.mjs` 只在 **UTF-16 分支**里提到 BOM ⇒
+  UTF-8 BOM 目前**没有门禁**（不是"门禁没抓到"，是"没这条判据"）。
+```
+
+**处置**：**不改**这两个文件 —— 它们不是本次改动引入的、今天功能无害，改动只会扩大 diff 面；
+本笔**记账**。要改它们的话，请用**无 BOM** 的写入方式
+（`[System.IO.File]::WriteAllText(p, s, (New-Object System.Text.UTF8Encoding $false))`，
+或任何会写 UTF8 无 BOM 的工具），并且**改完用 `git diff --stat` 确认只有预期行变化**。

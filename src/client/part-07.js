@@ -1,674 +1,676 @@
+    /** 取数还没回来就收到的请求（帧 + 请求名），回来后一起兑现。 */
+    var muvEraPending = []
+    /** 按 iframe 的 KV 命名空间记账的应答滑动窗口。 */
+    var muvEraGate = {}
 
     /**
-     * 兑现攒下来的请求（取数回来时调用一次）。
-     * 取数**失败**也兑现，回空对象 —— 卡的查询周期要能收尾，不能永远挂着等。
+     * `__muvHello` 的**每帧**节流时间戳（`data-muv-kv` → 上次回送的 ms）。
      *
-     * 两条队列都要兑现：`muvEraPending`（`era:getCurrentVars` 的请求）与
-     * `muvMvuPending`（`__muvMvuReq` 的请求）。少兑现一条就是"某些卡永远停在初始值"。
-     * @returns {void}
+     * 为什么必须有：hello 是卡**唯一**能主动反复触发的入口，而每次回送要付
+     * `muvCompatSeedMap`（深遍历最多 400 条 KV 重建对象）+ `muvChatList`（80 条 / 600KB
+     * 截断）+ 两次 `postMessage`（结构化克隆）。沙箱卡只要
+     * `setInterval(function(){parent.postMessage({__muvHello:1},"*")},0)` 就能把父页主线程
+     * 打满 —— 跨源消息的 source 校验挡不住它（它**就是**我们自己的卡）。
+     * 200ms 是"比任何合理重绘都快、比 setInterval 慢两个数量级"的折中；
+     * 第一次回送**不受限**（否则卡的首屏拿不到种子）。
+     * 故意**声明成纯对象字面量**：`verify-shared.mjs` 的 `moduleVarStatements` 只内联
+     * 「RHS 是纯字面量」的模块级 `var`，带标识符字段的对象字面量会被它跳过 ⇒ 逐字提取出来的
+     * 函数在门禁里会 `ReferenceError`。键被删掉也没关系（下次当作首次）。
+     * @type {Object<string, number>}
      */
-    function muvEraFlushPending() {
-      var ok = (muvEraVars.data != null)
-      var q = muvEraPending
-      muvEraPending = []
-      for (var i = 0; i < q.length; i++) {
-        var it = q[i]
-        muvEraDeliver(it.frame, it.name, ok ? muvEraVars.data : {})
-      }
-      var mp = muvMvuPending
-      muvMvuPending = []
-      for (var j = 0; j < mp.length; j++) {
-        muvEraSend(mp[j], 'mag_variable_update_ended', muvMvuWrap(ok ? muvEraVars.data : {}))
-      }
-    }
+    var muvHelloAt = {}
+    /** 同帧两次 hello 回送的最小间隔（ms）。 */
+    var MUV_HELLO_MIN_GAP = 200
 
     /**
-     * 「ERA 事件应答桥」的宿主侧入口：卡发来的 ERA 请求在这里被认出来并作答。
-     *
-     * 只认两个请求名（**白名单**，不是「以 era: 开头」）：卡的脚本里 `eventEmit` 只有
-     * `era:getCurrentVars` 与 `era:forceSync` 两处，其余名字一律不管 —— 白名单让恶意卡
-     * 无法用任意事件名驱动父页做别的事。
-     * @param {HTMLIFrameElement} frame
-     * @param {string} key
-     * @param {string} name
-     * @returns {void}
+     * 用户消息桥的每帧节流账本（`data-muv-kv` → 最近一次转发 ms）。
+     * 声明口径同 `muvHelloAt`（纯对象字面量，供逐字提取的门禁内联）。
+     * @type {Object<string, number>}
      */
-    function muvEraAnswer(frame, key, name) {
-      if (!frame) return
-      if (name !== 'era:getCurrentVars' && name !== 'era:forceSync') return
-      if (!muvEraAllowed(key)) return
-      var locator = muvEraLocator()
-      if (!locator) {
-        // 认不出会话也认不出预设 ⇒ 没有可信的来源，**如实回空对象**（不猜一张卡的变量塞给另一张）。
-        muvEraDeliver(frame, name, {})
-        return
-      }
-      muvEraWarm(locator)
-      if (muvEraVars.locator !== locator || muvEraVars.data == null) {
-        muvEraPending.push({ frame: frame, key: key, name: name })
-        while (muvEraPending.length > 64) muvEraPending.shift()
-        return
-      }
-      muvEraDeliver(frame, name, muvEraVars.data)
-    }
+    var muvUserSendAt = {}
+    /** 同帧两次「用户消息」转发的最小间隔（ms）。 */
+    var MUV_USERSEND_MIN_GAP = 800
 
     /**
-     * `__muvHello` 到达时的预热。
+     * 卡内**变量写 API** 的每帧节流账本（`data-muv-kv` → 最近一次落库 ms）。
      *
-     * 为什么**只预热、不顺手推一次 `era:queryResult`**：卡的 `eventOn('era:queryResult')` 是
-     * 在 `window.__homeInit` 里注册的（`DOMContentLoaded` 之后），而 hello 的应答几乎和它同时
-     * 到达 —— 谁先谁后不确定，早推的那一份**可能落在监听器注册之前**而被丢掉。既然卡自己在
-     * 1200ms 处会主动要一次（`setupERAListeners` 末尾的 `setTimeout`），就把「推」这件事只挂在
-     * 那次请求上；hello 只负责把数据**先取回来**。这样也有个副作用是对的：桥只有一个触发点
-     * （`__muvEventOut`），before/after 对照才能把桥**单独**关掉。
-     * @returns {void}
+     * 为什么要节流：`Mvu.replaceMvuData` / `TavernHelper.insertOrAssignVariables` 是卡**能主动
+     * 反复触发**的入口，每次都要写服务端 + 作废缓存 + 多档重推（三次取数 + 三次全帧 postMessage）。
+     * 沙箱卡 `setInterval(…,0)` 就能把父页与服务端一起打满。声明口径同 `muvHelloAt`。
+     * @type {Object<string, number>}
      */
-    function muvEraPrewarm() {
-      var locator = muvEraLocator()
-      if (locator) muvEraWarm(locator)
-    }
+    var muvVarWriteAt = {}
+    /** 同帧两次「变量落库」的最小间隔（ms）。 */
+    var MUV_VARWRITE_MIN_GAP = 200
+    /** 单次 `__muvVarWrite` 的 JSON 体积上限（字符）：恶意卡不能靠一个巨型树撑爆服务端。 */
+    var MUV_VARWRITE_MAX_BYTES = 524288
 
     /**
-     * 父页收到垫片的**报名**或 **KV 变更**后处理。协议（与 `muvCardCompatScript` 对齐）：
-     *   子 → 父：`{__muvHello:1}` / `{__muvKv:'set'|'remove'|'clear', k, v}`
-     *          / `{__muvEventOut:{name, detail}}`  ← ERA 请求（卡自己 emit 过的事件）
-     *          / `{__muvMvuReq:1}`                ← 卡的 `Mvu.getMvuData()` 首次调用
-     *          / `{__muvVarWrite:{data, replace}}` ← 卡的写 API（见 `muvVarWriteFromCard`）
-     *   父 → 子：`{__muvKvSeed, __muvVH, __muvChat:{list}}`
-     *          / `{__muvEvent:{name, detail}}`     ← ERA 应答 / `mag_variable_update_ended`
-     *
-     * 安全约束（跨源消息是最容易被拿来做手脚的入口，照 `onMuvFrameHeightMessage` 的口径）：
-     *  - `event.source` 必须**就是**某个 `iframe.muv-iframe` 的 contentWindow，否则丢弃
-     *    （不查 origin：沙箱是不透明来源，origin 恒为 `"null"`，拿它当凭据没有意义）；
-     *  - **命名空间不从消息里取**，而是从那个 iframe 元素的 `data-muv-kv` 属性取 ——
-     *    消息里的东西一律不可信，恶意卡不能借此写别的卡的 KV；
-     *  - 只接受字符串键/值，键 ≤ 160 字符、值 ≤ 256 KB、单卡 ≤ 400 条 / 2 MB 总量，
-     *    超限直接拒绝（防止恶意卡把父页内存撑爆）；
-     *  - 事件**转发**（`__muvEventOut`）只认两个白名单名字，名字必须是 ≤ 64 字符的字符串；
-     *    每帧窗口内最多回 8 次应答（否则卡能靠 `eventEmit` 循环把父页主线程打满）；
-     *  - 变量**写**（`__muvVarWrite`）与 MVU **读请求**（`__muvMvuReq`）都**每帧节流**
-     *    （`MUV_VARWRITE_MIN_GAP` / `MUV_MVUREQ_MIN_GAP`）：两者都会触发一次取数 +
-     *    全帧多档重推，不节流的话 `setInterval(…,0)` 就能把父页与服务端一起打满；
-     *  - 只做 KV 记账、快照回送、ERA/MVU 应答与"把卡送上来的树落库"，**不 eval、不插入内容、
-     *    不读卡内任何东西**；ERA 应答里的变量树是**宿主自己**从 muv-table 取回来的，
-     *    不是卡送上来的。
-     * @param {MessageEvent} ev
-     * @returns {void}
+     * `__muvMvuReq` 的每帧节流账本（`data-muv-kv` → 最近一次应答 ms）。
+     * 声明口径同 `muvHelloAt`。@type {Object<string, number>}
      */
-    function onMuvCardCompatMessage(ev) {
-      var data = ev && ev.data
-      if (!data || typeof data !== 'object') return
-      var isHello = data.__muvHello !== undefined
-      var isKv = typeof data.__muvKv === 'string'
-      var isEventOut = !!(data.__muvEventOut && typeof data.__muvEventOut === 'object')
-      var isUserSend = !!(data.__muvUserSend && typeof data.__muvUserSend === 'object')
-      var isMvuReq = data.__muvMvuReq !== undefined
-      var isVarWrite = !!(data.__muvVarWrite && typeof data.__muvVarWrite === 'object')
-      // ★ 首屏遮蔽的显形信号（第 0 段垫片发，只可能来自卡内；见 `ensureCardMask`）
-      var isReady = data.__muvReady !== undefined
-      if (!isHello && !isKv && !isEventOut && !isUserSend && !isMvuReq && !isVarWrite && !isReady) return
-      var frames
-      try { frames = document.querySelectorAll('iframe.muv-iframe') } catch (_) { return }
-      var frame = null
-      for (var i = 0; i < frames.length; i++) {
-        if (frames[i].contentWindow === ev.source) { frame = frames[i]; break }
-      }
-      if (!frame) return
-      // ★ 显形：**只**认"这个 source 确实就是我们的卡 iframe"，消息里没有任何可被伪造的
-      //   语义（它既不带键也不带值，唯一效果是把这张 iframe 的 opacity 放出来）。
-      if (isReady) { muvCardShow(frame); return }
-      var key = ''
-      try { key = String(frame.getAttribute('data-muv-kv') || '') } catch (_) { key = '' }
-      if (!key || key.length > MUV_KV_MAX_KEY) return
+    var muvMvuReqAt = {}
+    /** 同帧两次 MVU 数据回送的最小间隔（ms）。 */
+    var MUV_MVUREQ_MIN_GAP = 400
 
-      // ★ 用户消息桥（卡 → DSH 输入框）：每帧节流，防卡循环连发把输入框打爆。
-      if (isUserSend) {
-        var us = data.__muvUserSend
-        var txt = (us && typeof us.text === 'string') ? us.text : ''
-        if (!txt || txt.length > 20000) return
-        var nowU = Date.now()
-        var lastU = muvUserSendAt[key] || 0
-        if (lastU && (nowU - lastU) < MUV_USERSEND_MIN_GAP) return
-        muvUserSendAt[key] = nowU
-        muvDeliverUserText(txt, us.mode === 'fill' ? 'fill' : 'send')
-        return
-      }
-
-      // ★ MVU 数据请求（卡内 `Mvu.getMvuData()` 的首次调用）：节流 + 回送一帧。
-      //   与 `muvEraAnswer` 同一口径：认不出会话就**如实回空**（不猜一张卡的数据塞给另一张）。
-      if (isMvuReq) {
-        var nowM = Date.now()
-        var lastM = muvMvuReqAt[key] || 0
-        if (lastM && (nowM - lastM) < MUV_MVUREQ_MIN_GAP) return
-        muvMvuReqAt[key] = nowM
-        muvMvuReply(frame)
-        return
-      }
-
-      // ★ 变量写（卡的写 API）：节流 + 落库 + 作废缓存 + 多档重推（见 muvVarWriteFromCard）。
-      if (isVarWrite) {
-        var nowW = Date.now()
-        var lastW = muvVarWriteAt[key] || 0
-        if (lastW && (nowW - lastW) < MUV_VARWRITE_MIN_GAP) return
-        muvVarWriteAt[key] = nowW
-        muvVarWriteFromCard(frame, data.__muvVarWrite)
-        return
-      }
-
-      if (!key || key.length > MUV_KV_MAX_KEY) return
-      // ★ 会话栅栏 + LRU 触碰：真正落库的命名空间是 `<卡键>@<会话 id>`（见 muvKvKeyOf）。
-      //   这一步对所有 op 都做 —— 否则"只发 remove/clear 的帧"永远不进 LRU 账本，
-      //   那些命名空间会一直是 LRU 里的最冷项而被误淘汰。
-      var ns = muvKvTouch(key)
-
-      if (isHello) {
-        // ★ 每帧节流：见 muvHelloAt 的注释。首次（时间戳为 0）无条件放行。
-        //   键用**卡键**（不是 ns）：节流是"这个 iframe 太久没被回送过"，与会话无关。
-        var now = Date.now()
-        var lastAt = muvHelloAt[key] || 0
-        if (lastAt && (now - lastAt) < MUV_HELLO_MIN_GAP) return
-        muvHelloAt[key] = now
-        muvReplyToFrame(frame, key)
-        muvEraPrewarm()
-        return
-      }
-
-      if (isEventOut) {
-        var nm = data.__muvEventOut.name
-        if (typeof nm !== 'string' || !nm || nm.length > 64) return
-        muvEraAnswer(frame, key, nm)
-        return
-      }
-
-      var op = data.__muvKv
-      // 三个 op 落完内存都同步过一遍持久层（写通，不留异步窗口）：持久键 = 前缀 + ns，
-      // 会话栅栏原样带进持久层；失败（quota/隐私模式）退化为纯内存，不比修复前差。
-      if (op === 'clear') {
-        muvKv[ns] = {}
-        muvKvPersistRemove(ns)
-        return
-      }
-      if (op !== 'set' && op !== 'remove') return
-      var k = data.k === undefined ? '' : String(data.k)
-      if (!k || k.length > MUV_KV_MAX_KEY) return
-      if (!Object.prototype.hasOwnProperty.call(muvKv, ns)) muvKv[ns] = {}
-      var st = muvKv[ns]
-      if (op === 'remove') {
-        try { delete st[k] } catch (_) {}
-        muvKvPersistWrite(ns, st)
-        return
-      }
-      var v = data.v === undefined ? '' : String(data.v)
-      if (v.length > MUV_KV_MAX_VAL) return
-      var count = 0
-      var total = 0
-      for (var k2 in st) {
-        if (!Object.prototype.hasOwnProperty.call(st, k2)) continue
-        count++
-        total += String(st[k2]).length
-      }
-      var exists = Object.prototype.hasOwnProperty.call(st, k)
-      if (!exists && count >= MUV_KV_MAX_ITEMS) return
-      if (total - (exists ? String(st[k]).length : 0) + v.length > MUV_KV_MAX_TOTAL) return
-      try { st[k] = v } catch (_) {}
-      muvKvPersistWrite(ns, st)
-      // ★ 写入之后再过一次 LRU：命名空间**总数**原先无上限（键 = 内容散列 + 长度，
-      //   内容一变就是新键），页面级生命周期下会累积到几十 MB（brief P2）。
-      muvKvEvict()
-    }
+    /** 取数没回来就收到的 `__muvMvuReq`（帧），回来后用 `mag_variable_update_ended` 一起兑现。 */
+    var muvMvuPending = []
 
     /**
-     * 父页记账的**注入链缓存** —— P0-2「幂等守卫查子串」那一条的**根治手段**。
+     * 卡 → 宿主的「用户消息」落地：把文本写进 DSH 的聊天输入框。
      *
-     * 类是什么：三处注入（reset / compat / 高度引导）原先各自靠"在卡原文里查一个子串"判断
-     * 有没有注入过。卡的 HTML 里只要出现那个串（模型跑题、作者抄别家 shim、卡里内嵌文档），
-     * **整段脚本就被静默跳过** —— 卡的 `localStorage` / `getContext().chat` / 高度上报全塌，
-     * 没有任何日志。三处同形、同一种静默失效模式。
-     *
-     * 根治办法（brief P0-2 第 1 条）：**幂等状态放父页** —— 同一个 `raw` 只在这里组装一次
-     * 注入链，结果缓存进这个 `Map`；子文档只执行、不自我判断。这一改直接消掉整个类：
-     * 卡原文再也决定不了"要不要注入"。
-     *
-     * 键 = `muvCompatKey(raw)`（32 位散列 + 长度）。**故意不用 `raw` 本身当键**：真卡的围栏
-     * 正文一份就有 210KB，几十条消息就是几十 MB 的 Map。散列键只有十几字节，且与
-     * `data-muv-kv` 用的是同一个键函数（同一张卡在整条链上只有一个身份）。
-     * 故意**声明成纯对象字面量**（理由同 `muvEraVars`：逐字提取的门禁要能内联它）。
-     * @type {Object<string, string>}
+     * mode='fill' 只填不发送（主页卡的提示语是「已填入消息输入框，请检查后手动发送」，
+     * 卡自己会 toast 提示）；mode='send' 填入后再代发一次（多通道，见 `muvUserSendFire`
+     * 的取证结论与通道矩阵：① 真实 click 发送按钮 ② 完整 Enter 键盘序列）。
+     * 找输入框的优先级与 `exports.apply` 里 muv-choice-btn 的点击委托一致：宏钩子标记 →
+     * placeholder 关键词 → 兜底全量扫（可见、可写、rows≥2）。值必须走**原生 setter**
+     * （DSH 的输入框是受控组件）——这条填值路径已验证工作，**本函数不改动**。
+     * @param {string} text
+     * @param {'fill'|'send'} mode
+     * @returns {boolean} 是否找到了输入框并写入
      */
-    var muvInjectCache = {}
-    /** 注入链缓存的条目上限（LRU）。一张卡一份 srcdoc，几十条消息的卡也就是个位数。 */
-    var MUV_INJECT_MAX = 8
 
     /**
-     * 组装一条卡文档的完整注入链，**并在父页记账**。
+     * 用户消息桥 send 通道（多通道，逐级降级）。
      *
-     * 顺序（内层先跑，外层看到的是内层已改过的文档）：
-     *   `rewriteVhMinHeight(raw)` → `withCardCompat` → `withCardReset` → `withCardLibs`
-     *   → `withFrameHeightBootstrap` → **`withCardScripts`（最外层）**
-     * 理由见 `cardHtmlIframe` 的长注释。（`withCardLibs` 的落点是 head 末尾，
-     * 与 compat / reset 的 `<head>` 锚点不冲突，所以它排在哪一层都不改变位置。）
-     *
-     * ★ 缓存只在 `hostH` 相同时命中：`hostH` 会进 `min-height:<N>px` 与
-     *   `--TH-viewport-height`，窗口尺寸变了必须重算（否则卡被钉死在旧的视口高上）。
-     *   `hostH` 只是标识，真正的 vh 由 `rewriteVhMinHeight` 自己取（它不收形参）。
-     * @param {string} raw 注入前的卡文档
-     * @param {number} hostH 宿主视口高（缓存标识）
-     * @param {string} ck 卡键（`muvCompatKey(raw)`，调用方已经算过，省一次 O(n) 散列）
-     * @param {Array<{name?:string, id?:string, content?:string}>} [scripts] 卡的 enabled 脚本
-     * @returns {string} 注入后的完整文档
+     * ★ 取证结论（DSH web-frontend @deepseek-ai/dsh v0.1.5-rc.2，dist/assets/index-*.js +
+     *   vendor-*.js，只读未改本体）：
+     *  - DSH 聊天界面是 **React 应用**；发送绑定在「发送按钮」与「输入框 onKeyDown(Enter)」
+     *    两处（bundle 里有 `IconSendOutline` 发送图标按钮，onClick→发送、onKeyDown
+     *    Enter/Space→发送；输入框走 `e.key === "Enter"` 判据）。
+     *  - 全链路**没有任何 `e.isTrusted` 校验**（bundle 里出现的 `isTrusted:0` 是 React
+     *    SyntheticEvent 的默认字段，不是守卫）——所以合成事件可被接受。
+     *  - **没有任何暴露到 `window` 的可编程发送入口**（仅 `window.__ModuleLoader__` 内部
+     *    加载器，不是发送 API）——故「直接调全局函数」这条通道不可用。
+     *  - React 的 `getEventKey` 把 `keyCode 13 → "Enter"`，且合成 `KeyboardEvent` 的
+     *    `keyCode/which` 取构造参数；若处理器读 `keyCode/which`（非常常见），旧实现只带
+     *    `key:'Enter'`（keyCode/which=0）的合成事件会**静默落空**——这正是用户实测
+     *    「卡里提交后 DSH 没生成下文」的头号嫌疑。
+     *  ⇒ 加固为：① 真实 `click()` 发送按钮（最稳，直接调其发送回调，不吃事件形态）→
+     *    ② 输入框派发**完整键盘序列** keydown+keypress+keyup，keyCode/which/code 全带上。
+     *  ★ 铁律：**绝不清空输入框**——宁可消息留在框里让用户手动按一下，也不能吞字
+     *    （旧实现曾因只派一个 keydown 且没留痕，失败时连「字还在」都不可见）。每通道留痕
+     *    `console.info('[muv-engine] 用户消息桥：…')`，方便用户回报哪个通道命中。
+     * @param {HTMLTextAreaElement|null} ta 已填好值的输入框
      */
-    function muvInjectDoc(raw, hostH, ck, scripts) {
-      var key = String(ck || '') + '@' + String(hostH || 0) + '#' + muvCardScriptsSig(scripts)
+    function muvUserSendFire(ta) {
+      if (!ta) return
+      function log(s) { try { console.info('[muv-engine] 用户消息桥：' + s) } catch (_) {} }
+      // —— 通道①：发送按钮真实 click()（最可靠，绕过键盘事件形态差异）——
+      var btn = null
       try {
-        if (Object.prototype.hasOwnProperty.call(muvInjectCache, key)) return muvInjectCache[key]
+        // 从输入框向上爬父链（≤6 层），收集同容器内所有 button；优先「带 发送/Send/Submit
+        // 字样」的，否则回落到容器内最后一个可见且未禁用的 button（发送钮通常在输入框之后）。
+        var chain = ta, lastBtn = null
+        for (var i = 0; i < 6 && chain; i++) {
+          var cands = chain.querySelectorAll ? chain.querySelectorAll('button') : []
+          for (var j = 0; j < cands.length; j++) {
+            var b = cands[j]
+            if (!b || b.disabled || b.offsetParent === null) continue
+            lastBtn = b
+            var label = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '') + ' ' + (b.textContent || '')
+            if (/发送|send|submit/i.test(label)) { btn = b; break }
+          }
+          if (btn) break
+          chain = chain.parentElement
+        }
+        if (!btn && lastBtn) btn = lastBtn
       } catch (_) {}
-      // ★ `withCardScripts` 必须在**最外层**：它是往 `</body>` 里插东西的，放在里面的话
-      //   后面几层（含 bootstrap）再去数 `<script>` 区间时会把卡的脚本当成"卡自己的"，
-      //   让它们各自的落点判定跟着偏移。
-      var doc = withCardScripts(
-        withFrameHeightBootstrap(
-          withCardLibs(withCardReset(withCardCompat(rewriteVhMinHeight(raw), hostH), hostH))),
-        scripts)
-      // ★ 图片开销评估结论（2026-09-24，实测后**不改**）：
-      //   ① CDP 真机取证：切回会话时 iframe 内图片 **0 次网络重取**（memory cache
-      //      直接命中，连 fromDiskCache 事件都不产生）——"重新加载图片"在网络层
-      //      本来就不发生，懒加载没有收益；
-      //   ② 卡文档逐字节 parity 是 verify-visual 的硬契约（剥掉注入运行时后必须与
-      //      卡原文逐字相等，ST 保真度边界）——往卡文档里加 `loading="lazy"` 立刻
-      //      打红 14+ 项（实测）；
-      //   ③ iframe 内 lazy 与高度棘轮存在理论冲突（离屏图永不触发加载 ⇒ 高度卡死）。
-      //   ⇒ img/iframe lazy 都不启用，图片开销维持浏览器原生 memory cache 行为。
+      if (!btn) {
+        try {
+          var all = document.querySelectorAll('button')
+          for (var k = 0; k < all.length; k++) {
+            var x = all[k]
+            if (x && !x.disabled && x.offsetParent !== null && /发送|send|submit/i.test((x.getAttribute('aria-label') || '') + ' ' + (x.getAttribute('title') || '') + ' ' + (x.textContent || ''))) { btn = x; break }
+          }
+        } catch (_) {}
+      }
+      if (btn) {
+        try { btn.click(); log('通道① 发送按钮 click() 已触发（' + (btn.getAttribute('aria-label') || btn.textContent || 'button') + '）'); return } catch (e) { log('通道① 发送按钮 click() 异常：' + (e && e.message)) }
+      } else {
+        log('通道① 未找到发送按钮，跳过')
+      }
+      // —— 通道②：完整键盘序列（keydown+keypress+keyup，keyCode/which/code 全带）——
       try {
-        muvInjectCache[key] = doc
-        var names = []
-        for (var k in muvInjectCache) {
-          if (Object.prototype.hasOwnProperty.call(muvInjectCache, k)) names.push(k)
+        var opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true }
+        var seq = ['keydown', 'keypress', 'keyup']
+        for (var s = 0; s < seq.length; s++) {
+          var ev = new KeyboardEvent(seq[s], opts)
+          // 部分浏览器忽略构造参数里的 keyCode/which，强制补成 getter
+          try { Object.defineProperty(ev, 'keyCode', { get: function () { return 13 } }) } catch (_) {}
+          try { Object.defineProperty(ev, 'which', { get: function () { return 13 } }) } catch (_) {}
+          ta.dispatchEvent(ev)
         }
-        while (names.length > MUV_INJECT_MAX) {
-          var gone = names.shift()
-          if (gone === key) { names.push(gone); continue }
-          try { delete muvInjectCache[gone] } catch (_) {}
+        log('通道② 键盘序列 Enter(keydown+keypress+keyup, keyCode=13) 已派发')
+      } catch (e) {
+        log('通道② 键盘序列异常：' + (e && e.message) + '；回退最小 keydown')
+        try { ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true })); log('通道② 兜底 keydown 已派发') } catch (_) {}
+      }
+      // 注意：此处不 return —— 两个通道都试过，但**绝不**清空 ta.value（防吞字）。
+    }
+
+    function muvDeliverUserText(text, mode) {
+      var textarea = null
+      try {
+        textarea = document.querySelector('textarea[data-muv-macro-hooked]') ||
+          document.querySelector('textarea[placeholder*="消息"], textarea[placeholder*="Message"], textarea[placeholder*="输入"]')
+      } catch (_) { textarea = null }
+      if (!textarea) {
+        try {
+          var all = document.querySelectorAll('textarea')
+          for (var i = 0; i < all.length; i++) {
+            if (all[i].offsetParent !== null && !all[i].readOnly && all[i].rows >= 2) { textarea = all[i]; break }
+          }
+        } catch (_) { textarea = null }
+      }
+      if (!textarea) {
+        // ── contenteditable 输入框（DSH 真机取证 2026-09-25）：DSH WebUI 的聊天输入框
+        //    根本不是 `<textarea>` —— 会话视图全页 0 个 textarea，输入框是
+        //    `[contenteditable="true"]`（类名 uV2eYG_input，发送钮 aria-label「发送消息」）。
+        //    旧代码走到这里直接 `return false` 静默放弃 ⇒ 卡的「发送到酒馆」链路
+        //    （状态栏选项点击等）全部无声无息，且没有任何日志（bug：选项点击没反应）。
+        //    verify-user-send 门禁此前没抓到，因为夹具用的是假 textarea —— 与真实 DOM 不符。
+        //    fix：contenteditable 走 caret 移到末尾 + insertText **追加**（同一条铁律：
+        //    绝不清空输入框，宁可消息留在框里让用户手动按一下）。
+        var ce = null
+        try { ce = document.querySelector('[contenteditable="true"]') } catch (_) { ce = null }
+        if (ce && ce.getAttribute && ce.getAttribute('data-muv-inbox')) ce = null
+        if (!ce) {
+          try { console.info('[muv-engine] 用户消息桥：未找到输入框（textarea 与 contenteditable 均无），放弃投递') } catch (_) {}
+          return false
         }
-      } catch (_) {}
-      return doc
+        var vce = String(text == null ? '' : text)
+        var beforeLen = null
+        try { beforeLen = String(ce.textContent == null ? '' : ce.textContent).length } catch (_) { beforeLen = null }
+        // 记录插入期间有没有原生 input 事件（见下方合成 InputEvent 的前置判据）
+        var sawNativeInput = false
+        var _markNativeInput = function () { sawNativeInput = true }
+        try { ce.addEventListener('input', _markNativeInput, true) } catch (_) {}
+        var appended = false
+        try {
+          ce.focus()
+          var sel = window.getSelection()
+          var rg = document.createRange()
+          rg.selectNodeContents(ce)
+          rg.collapse(false)
+          sel.removeAllRanges()
+          sel.addRange(rg)
+          appended = document.execCommand('insertText', false, vce)
+        } catch (_) { appended = false }
+        // ★ 兜底判据看**文本到底长了没有**，不看 `execCommand` 的返回值。
+        //   真机 DSH（React 受控 contenteditable）上 execCommand 会「确实插入成功但返回 false」，
+        //   只按返回值走兜底 ⇒ 同一段文字被插两次。2026-09-26 真机取证（_probe-sbopt8.mjs）：
+        //   点一次状态栏行动选项后，选项原文在输入框里出现**两份**。
+        //   所以：能测量就以「长度是否增长」为准；只有确实没增长、且 execCommand 也没报成功，
+        //   才退到 appendChild。测量失败（拿不到 textContent）时才信 execCommand 的返回值。
+        var grew = false
+        if (beforeLen !== null) {
+          try { grew = String(ce.textContent == null ? '' : ce.textContent).length > beforeLen } catch (_) { grew = false }
+        }
+        if (!grew && !appended) {
+          // execCommand 不可用时的兜底：追加文本节点（textContent 赋值会整体替换，违反铁律，不用）
+          try {
+            ce.appendChild(document.createTextNode(vce))
+          } catch (_) {}
+        }
+        try { ce.removeEventListener('input', _markNativeInput, true) } catch (_) {}
+        // ★ 只在浏览器**没有**自己派发 input 事件时才补一个合成 InputEvent。
+        //   真机 DSH 的输入框是受控编辑器：`execCommand('insertText')` 本身就会触发原生 input，
+        //   宿主据此更新自己的模型；我们再补一个带 `data` 的合成 InputEvent，宿主会把它当成
+        //   「再插一次」的指令 ⇒ 同一段文字在框里出现两份（2026-09-26 真机取证）。原生事件
+        //   已经到过就不再补，只有真的没有任何 input 事件时才补（保证 React 感知兜底）。
+        if (!sawNativeInput) {
+          try { ce.dispatchEvent(new InputEvent('input', { bubbles: true, data: vce, inputType: 'insertText' })) } catch (_) {}
+        }
+        try { console.info('[muv-engine] 用户消息桥：contenteditable 输入框已追加文本（append，不清空原内容）') } catch (_) {}
+        if (mode === 'send') {
+          setTimeout(function () {
+            try { muvUserSendFire(ce) } catch (e) { try { console.info('[muv-engine] 用户消息桥：send 通道异常 ' + (e && e.message)) } catch (_) {} }
+          }, 60)
+        }
+        return true
+      }
+      var v = String(text == null ? '' : text)
+      try {
+        var proto = (typeof HTMLInputElement !== 'undefined' && textarea instanceof HTMLInputElement)
+          ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype
+        var setter = Object.getOwnPropertyDescriptor(proto, 'value').set
+        setter.call(textarea, v)
+      } catch (_) {
+        try { textarea.value = v } catch (_) { return false }
+      }
+      try { textarea.dispatchEvent(new Event('input', { bubbles: true })) } catch (_) {}
+      try { textarea.focus() } catch (_) {}
+      if (mode === 'send') {
+        // 多通道发送（见上方 muvUserSendFire 取证结论 + 通道矩阵）：① 真实 click 发送按钮
+        // ② 完整 Enter 键盘序列。填值路径（原生 setter + input 事件）已验证工作，不动。
+        // 延时 60ms 等 React 受控组件把 input 事件吃进 state、发送按钮解除 disabled。
+        setTimeout(function () {
+          try { muvUserSendFire(textarea) } catch (e) { try { console.info('[muv-engine] 用户消息桥：send 通道异常 ' + (e && e.message)) } catch (_) {} }
+        }, 60)
+      }
+      return true
     }
 
     /**
-     * 构造承载「卡自带整页 HTML」的 iframe —— 所有这类 iframe 的唯一出口。
+     * 卡文档 → 稳定的存储键。
      *
-     * 统一成一个出口的好处：沙箱常量只有一处（MUV_CARD_SANDBOX）、高度测量只有一处
-     * 注入点、默认尺寸只有一处。默认高度只在收到子文档报数之前生效；子文档没报数
-     * （脚本被卡里别的错误挡住等）就维持默认值，**不会比修之前更差**。
+     * 用**注入前**的原文（不是注入后的 srcdoc），所以后台改 CSS/加垫片都不会改键。
+     * 32 位散列配长度后缀；卡数量是个位数，碰撞概率可忽略，真撞了也只是两张卡共用一份
+     * KV（不是安全边界，只是缓存归并）。故意**不用除法**：这个函数会被回归测试逐字提取，
+     * 而提取器的词法扫描对 `/` 有额外判断（见 `rewriteVhMinHeight` 上方那段踩坑注释）。
      *
-     * ★ 默认高度 600px → 900px：真卡实测高度是 251 / 349 / 675 / 895 / 1636px，600px 明显偏矮，
-     *   用户看到的是"别人的窗口非常大，DSH 里又小又小"。900px 更接近常见卡的高度；收到
-     *   子文档报的内容包围盒就覆盖它（onMuvFrameHeightMessage），所以这只是兜底值。
-     *   故意**不设** max-height / max-width 上限。
-     *
-     * ★ 链的**顺序**是有讲究的（内层先跑，外层看到的是内层已改过的文档）：
-     *   `rewriteVhMinHeight` → `withCardCompat` → `withCardReset` → `withCardLibs`
-     *   → `withFrameHeightBootstrap` → `withCardScripts`
-     *  - vh 重写必须在最内层：它要**只**处理卡自己的 `min-height`，不碰我们注入的东西；
-     *  - compat 垫片要尽可能靠前（解析期就生效），且必须排在 reset 之前才能在
-     *    `<head>` 锚点上落在 reset 的 `<style>` 之后（两者都插在同一锚点，后跑的排前面）；
-     *  - 前端库（`withCardLibs`）插在 `</head>` 之前：仍在 body 之前（卡的脚本拿得到
-     *    `jQuery`/`Vue`，与 ST 一致），但排在 compat/reset **之后** ⇒ CDN 出问题时
-     *    不会连带推迟我们自己那两段；
-     *  - 高度引导脚本在前端库之后、卡脚本之前（它也是插在"最后一个 `</body>` 之前"，
-     *    早插会被后面的 head 注入打乱）；
-     *  - **卡的 TavernHelper 脚本在最外层**（`withCardScripts` 的一组
-     *    `<script type="module">`）：module 天生 defer ⇒ 执行一定排在 compat 垫片 /
-     *    reset / 前端库 / 引导这些**经典脚本之后**，位置不决定顺序，所以把它放在
-     *    文档最后（不影响前面任何一个锚点的搜索）。
-     * @param {string} html 卡自带的整页 HTML
+     * ⚠ 已知取舍（brief P2，**本轮不动**）：内容散列本来就不是"卡的身份" —— 同一张卡改一个字
+     *   就是新键，CG 缓存全丢；而旧键要等 LRU 淘汰。改成文件名/预设 id 需要 `cardHtmlIframe`
+     *   拿到卡身份，而它的入参只有 HTML 串（调用点 `cascadeStatusBlock` / `beautifyMuv` 都不
+     *   掌握卡名）⇒ 那是**另一个接口改动**，不是这里的 bug 修复。LRU（`muvKvEvict`）先把
+     *   "无界增长"这一半收掉。
+     * @param {string} html
      * @returns {string}
      */
-    function cardHtmlIframe(html) {
-      ensureFrameHeightListener()
-      ensureCardCompatListener()
-      ensureCardMask()
-      var raw = String(html == null ? '' : html)
-      // ★ 首屏遮蔽的判据（见 `ensureCardMask` 与宿主样式里那条注释）：文档**自带初始主题
-      //   属性**（`<body data-theme="night">` 这类）才有"先画默认主题、等卡初始化才换"的
-      //   错色期。没有这个属性的卡文档**照旧不遮蔽** —— 波及面刻意收窄到"真的会错色"的那一类。
-      var mask = /<(?:body|html)\b[^>]*\sdata-theme\s*=/i.test(raw) ? ' data-muv-mask="1"' : ''
-      var hostH = muvHostViewportHeight(0)
-      // ★ `rewriteVhMinHeight` 只收一个形参（注入前的卡文档）。这里原来多传了一个 `hostH`
-      //   —— 函数内是自取 `window.innerHeight` 的，多出来的实参被静默丢掉。功能无害，
-      //   但它**遮蔽了真实契约**（读调用点的人会以为 vh 是由调用方决定的）。删掉实参。
-      var doc = muvInjectDoc(raw, hostH, muvCompatKey(raw), muvCardScriptsNow())
-      // ★ 种子现算覆盖（见 muvKvSeedFill）：产物可能来自缓存（内存/上游持久），里面的
-      //   KV 种子是构建时的冻结快照 —— 出口上用当前账本（含持久层回捞）重算一遍，
-      //   卡的解析期同步读才能拿到跨刷新/跨会话的真实值，不靠 hello 回填的异步竞速。
-      doc = muvKvSeedFill(doc, muvCompatKey(raw))
-      return '<iframe class="muv-iframe" data-muv-kv="' + escAttr(muvCompatKey(raw)) + '"' + mask +
-        ' srcdoc="' + escAttr(doc) +
-        '" sandbox="' + MUV_CARD_SANDBOX +
-        '" style="display:block;width:100%;height:900px;border:none;border-radius:8px;background:transparent"></iframe>'
+    function muvCompatKey(html) {
+      var s = String(html == null ? '' : html)
+      var h = 0
+      for (var i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0
+      var hex = (h >>> 0).toString(16)
+      return 'k' + hex + '-' + s.length.toString(16)
     }
 
     /**
-     * 这张卡里有没有一条正则脚本会去消费 `<StatusPlaceHolderImpl/>`？
+     * 这个 iframe 的 KV 命名空间 = `data-muv-kv`（卡键）**带上会话栅栏**。
      *
-     * 判据刻意做得**很窄**（只有在 findRegex 里逐字出现 `StatusPlaceHolderImpl` 才算），
-     * 因为它决定我们要不要往每条消息尾部追加一个占位符 —— 猜错的代价是给一张不认这个
-     * 标记的卡塞进一段它渲染不出来的文本。
-     *
-     * 三种卡形态都要认：`{regexScripts:[…]}`（muv-table 的规范化产物，门禁夹具用的就是它）、
-     * 裸 chara_card_v3（`data.extensions.regex_scripts`）、以及顶层的 `regex_scripts`
-     * —— 与 `regex-engine.js:regexScriptsOf` 认的那三种保持一致，别只认一种。
-     * @param {object|null} cardJson
-     * @returns {boolean}
+     * `data-muv-kv` 属性仍旧只写卡键（它也是 `iframe` 的公开契约，门禁按它取快照），
+     * 会话栅栏在**父页内部**拼 —— 同一张卡在两个会话里各持一份互不可见的 KV。
+     * @param {string} key `data-muv-kv` 上那个卡键
+     * @returns {string}
      */
-    function cardWantsStatusPlaceholder(cardJson) {
+    function muvKvKeyOf(key) {
+      var k = String(key == null ? '' : key)
+      var sid = ''
+      try { sid = currentSessionId() } catch (_) { sid = '' }
+      // 认不出会话时**不加栅栏**（保持旧行为）：错加一个空栅栏会把"切会话"和"认不出会话"
+      // 混成同一件事。此时 `muvChatFence` 也认不出，两边一致。
+      return sid ? (k + '@' + sid) : k
+    }
+
+    /**
+     * 触碰一个 KV 命名空间（LRU 记账）。`onMuvCardCompatMessage` 认下帧之后**无条件**调一次。
+     * @param {string} key `data-muv-kv` 上那个卡键
+     * @returns {string} 真正落库用的命名空间键
+     */
+    function muvKvTouch(key) {
+      var ns = muvKvKeyOf(key)
+      try { muvKvAt[ns] = Date.now() } catch (_) {}
+      return ns
+    }
+
+    // ── KV 持久层（宿主 localStorage）────────────────────────────────────────
+    // 为什么必须有（2026-09-24，足控天堂暗色切换不保存实锤）：`muvKv` 是**页面级内存**，
+    // 硬刷新/关页就清零，`muvChatFence` 切会话还会把其他会话的命名空间从内存删掉 ——
+    // 于是「点暗色 → 立即生效，重进会话/硬刷新 → 变回默认」。真机取证（探针
+    // `_probe-zkt-theme.mjs`）：点击后卡内 `localStorage` 有 `zkt2-theme=day`，硬刷新后
+    // `keys=[]`、主题回 night；宿主 localStorage 里 `muvKv*` 键数 = 0（没有任何持久层）。
+    // ST 的卡为什么能存：ST 的卡 iframe **同源**，`localStorage` 是真·浏览器存储（持久、
+    // 同步、按 origin）。我们的沙箱是不透明来源，卡够不着 —— 所以持久化只能由**宿主**
+    // 做：宿主页是真 origin，它的 `localStorage` 同步可用，语义和 ST 卡里看到的对齐。
+    //
+    // 安全语义（不许 loosening）：
+    //  - 持久键 = `前缀 + muvKvKeyOf(key)`，会话栅栏**原样带进持久层** —— B 会话的命名
+    //    空间永远读不到 A 会话的持久副本，跨会话隔离不变；
+    //  - 持久键**不从 postMessage 里取**（同 `onMuvCardCompatMessage` 的口径），恶意卡
+    //    无法指定写哪个桶；
+    //  - localStorage 不可用（隐私模式等）时全部退化为现状的纯内存 —— 只差持久化，
+    //    不引入新失败模式。
+    //
+    // 实现约定：全部**同步**写（卡 setItem 返回即已落盘），读在种子/回捞时按需做；
+    // 不用正则字面量、不用除法（这些函数会被门禁逐字提取，提取器对 `/` 有额外判断）。
+    var MUV_KV_PERSIST_PREFIX = 'muvKvP:'
+
+    /** 宿主 localStorage，不可用返回 null（调用方一律走 try/catch + null 分支）。 */
+    function muvKvPersistLs() {
       try {
-        if (!cardJson || typeof cardJson !== 'object') return false
-        var list = cardJson.regexScripts
-        if (!list && cardJson.data && cardJson.data.extensions) list = cardJson.data.extensions.regex_scripts
-        if (!list) list = cardJson.regex_scripts
-        if (!list || !list.length) return false
-        for (var i = 0; i < list.length; i++) {
-          var s = list[i]
-          if (!s || s.disabled) continue
-          if (String(s.findRegex || '').indexOf('StatusPlaceHolderImpl') >= 0) return true
+        if (typeof window === 'undefined' || !window) return null
+        var ls = window.localStorage
+        if (!ls) return null
+        ls.setItem(MUV_KV_PERSIST_PREFIX + '__probe', '1')
+        ls.removeItem(MUV_KV_PERSIST_PREFIX + '__probe')
+        return ls
+      } catch (_) { return null }
+    }
+
+    /** 读一个命名空间的持久副本；没有/坏了/超限返回 null（调用方按"没存过"处理）。 */
+    function muvKvPersistRead(ns) {
+      var ls = muvKvPersistLs()
+      if (!ls) return null
+      var s = null
+      try { s = ls.getItem(MUV_KV_PERSIST_PREFIX + ns) } catch (_) { return null }
+      if (typeof s !== 'string' || !s) return null
+      var v = null
+      try { v = JSON.parse(s) } catch (_) { return null }
+      if (!v || typeof v !== 'object') return null
+      // 逐键重建：值必须是 string、条数/单值上限与写入侧同口径 —— 持久层里躺的是
+      // JSON，不信任它的形状（同源脚本可写 localStorage，别给伪造数据开直通车）。
+      var out = {}
+      var n = 0
+      for (var k in v) {
+        if (!Object.prototype.hasOwnProperty.call(v, k)) continue
+        if (typeof v[k] !== 'string') continue
+        if (v[k].length > MUV_KV_MAX_VAL) return null
+        n++
+        if (n > MUV_KV_MAX_ITEMS) return null
+        try { out[k] = v[k] } catch (_) { return null }
+      }
+      return out
+    }
+
+    /**
+     * 全量覆写一个命名空间的持久副本。quota 失败时回收**最旧的**持久键（不碰当前这个、
+     * 不碰非 `muvKvP:` 的键）重试一次，仍失败就放弃 —— 持久化尽力而为，失败退化为内存。
+     * @returns {boolean} 是否写入成功
+     */
+    function muvKvPersistWrite(ns, st) {
+      var ls = muvKvPersistLs()
+      if (!ls) return false
+      var s = ''
+      try { s = JSON.stringify(st) } catch (_) { return false }
+      try { ls.setItem(MUV_KV_PERSIST_PREFIX + ns, s); return true } catch (_) {}
+      try {
+        var old = []
+        for (var i = 0; i < ls.length; i++) {
+          var kk = ls.key(i)
+          if (kk && kk.indexOf(MUV_KV_PERSIST_PREFIX) === 0 && kk !== MUV_KV_PERSIST_PREFIX + ns) old.push(kk)
+        }
+        old.sort(function (a, b) {
+          var ta = muvKvAt[a.slice(MUV_KV_PERSIST_PREFIX.length)] || 0
+          var tb = muvKvAt[b.slice(MUV_KV_PERSIST_PREFIX.length)] || 0
+          return ta - tb
+        })
+        for (var j = 0; j < old.length; j++) {
+          try { ls.removeItem(old[j]) } catch (_) {}
+          try { ls.setItem(MUV_KV_PERSIST_PREFIX + ns, s); return true } catch (_) {}
         }
       } catch (_) {}
       return false
     }
 
-    /**
-     * ★★ 补齐 `<StatusPlaceHolderImpl/>` —— 这一条救回的是整张卡的 ERA 状态栏。
-     *
-     * 为什么必须有：占位符**不是**模型写的，也不是预设/世界书里的任何一句要求的。
-     * `card.json` 的 `tavern_helper.scripts[0]`（名为 `ERA变量框架1.4.11`）的 data 里写着
-     * `"在ai消息尾部生成特殊符号": true, "特殊符号值": "<StatusPlaceHolderImpl/>"` ——
-     * **是那个 148 KB 的酒馆助手脚本往每条 AI 消息尾部追加它**。
-     * DSH 没有酒馆助手执行器，所以：
-     *   · 卡的正则 `[2]「ERA 状态栏」`（`findRegex = /<StatusPlaceHolderImpl\/>/gsi`，
-     *     210,219 字符，全卡最大的脚本）**永远没有可命中的目标**；
-     *   · 而它产出的正是 210 KB 的 ERA 状态栏页面（资源条 8 个 chip / CG 画廊 / 城市地图 /
-     *     选项区 / 数值）。
-     * 实测全文扫描：`<StatusPlaceHolderImpl/>` 在预设 0 次、世界书 0 次、开场白 0 次，
-     * 只出现在两处 —— 本条正则的 findRegex，和那个酒馆助手脚本的 data 里。
-     * ⇒ 不补它，那张状态栏在 DSH 里**永无可能出现**。
-     *
-     * 补法：把占位符追加在**消息尾部**（与酒馆助手的语义一致：「在ai消息尾部生成特殊符号」）。
-     * 位置正确很重要 —— `applyDecoratedHtml` 的 ② 分支就是按「占位符在正文末尾」来放
-     * 状态栏的。
-     *
-     * 幂等 + 保守：正文里已经有占位符就不再追加（模型的某轮可能自己写了）；
-     * 卡不认这个标记就一个字符都不加。
-     * @param {string} text
-     * @param {object|null} cardJson
-     * @returns {string}
-     */
-    function withStatusPlaceholder(text, cardJson) {
+    /** 删一个命名空间的持久副本（`clear` 用；LRU/fence **不删**持久层 —— 见 muvKvEnsure）。 */
+    function muvKvPersistRemove(ns) {
       try {
-        if (!text) return text
-        if (STATUS_PH_TEST.test(text)) return text
-        if (!cardWantsStatusPlaceholder(cardJson)) return text
-        // 追加而不是替换：`beautifyMuv` 的原文是 `body.innerText`，尾部很可能就是
-        // `</content>` 这样的信封收尾。另起一行放占位符，卡的正则 `[2]` 才有一个
-        // 干净的落点（它把整个占位符换成 ```` ``` ```` + 整页文档）。
-        return String(text).replace(/\s+$/, '') + '\n' + STATUS_PH_TEXT
-      } catch (_) {
-        return text
-      }
-    }
-
-    /**
-     * 本卡在**本次装饰**里处于第几层（SillyTavern 的 `depth` 口径）。
-     *
-     * 口径与 ST 一致 —— **最新一条是 0，越旧越大**。卡侧脚本
-     * `[8]「自动总结，隐藏6楼以上除摘要外内容」` 的 `minDepth = 7` 就是按这个口径写的
-     * （`regex-engine.js` 的 `depthAllows` 直接比大小）。
-     *
-     * ★ 这个换算**必须**在能看到 DOM 消息列表的地方做（`_decorateOne` 就在那个作用域里），
-     *   所以函数体在那边、接受的是已经算好的「本条之后还有几条」。
-     *   第一版把整件事放在工厂作用域并 `typeof messageTargets === 'function'` 兜底 ——
-     *   那个名字在工厂作用域里**永远**不是函数，于是恒定返回 0、看起来"接上了"其实没接上。
-     * @param {number} laterCount 页面上排在本条**之后**的消息条数
-     * @returns {number}
-     */
-    function muvDepthFromLaterCount(laterCount) {
-      var n = typeof laterCount === 'number' && isFinite(laterCount) && laterCount > 0 ? Math.floor(laterCount) : 0
-      return n
-    }
-
-    /**
-     * 这条消息是不是**已经有**状态栏了？（占位符 / 卡自带皮肤 / `<Status_block>` 三条路）
-     *
-     * 文本级兜底的**优先级判据**：上面三条任一命中，兜底一个字符都不动
-     * ——「占位符路径优先，既有行为不变」这条要求就落在这里。
-     * @param {string} text 已经过占位符/`<Status_block>` 处理的文本
-     * @param {string} sbHtml 卡自带的状态栏 HTML（`d.statusBarHtml`），没有就是空
-     * @returns {boolean}
-     */
-    function muvStatusAlreadyRendered(text, sbHtml) {
-      var s = String(text == null ? '' : text)
-      return !!sbHtml
-        || STATUS_PH_TEST.test(s)
-        || s.indexOf('class="muv-statusbar-wrap"') >= 0
-        || /<\s*Status_block\s*>/i.test(s)
-    }
-
-    /**
-     * 把「状态折叠块」的正文交给服务端既有的 loose 级联渲染。
-     *
-     * 为什么不在这里自己解析：`<details><summary>[角色状态]</summary>```- 😃 名字…```</details>`
-     * 那套形状（去围栏/去标签/section/角色块/字段行）已经在 `lib/status-cascade.js` 的
-     * loose 级里实现过一整个版本（含一串踩过的坑）——重写一份必然分叉。所以只把判定过的
-     * **块体**发给 `/api/muv-engine/render-status` 的新 `body` 入口（不经过
-     * `extractStatusBody`，因为这里没有 `<Status_block>` 包裹）。
-     * 服务端不可达时返回 ''（此时**不动**原文：宁可留着裸块，也不许把内容删掉）。
-     * @param {string} body
-     * @returns {Promise<string>} 渲染出的 HTML，'' 表示没渲染出来
-     */
-    async function muvRenderLooseStatusBody(body) {
-      try {
-        const r = await fetch('/api/muv-engine/render-status', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ body: body })
-        })
-        const d = await r.json()
-        return d && d.ok && d.html ? String(d.html) : ''
-      } catch (_) { return '' }
-    }
-
-    /**
-     * 文本级状态栏兜底：把消息开头/正文里的裸元信息渲染成状态栏，并把原文段**移除**。
-     *
-     * 两件都要成立才会改文本：判据命中（`muvTextStatusProbe` / `muvTextDetailsOf`）
-     * **并且**渲染成功。任何一步不算数就原样返回 —— 调用方（`_decorateOne`）见到
-     * `html === raw` 就不动 DOM，所以「没救回来」的代价只是维持现状，不会更差。
-     *
-     * ★ 替换串铁律：这里两处大段拼接（状态栏容器）一律用**函数式替换**，见
-     *   `muvFrameBlock` 的长注释（`$&` / `$'` / `` $` `` 会被字符串替换解析掉）。
-     * @param {string} text
-     * @param {boolean} already 已经有状态栏了（`muvStatusAlreadyRendered` 的结论）
-     * @returns {Promise<string>}
-     */
-    async function muvApplyTextStatus(text, already) {
-      if (!muvTextStatusOn() || already) return text
-      var out = String(text)
-      var probe = muvTextStatusProbe(out)
-      var details = muvTextDetailsOf(out)
-      if (!probe.prefix && !details) return text
-      var changed = false
-
-      if (probe.prefix) {
-        var inner = muvTextStatusPrefixHtml(probe.prefix)
-        if (inner) {
-          var wrap = muvTextStatusWrap('prefix', probe.prefix.raw, '', inner)
-          // ★ 函数式替换（铁律）：wrap 里是拼出来的 HTML，字符串替换会把 `$&` 吃掉
-          var next = out.replace(probe.prefix.raw, function () { return wrap })
-          if (next !== out) { out = next; changed = true }
-        }
-      }
-
-      if (details) {
-        var bodyHtml = await muvRenderLooseStatusBody(details.body)
-        if (bodyHtml) {
-          // 作者本来就用 `<details>` 折起来 ⇒ 还原成**折叠 UI**（默认收起），
-          // 内容是 loose 级的产物。summary 用的是块上原有的标签。
-          var innerHtml = '<details class="muv-sb-details"><summary>' + escHtml(details.label)
-            + '</summary>' + bodyHtml + '</details>'
-          var wrap2 = muvTextStatusWrap('details', details.raw, details.look, innerHtml)
-          var next2 = out.replace(details.raw, function () { return wrap2 })
-          if (next2 !== out) { out = next2; changed = true }
-        }
-      }
-
-      if (!changed) return text
-      try { ensureStatusCss() } catch (_) {}
-      return out
-    }
-
-    // ── 装饰产物内存缓存（2026-09-24，「切回会话秒开」）─────────────────────
-    //
-    // 取证（真机 CDP，`C:\deepseek harness\_probe-session-cache.mjs`）：切走→切回同一
-    // 会话，每条楼都重跑 beautifyMuv 全链 —— 每次切回 2~3 次 `/apply-regex-card`
-    // 服务端往返，首楼装饰 ~234ms。而产物其实是**纯函数**：给定（正文、depth、
-    // fullpage 旗标、卡），输出恒定 —— 服务端 `/apply-regex-card` 与 `/render-status`
-    // 都不读会话变量状态（见 lib/index.js 两个 handler）；变量更新走 era push
-    // （postMessage 推给**在线** iframe 的运行时通路），与"重装饰"无关。
-    //
-    // **缓存边界（2026-09-25 放宽）**：带 `iframe.muv-iframe` 的楼**与**带
-    // `.muv-statusbar-wrap` 的状态栏楼，都缓存。
-    //
-    // 为什么放宽（用户实测反馈：「点会话再切回去，状态栏要重新渲染」）：原边界把
-    // 内置 `.muv-sb` 与文本级状态栏楼排除在外，理由是"数值当场从消息文本解析、
-    // 缓存也省不了几毫秒"。但用户感知到的不是解析耗时，而是**切回来那段异步空窗** ——
-    // 取卡 + 服务端往返要 ~234ms，这期间该楼处于未装饰态，看起来就是"闪一下重渲染"。
-    // 缓存命中后这条路不再 await，同步交回产物，空窗消失。
-    //
-    // 为什么不冻变量：产物是**纯函数**（见上：两个 handler 都不读会话变量状态），
-    // 且键里现在带 `|v<rev>` 变量修订号 —— 任何真实变量变更都会 `muvVarRevBump()`
-    // 一次，把带变量的产物全部作废。见 `muvVarRev` 的长注释。
-    var muvDecorCache = {}
-    var muvDecorCacheAt = {}
-    /**
-     * 条目上限 / 单条体积上限 / **总字节上限**（2026-09-25 实测修正）。
-     *
-     * 为什么加总字节上限并把条数从 32 提到 512：真机实测（`_scratch\live-cache-count.mjs`，
-     * 逐行切走→切回数 `/apply-regex-card`）发现**命中的全是最后访问的三个会话，更早访问的全会
-     * 重装饰**（miss 23 / 41 / 3 次）—— 典型 LRU 被冲空。而 `32` 这个总条目上限实在太小：
-     * **一个长会话（实测 24 个产物楼）就能吃掉大半**，走三四个会话就全被挤掉，
-     * "切回秒开"于是只在最近几个会话上成立。
-     *
-     * 现在改成**双限界**：条数 ≤ 512 且总字节 ≤ 48MB。按条目是字符串、实测单条多为
-     * 几十 KB（农场 srcdoc ≈ 52KB、苍玄界封面 ≈ 119KB），48MB 足以装下十几个长会话；
-     * 真到上限时仍按 LRU 淘汰，内存不会被撑爆。
-     */
-    var MUV_DECOR_MAX = 512
-    var MUV_DECOR_ENTRY_MAX = 320 * 1024
-    var MUV_DECOR_TOTAL_MAX = 48 * 1024 * 1024
-    /** 当前缓存总字节（随写入/命中/淘汰维护；崩溃也不致命，只影响淘汰时机）。 */
-    var muvDecorBytes = 0
-
-    /**
-     * **变量状态修订号**（2026-09-25，"状态栏楼也能缓存"的安全性凭据）。
-     *
-     * 为什么需要：产物缓存键原先只含（会话、正文、depth、fullpage）—— 那是"产物是纯
-     * 函数"这个前提的直接翻译。放宽到缓存状态栏楼之后，必须再加一道**变量维度**的保险：
-     * 一旦真的有变量变更，带变量的产物要立刻作废，而不是等正文变化才自然失效。
-     *
-     * 挂在**真正的变更点**上（两处，都紧挨既有的 era 失效信号）：
-     *   ① `muvFeedVariables` POST `/extract` 成功 ⇒ 服务端 merge 进新变量；
-     *   ② 卡写变量 API POST `/state` 成功（`__muvVarWrite` 落地）。
-     * **故意不挂**在 `muvEraVars.data = null` 的第三处（约 L4445）：那是 TTL 过期重取，
-     * 数据可能一模一样 —— 挂上去只会让切回会话白白丢缓存。
-     *
-     * 计数而非时间戳：键要短、要稳定（同一状态同一键），时间戳会让每次读取都 miss。
-     *
-     * ★★ **必须按会话分开记**（2026-09-25 自查修正）：
-     *   第一版写成"全局单计数 + 切会话归零"，那是**错的**：A 会话的产物以 `v5` 存进缓存，
-     *   切到 B 时归零，切回 A 时键变 `v0` ⇒ **A 的缓存全部 miss** ⇒ 恰好把"切回秒开"
-     *   毁掉 —— 而切回秒开正是本缓存的立身之本。所以改成 `sid → rev` 的映射：
-     *   每个会话各自单调递增，切走切回**数值不变** ⇒ 键稳定 ⇒ 命中。
-     * @type {Object<string, number>}
-     */
-    var muvVarRevBySid = Object.create(null)
-
-    /**
-     * 取某会话的变量修订号（读不到会话 id 时退回 0 —— 与"键里必须带 sid"同一口径，
-     * 认不出会话的产物本来就不进缓存，见 `muvDecorKeyOf`）。
-     * @param {string} sid
-     * @returns {number}
-     */
-    function muvVarRevOf(sid) {
-      try { return (sid && muvVarRevBySid[sid]) || 0 } catch (_) { return 0 }
-    }
-
-    /** 记一次真实的变量变更（只影响**当前会话**，见 `muvVarRevBySid` 的长注释）。 */
-    function muvVarRevBump() {
-      try {
-        var sid = ''
-        try { sid = currentSessionId() } catch (_) { sid = '' }
-        if (!sid) return
-        muvVarRevBySid[sid] = ((muvVarRevBySid[sid] || 0) + 1) % 1000000007
-        // 有界：会话数超过 64 就丢掉最旧的一批（映射键就是会话 id，不会与产物缓存互相影响）
-        var ks = Object.keys(muvVarRevBySid)
-        if (ks.length > 64) { for (var i = 0; i < 16; i++) delete muvVarRevBySid[ks[i]] }
+        var ls = muvKvPersistLs()
+        if (ls) ls.removeItem(MUV_KV_PERSIST_PREFIX + ns)
       } catch (_) {}
     }
 
     /**
-     * 缓存键：会话 id + 正文键（与 `data-muv-kv` 同一个 `muvCompatKey` 散列）+
-     * depth + fullpage 旗标。depth/fullpage 进键是因为它们**真实改变产物**
-     * （`maxDepth/minDepth` 正则由 depth 决定；`muv-fullpage` 破格类由楼位旗标决定）。
+     * 内存 miss 时从持久层回捞一个命名空间（灌回内存 + LRU 记账）。
      *
-     * ★ fullpage **必须**进键（2026-09-25 恢复）：build k 曾去掉它，理由是"打标已写
-     *   在产物字符串里、缓存命中天然带标"—— 那句话**只在"打标与楼位无关"的前提下
-     *   自洽**。恢复楼位判据后，同一份 `text` 在封面楼与后续楼要产出**不同**的产物
-     *   字符串，键里不带 `|fp` 就会互相命中（封面楼的满宽产物被后续楼复用，或反之）。
-     *   详见 `muvFullpageFloor` 的长注释。
-     *
-     * ★ **变量修订号 `|v<n>` 也进键**（2026-09-25）：缓存边界从"只缓存 iframe 楼"
-     *   放宽到"也缓存状态栏楼"（用户实测反馈：切回会话状态栏要重新渲染）。产物虽是
-     *   纯函数，但状态栏的**观感**依赖变量，所以键里带一道变量维度保险 ——
-     *   任何真实变量变更都会 `muvVarRevBump()`，把带变量的产物一次作废。
-     *   同会话内数值不变 ⇒ 切走切回仍是同一键 ⇒ 命中（这正是要的秒开）。
-     *
-     * ★ 会话 id 只认**权威**来源（会话服务 / URL）：`currentSessionId()` 的第三档
-     *   DOM 属性兜底在切换瞬间是**旧会话**的值，拿它当键会把 A 会话的产物错记到
-     *   B 会话头上。认不出权威会话 ⇒ 返回 null ⇒ 本楼不缓存（与旧行为完全一致）。
-     * @param {string} text 装饰输入原文
-     * @param {number} depth 本次装饰的层号
-     * @returns {string|null}
+     * 回捞面覆盖两类丢失：① 硬刷新后整张 `muvKv` 清零；② `muvChatFence` 切会话时把
+     * 其他会话的命名空间从内存删掉（那只是**内存**清理，切回来时在这里原样捞回）。
+     * 捞回的对象来自持久层，条数/单值上限已在 `muvKvPersistRead` 里核过。
+     * @param {string} ns `muvKvKeyOf` 产出的命名空间键
+     * @returns {void}
      */
-    function muvDecorKeyOf(text, depth) {
+    function muvKvEnsure(ns) {
+      if (typeof muvKv !== 'object' || !muvKv) return
+      if (Object.prototype.hasOwnProperty.call(muvKv, ns)) return
+      var v = muvKvPersistRead(ns)
+      if (!v) return
+      try { muvKv[ns] = v } catch (_) { return }
+      try { if (!muvKvAt[ns]) muvKvAt[ns] = Date.now() } catch (_) {}
+    }
+
+    /**
+     * LRU 淘汰：命名空间数 ≤ 16、全部命名空间的字符总量 ≤ 8MB（brief P2）。
+     *
+     * 淘汰自记的"最久未触碰"。**先按数量再按总量**：数量是主约束（键数才会爆炸），
+     * 总量是防单键吃满 2MB 时的兜底。账本（`muvKvAt`）可能与 `muvKv` 不同步
+     * （比如被测试直接塞过），所以两个方向都扫一遍，孤儿一起清掉。
+     * @returns {number} 淘汰掉的命名空间数
+     */
+    function muvKvEvict() {
+      var dropped = 0
       try {
-        var sid = ''
-        var svc = window.__DSH_TAVERN_SESSIONS__
-        if (svc && svc.list && typeof svc.list.getSnapshot === 'function') {
-          var snap = svc.list.getSnapshot()
-          var cur = snap && snap.current
-          if (cur && /^(session-)?[a-f0-9-]{20,}$/i.test(String(cur))) {
-            sid = 'session-' + String(cur).replace(/^session-/, '')
+        var names = []
+        for (var k in muvKv) {
+          if (Object.prototype.hasOwnProperty.call(muvKv, k)) names.push(k)
+        }
+        if (!names.length) return 0
+        var total = 0
+        for (var i = 0; i < names.length; i++) {
+          var st = muvKv[names[i]]
+          for (var kk in st) {
+            if (Object.prototype.hasOwnProperty.call(st, kk)) total += String(st[kk]).length
           }
         }
-        if (!sid) {
-          var m = location.href.match(/session[/=:-]([a-f0-9-]{20,})/i)
-          if (m && m[1]) sid = 'session-' + m[1].replace(/^session-/, '')
+        if (names.length <= MUV_KV_MAX_NS && total <= MUV_KV_MAX_NS_TOTAL) return 0
+        names.sort(function (a, b) { return (muvKvAt[a] || 0) - (muvKvAt[b] || 0) })
+        for (var j = 0; j < names.length; j++) {
+          if (names.length - dropped <= MUV_KV_MAX_NS) break
+          var gone = names[j]
+          var sz = 0
+          for (var k3 in muvKv[gone]) {
+            if (Object.prototype.hasOwnProperty.call(muvKv[gone], k3)) sz += String(muvKv[gone][k3]).length
+          }
+          try { delete muvKv[gone] } catch (_) {}
+          try { delete muvKvAt[gone] } catch (_) {}
+          total -= sz
+          dropped++
         }
-        if (!sid) return null
-        var fp = false
-        try { fp = muvFullpageFloorNow() === true } catch (_) {}
-        var vr = 0
-        try { vr = muvVarRevOf(sid) } catch (_) {}
-        var d = (typeof depth === 'number' && isFinite(depth)) ? depth : 0
-        return sid + '|' + muvCompatKey(text) + '|d' + d + (fp ? '|fp' : '') + '|v' + vr
-      } catch (_) { return null }
-    }
-
-    function muvDecorCacheGet(key) {
-      try {
-        if (Object.prototype.hasOwnProperty.call(muvDecorCache, key)) {
-          muvDecorCacheAt[key] = Date.now()
-          return muvDecorCache[key]
+        // 数量已够，但总量仍超：继续按 LRU 丢，直到落到 8MB 以下（至少留 1 个）。
+        var idx = 0
+        while (total > MUV_KV_MAX_NS_TOTAL && idx < names.length) {
+          var n2 = names[idx]
+          idx++
+          if (!Object.prototype.hasOwnProperty.call(muvKv, n2)) continue
+          if ((names.length - dropped) <= 1) break
+          var sz2 = 0
+          for (var k4 in muvKv[n2]) {
+            if (Object.prototype.hasOwnProperty.call(muvKv[n2], k4)) sz2 += String(muvKv[n2][k4]).length
+          }
+          try { delete muvKv[n2] } catch (_) {}
+          try { delete muvKvAt[n2] } catch (_) {}
+          total -= sz2
+          dropped++
         }
       } catch (_) {}
-      return null
+      return dropped
     }
+
+    /**
+     * 会话栅栏 + 不可达 KV 的清理。`muvPushChatLog` / `muvReplyToFrame` 每次入口调一次。
+     *
+     * 会话 id 一变：chat 缓冲整条作废（核心隔离，见 `muvChatLog` 的注释），并且把 KV 里
+     * **属于别的会话**的命名空间删掉 —— 那是上一次会话留下的、本会话永远不会命中的键。
+     * 认不出会话 id 时**不清**（宁可留着也不误删当前会话的缓存）。
+     *
+     * ★ 只删**内存**（`muvKv`），不碰持久层（`muvKvP:` 那份）：删掉的命名空间切回来时由
+     *   `muvKvEnsure` 从持久层原样捞回 —— 足控天堂「切走再切回主题保持」靠的就是这条。
+     *   持久层键自带会话栅栏（`<卡键>@<会话 id>`），留在那里不会跨会话串数据。
+     * @returns {string} 当前会话 id（认不出为空串）
+     */
+    function muvChatFence() {
+      var sid = ''
+      try { sid = currentSessionId() } catch (_) { sid = '' }
+      if (sid && sid !== muvChatSession) {
+        muvChatSession = sid
+        muvChatLog = []
+        // ★ 变量修订号**故意不在这里归零**（2026-09-25 自查修正）：修订号是按会话分开记的
+        //   （`muvVarRevBySid`），在这里归零会把**上一个会话**的产物缓存全部变成 miss，
+        //   恰好毁掉"切回秒开"。有界性由 `muvVarRevBump` 里按会话数淘汰负责。
+        try {
+          var suffix = '@' + sid
+          for (var k in muvKv) {
+            if (!Object.prototype.hasOwnProperty.call(muvKv, k)) continue
+            if (k.slice(-suffix.length) === suffix) continue
+            try { delete muvKv[k] } catch (_) {}
+            try { delete muvKvAt[k] } catch (_) {}
+          }
+        } catch (_) {}
+      }
+      return sid
+    }
+
+    /**
+     * 安全地把值嵌进内联 `<script>` 的 JSON 字面量。
+     *
+     * 卡的消息文本是**不可信输入**（模型/卡作者写的），里面完全可能有 `</script>`：
+     * 那样会当场把内联脚本截断、整个垫片报废（`renderMediaTags` 踩过同一类坑）。
+     * 所以转义 `<`（以及 U+2028/U+2029，它们在 JS 字符串字面量里是非法换行）。
+     * 故意不用正则字面量：`verify-shared.mjs` 的提取器按「`/` 在代码位置就是正则开头」
+     * 处理，少一个正则就少一处误判。
+     * @param {*} v
+     * @returns {string}
+     */
+    function muvJsonSafe(v) {
+      var s = ''
+      try { s = JSON.stringify(v) } catch (_) { s = '' }
+      if (typeof s !== 'string' || !s) s = 'null'
+      s = s.split('<').join('\\u003c')
+      s = s.split('\u2028').join('\\u2028')
+      s = s.split('\u2029').join('\\u2029')
+      return s
+    }
+
+    /**
+     * 本次注入要带给垫片的**初始状态**（KV 快照 + 宿主视口高）。
+     *
+     * 走静态注入而不是"先跑起来再问宿主"：卡的首屏就在同步读 `localStorage`
+     * （`var cgGalleryState=(function(){try{var s=localStorage.getItem("ft2_cg_state")…`），
+     * 异步回填会慢一拍、首屏用错值。
+     * @param {string} key `data-muv-kv` 上那个卡键
+     * @param {number} vh
+     * @returns {string}
+     */
+    function muvCardCompatSeed(key, vh) {
+      var kv = {}
+      var st = null
+      try {
+        var ns = muvKvKeyOf(key)
+        // 内存 miss 先回捞持久层：硬刷新/切会话回来时，种子里的就是持久化的那份
+        // （这一步是同步的 —— 卡首屏解析期就读 localStorage，异步回填来不及）。
+        try { muvKvEnsure(ns) } catch (_) {}
+        if (typeof muvKv === 'object' && muvKv && Object.prototype.hasOwnProperty.call(muvKv, ns)) st = muvKv[ns]
+      } catch (_) { st = null }
+      try {
+        for (var k in st) {
+          if (Object.prototype.hasOwnProperty.call(st, k)) kv['L:' + k] = st[k]
+        }
+      } catch (_) {}
+      return 'window.__muvKvSeed=' + muvJsonSafe(kv) + ';window.__muvVH=' + (vh || 0) + ';'
+    }
+
+    /**
+     * 把兼容层插到**不在任何 `<script>` 里的第一个** `<head …>` 之后（没有 head 就
+     * 退到 `<html …>`，再没有就接在最前面）。
+     *
+     * ★ 必须是文档里**最早的**脚本之一：卡的「ERA 状态栏」是一个 `(function(){'use strict';…})()`
+     *   IIFE，它**解析期就**读 `localStorage`（`cgGalleryState` 那个 IIFE）——
+     *   垫片晚一步就没用了。
+     * @param {string} html
+     * @param {number} [hostH]
+     * @returns {string}
+     */
+    function withCardCompat(html, hostH) {
+      var s = String(html == null ? '' : html)
+      // ★ 守卫查的是垫片**运行时会留下的属性名**（`__muvCompatOn` 只出现在垫片第一句），
+      //   不是裸子串 `__muvCompat`：垫片跑在**最内层、直接面对卡原文**，处境最危险 ——
+      //   卡的 HTML 里写到一个 `__muvCompat`（哪怕只是文档里提了一句）就足以让整段垫片
+      //   被静默跳过，卡的 `localStorage` / `getContext()` 全塌，而且**没有任何日志**。
+      if (s.indexOf('__muvCompatOn') !== -1) return s
+      var vh = muvHostViewportHeight(hostH)
+      var tag = '<script>' + muvCardCompatSeed(muvCompatKey(s), vh) + muvCardCompatScript() + '</' + 'script>'
+      var ranges = scriptRangesOf(s)
+      var re = /<head\b[^>]*>/gi
+      var m
+      while ((m = re.exec(s))) {
+        if (!rangesContain(ranges, m.index)) return s.slice(0, re.lastIndex) + tag + s.slice(re.lastIndex)
+      }
+      re = /<html\b[^>]*>/gi
+      while ((m = re.exec(s))) {
+        if (!rangesContain(ranges, m.index)) return s.slice(0, re.lastIndex) + tag + s.slice(re.lastIndex)
+      }
+      return tag + s
+    }
+
+    /** 卡 iframe 首屏遮蔽的**绝对上限**（ms）：超过它一律显形，宁可闪一下也不让卡永久隐身。 */
+    var MUV_CARD_MASK_MAX = 15000
+
+    /**
+     * 让一张卡 iframe 显形（幂等）。遮蔽见 `ensureCardMask` / `cardHtmlIframe`。
+     * @param {Element} frame
+     * @returns {void}
+     */
+    function muvCardShow(frame) {
+      try {
+        if (!frame || !frame.setAttribute) return
+        if (frame.getAttribute('data-muv-shown') === '1') return
+        frame.setAttribute('data-muv-shown', '1')
+      } catch (_) {}
+    }
+
+    /**
+     * 安装卡 iframe 首屏遮蔽的**两条兜底**（全局只装一次，幂等标记挂 `window`）。
+     *
+     * 遮蔽本体是一条**宿主样式规则**（带 `data-muv-mask` 的卡 iframe 上挂 `opacity:0`，
+     * 见注入样式区；判据见 `cardHtmlIframe`），显形的**主路**是
+     * 卡内垫片报的 `{__muvReady:1}`（见 `muvCardCompatScript` 第 0 段）。这里补两条兜底，
+     * 保证"遮蔽"**不可能**把卡永久藏起来：
+     *   ① iframe 的 `load` 事件 —— 用**捕获期**挂在 `document` 上（`load` 不冒泡，但捕获
+     *      阶段能到 document）。子文档的 `load` 一定不早于它自己的 `DOMContentLoaded`，
+     *      所以显形时同样是终态；垫片被卡的 HTML 顶掉、或根本不是卡文档（没有垫片）时
+     *      靠这条兜住。
+     *   ② 绝对上限 `MUV_CARD_MASK_MAX` —— 连 `load` 都没来（文档整个没加载成功）也不会
+     *      永远隐身。记"第一次看到它还盖着"的时刻，用 **WeakMap** 记而不是写进 iframe 的
+     *      HTML：产物是**缓存字符串**，把时间戳写进 HTML 会让缓存命中的那份带着旧时间戳，
+     *      一插进来就判超时 ⇒ 遮蔽当场失效（切回会话走的正是缓存命中这条路）。
+     * @returns {void}
+     */
+    function ensureCardMask() {
+      try {
+        if (typeof window === 'undefined' || !window) return
+        if (window.__muvCardMaskOn === true) return
+        window.__muvCardMaskOn = true
+        window.addEventListener('load', function (ev) {
+          var t = ev && ev.target
+          try {
+            if (!t || String(t.tagName || '').toUpperCase() !== 'IFRAME') return
+            if (!t.getAttribute || !t.getAttribute('data-muv-mask')) return
+          } catch (_) { return }
+          muvCardShow(t)
+        }, true)
+        var seen = new WeakMap()
+        window.setInterval(function () {
+          var frames
+          try { frames = document.querySelectorAll('iframe.muv-iframe[data-muv-mask]') } catch (_) { return }
+          var now = Date.now()
+          for (var i = 0; i < frames.length; i++) {
+            var f = frames[i]
+            try { if (f.getAttribute('data-muv-shown') === '1') continue } catch (_) { continue }
+            var t0 = 0
+            try { t0 = seen.get(f) || 0 } catch (_) { t0 = 0 }
+            if (!t0) { try { seen.set(f, now) } catch (_) {} continue }
+            if (now - t0 >= MUV_CARD_MASK_MAX) muvCardShow(f)
+          }
+        }, 1200)
+      } catch (_) {}
+    }
+
+    /**
+     * 安装卡兼容层的父页监听。全局只装一次；幂等标记挂 `window`（理由同
+     * `ensureFrameHeightListener`：本函数会被回归测试从源码里逐字提取执行，
+     * 闭包变量在提取物里不存在）。
+     *
+     * ★ 标记存**监听器引用**而不是 `true`（brief P2）：监听器闭包持有 `muvKv` / `muvChatLog`，
+     *   插件重载会产生一份**新的空状态**。若继续用 `true` 挡着，旧监听器会一直留在页面上
+     *   处理老 iframe 的消息（写进孤儿状态），新 iframe 又只拿到新状态 ⇒ **CG 解锁在重载后
+     *   丢失**，且旧闭包永不回收。存引用就能发现"换了人"并显式解绑旧的。
+     * @returns {void}
+     */
+    function ensureCardCompatListener() {
+      try {
+        if (typeof window === 'undefined' || !window.addEventListener) return
+        var old = window.__muvCardCompatListener
+        if (old === onMuvCardCompatMessage) return
+        if (typeof old === 'function') {
+          try { window.removeEventListener('message', old, false) } catch (_) {}
+        }

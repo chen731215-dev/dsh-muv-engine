@@ -56,7 +56,7 @@ export const MANIFEST_PATH = path.join(PARTS_DIR, 'MANIFEST.json')
 export const ARTIFACT_PATH = path.join(REPO, 'lib', 'client.js')
 
 /** ★ 分片数的预期值 —— 加/减分片必须显式改这里（防"悄悄多切一片"逃过判据）。 */
-export const EXPECTED_PARTS = 13
+export const EXPECTED_PARTS = 16
 
 export const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex')
 

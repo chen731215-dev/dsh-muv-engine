@@ -1,654 +1,678 @@
-      function _installMacroInputHook() {
-        // 查找聊天输入框（DSH WebUI 的 textarea）
-        var textarea = document.querySelector('textarea[placeholder*="消息"], textarea[placeholder*="Message"], textarea[placeholder*="输入"], textarea.chat-input, [data-testid="chat-input"] textarea, .chat-input-area textarea, [role="textbox"]')
-        if (!textarea) {
-          // 退而求其次：找页面中唯一的 textarea（常见于简单聊天 UI）
-          var allTextareas = document.querySelectorAll('textarea')
-          for (var ti = 0; ti < allTextareas.length; ti++) {
-            var ta = allTextareas[ti]
-            // 跳过隐藏的、只读的、很小的 textarea
-            if (ta.offsetParent === null) continue
-            if (ta.readOnly) continue
-            if (ta.rows < 2) continue
-            textarea = ta
-            break
-          }
-        }
-        if (!textarea || textarea.dataset.muvMacroHooked) return
-        textarea.dataset.muvMacroHooked = '1'
-        // 拦截 Enter 发送（无 Shift）
-        textarea.addEventListener('keydown', function(e) {
-          if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
-            _expandTextareaMacros(textarea)
-          }
-        }, true) // capture phase: 在 DSH 自己的处理器之前运行
-        // 拦截所属 form 的 submit（处理点击发送按钮）
-        var form = textarea.closest('form')
-        if (form && !form.dataset.muvMacroHooked) {
-          form.dataset.muvMacroHooked = '1'
-          form.addEventListener('submit', function() {
-            _expandTextareaMacros(textarea)
-          }, true)
-        }
-        console.log('[muv-engine] 宏展开输入拦截器已安装（textarea:', (textarea.placeholder || textarea.className || textarea.id || '(无标识)') + '）')
-      }
-      // 立即尝试安装
-      _installMacroInputHook()
-      // 如果 DOM 还没渲染完，用 MutationObserver 等待
-      if (!document.querySelector('textarea[data-muv-macro-hooked]')) {
-        _macroInputObserver = new MutationObserver(function() {
-          _installMacroInputHook()
-          var hooked = document.querySelector('textarea[data-muv-macro-hooked]')
-          if (hooked && _macroInputObserver) { _macroInputObserver.disconnect(); _macroInputObserver = null }
-        })
-        _macroInputObserver.observe(document.body, { childList: true, subtree: true })
-      }
-      // ★ 酒馆代码清理 + 字段换行 + 选项按钮（从 dsh-visual-render 整合）
-      var MUV_SAN_MARK = 'data-muv-sanitized'
-      var RE_TOOLCALL = /<tool_call>[\s\S]*?<\/tool_call>|<\/?tool_call>/gi
-      var RE_IFBLOCK = /\{\{if\s+[^}]*\}\}[\s\S]*?\{\{\/if\}\}/gi
-      var RE_SETBLOCK = /\{\{(?:set|update|var|variable)\s+[^}]*\}\}/gi
-      var RE_COMMENT = /\/\*[\s\S]*?\*\//g
-      var RE_REVERSE = /\{\{reverse\}\}[\s\S]*?\{\{\/reverse\}\}/gi
-      var RE_ANYMACRO = /\{\{[^}]+\}\}/g
-      var RE_LEGACY = /\[\[[^\]]+\]\]/g
-      var RE_MARKER = /<START(?::[^>]*)?>|\[End of turn\]|\[Initiative\]|\[End of sequence\]|\[End of scene\]/gi
-      var RE_FIELD = /([^\n])\s*([\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F000}-\u{1F02F}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}])\s*(当前行动|当前动作|当前穿搭|当前衣着|当前身份|当前状态|下体状态|下体状况|当前内心|当前心情|当前好感|当前关系|待办事项?|日期|时间|位置|天气|心情|好感度|关系|身份|动作|衣着|穿搭|状态|内心)[：:]/gu
+      if (!key || key.length > MUV_KV_MAX_KEY) return
 
-      function muvCleanText(root) {
-        try { root.querySelectorAll('tool_call, tool-call').forEach(function(e){e.remove()}) } catch(e){}
-        var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), arr = [], nd
-        while ((nd = w.nextNode())) { if (!nd.parentElement || !nd.parentElement.closest('.dshv-root')) arr.push(nd) }
-        for (var i = 0; i < arr.length; i++) {
-          var node = arr[i]
-          if (!node.parentNode) continue
-          var t = node.textContent
-          if (!t) continue
-          var nt = t.replace(RE_TOOLCALL,'').replace(RE_IFBLOCK,'').replace(RE_SETBLOCK,'').replace(RE_COMMENT,'').replace(RE_REVERSE,'').replace(RE_ANYMACRO,'').replace(RE_LEGACY,'').replace(RE_MARKER,'')
-          if (RE_FIELD.test(nt)) {
-            var frag = document.createDocumentFragment(), last = 0, re = new RegExp(RE_FIELD.source,'gu'), m
-            while ((m = re.exec(nt)) !== null) {
-              if (m.index + m[1].length > last) frag.appendChild(document.createTextNode(nt.slice(last, m.index + m[1].length)))
-              frag.appendChild(document.createElement('br'))
-              frag.appendChild(document.createTextNode(m[2] + ' ' + m[3] + '：'))
-              last = m.index + m[0].length
+      // ★ 用户消息桥（卡 → DSH 输入框）：每帧节流，防卡循环连发把输入框打爆。
+      if (isUserSend) {
+        var us = data.__muvUserSend
+        var txt = (us && typeof us.text === 'string') ? us.text : ''
+        if (!txt || txt.length > 20000) return
+        var nowU = Date.now()
+        var lastU = muvUserSendAt[key] || 0
+        if (lastU && (nowU - lastU) < MUV_USERSEND_MIN_GAP) return
+        muvUserSendAt[key] = nowU
+        muvDeliverUserText(txt, us.mode === 'fill' ? 'fill' : 'send')
+        return
+      }
+
+      // ★ MVU 数据请求（卡内 `Mvu.getMvuData()` 的首次调用）：节流 + 回送一帧。
+      //   与 `muvEraAnswer` 同一口径：认不出会话就**如实回空**（不猜一张卡的数据塞给另一张）。
+      if (isMvuReq) {
+        var nowM = Date.now()
+        var lastM = muvMvuReqAt[key] || 0
+        if (lastM && (nowM - lastM) < MUV_MVUREQ_MIN_GAP) return
+        muvMvuReqAt[key] = nowM
+        muvMvuReply(frame)
+        return
+      }
+
+      // ★ 变量写（卡的写 API）：节流 + 落库 + 作废缓存 + 多档重推（见 muvVarWriteFromCard）。
+      if (isVarWrite) {
+        var nowW = Date.now()
+        var lastW = muvVarWriteAt[key] || 0
+        if (lastW && (nowW - lastW) < MUV_VARWRITE_MIN_GAP) return
+        muvVarWriteAt[key] = nowW
+        muvVarWriteFromCard(frame, data.__muvVarWrite)
+        return
+      }
+
+      if (!key || key.length > MUV_KV_MAX_KEY) return
+      // ★ 会话栅栏 + LRU 触碰：真正落库的命名空间是 `<卡键>@<会话 id>`（见 muvKvKeyOf）。
+      //   这一步对所有 op 都做 —— 否则"只发 remove/clear 的帧"永远不进 LRU 账本，
+      //   那些命名空间会一直是 LRU 里的最冷项而被误淘汰。
+      var ns = muvKvTouch(key)
+
+      if (isHello) {
+        // ★ 每帧节流：见 muvHelloAt 的注释。首次（时间戳为 0）无条件放行。
+        //   键用**卡键**（不是 ns）：节流是"这个 iframe 太久没被回送过"，与会话无关。
+        var now = Date.now()
+        var lastAt = muvHelloAt[key] || 0
+        if (lastAt && (now - lastAt) < MUV_HELLO_MIN_GAP) return
+        muvHelloAt[key] = now
+        muvReplyToFrame(frame, key)
+        muvEraPrewarm()
+        return
+      }
+
+      if (isEventOut) {
+        var nm = data.__muvEventOut.name
+        if (typeof nm !== 'string' || !nm || nm.length > 64) return
+        muvEraAnswer(frame, key, nm)
+        return
+      }
+
+      var op = data.__muvKv
+      // 三个 op 落完内存都同步过一遍持久层（写通，不留异步窗口）：持久键 = 前缀 + ns，
+      // 会话栅栏原样带进持久层；失败（quota/隐私模式）退化为纯内存，不比修复前差。
+      if (op === 'clear') {
+        muvKv[ns] = {}
+        muvKvPersistRemove(ns)
+        return
+      }
+      if (op !== 'set' && op !== 'remove') return
+      var k = data.k === undefined ? '' : String(data.k)
+      if (!k || k.length > MUV_KV_MAX_KEY) return
+      if (!Object.prototype.hasOwnProperty.call(muvKv, ns)) muvKv[ns] = {}
+      var st = muvKv[ns]
+      if (op === 'remove') {
+        try { delete st[k] } catch (_) {}
+        muvKvPersistWrite(ns, st)
+        return
+      }
+      var v = data.v === undefined ? '' : String(data.v)
+      if (v.length > MUV_KV_MAX_VAL) return
+      var count = 0
+      var total = 0
+      for (var k2 in st) {
+        if (!Object.prototype.hasOwnProperty.call(st, k2)) continue
+        count++
+        total += String(st[k2]).length
+      }
+      var exists = Object.prototype.hasOwnProperty.call(st, k)
+      if (!exists && count >= MUV_KV_MAX_ITEMS) return
+      if (total - (exists ? String(st[k]).length : 0) + v.length > MUV_KV_MAX_TOTAL) return
+      try { st[k] = v } catch (_) {}
+      muvKvPersistWrite(ns, st)
+      // ★ 写入之后再过一次 LRU：命名空间**总数**原先无上限（键 = 内容散列 + 长度，
+      //   内容一变就是新键），页面级生命周期下会累积到几十 MB（brief P2）。
+      muvKvEvict()
+    }
+
+    /**
+     * 父页记账的**注入链缓存** —— P0-2「幂等守卫查子串」那一条的**根治手段**。
+     *
+     * 类是什么：三处注入（reset / compat / 高度引导）原先各自靠"在卡原文里查一个子串"判断
+     * 有没有注入过。卡的 HTML 里只要出现那个串（模型跑题、作者抄别家 shim、卡里内嵌文档），
+     * **整段脚本就被静默跳过** —— 卡的 `localStorage` / `getContext().chat` / 高度上报全塌，
+     * 没有任何日志。三处同形、同一种静默失效模式。
+     *
+     * 根治办法（brief P0-2 第 1 条）：**幂等状态放父页** —— 同一个 `raw` 只在这里组装一次
+     * 注入链，结果缓存进这个 `Map`；子文档只执行、不自我判断。这一改直接消掉整个类：
+     * 卡原文再也决定不了"要不要注入"。
+     *
+     * 键 = `muvCompatKey(raw)`（32 位散列 + 长度）。**故意不用 `raw` 本身当键**：真卡的围栏
+     * 正文一份就有 210KB，几十条消息就是几十 MB 的 Map。散列键只有十几字节，且与
+     * `data-muv-kv` 用的是同一个键函数（同一张卡在整条链上只有一个身份）。
+     * 故意**声明成纯对象字面量**（理由同 `muvEraVars`：逐字提取的门禁要能内联它）。
+     * @type {Object<string, string>}
+     */
+    var muvInjectCache = {}
+    /** 注入链缓存的条目上限（LRU）。一张卡一份 srcdoc，几十条消息的卡也就是个位数。 */
+    var MUV_INJECT_MAX = 8
+
+    /**
+     * 组装一条卡文档的完整注入链，**并在父页记账**。
+     *
+     * 顺序（内层先跑，外层看到的是内层已改过的文档）：
+     *   `rewriteVhMinHeight(raw)` → `withCardCompat` → `withCardReset` → `withCardLibs`
+     *   → `withFrameHeightBootstrap` → **`withCardScripts`（最外层）**
+     * 理由见 `cardHtmlIframe` 的长注释。（`withCardLibs` 的落点是 head 末尾，
+     * 与 compat / reset 的 `<head>` 锚点不冲突，所以它排在哪一层都不改变位置。）
+     *
+     * ★ 缓存只在 `hostH` 相同时命中：`hostH` 会进 `min-height:<N>px` 与
+     *   `--TH-viewport-height`，窗口尺寸变了必须重算（否则卡被钉死在旧的视口高上）。
+     *   `hostH` 只是标识，真正的 vh 由 `rewriteVhMinHeight` 自己取（它不收形参）。
+     * @param {string} raw 注入前的卡文档
+     * @param {number} hostH 宿主视口高（缓存标识）
+     * @param {string} ck 卡键（`muvCompatKey(raw)`，调用方已经算过，省一次 O(n) 散列）
+     * @param {Array<{name?:string, id?:string, content?:string}>} [scripts] 卡的 enabled 脚本
+     * @returns {string} 注入后的完整文档
+     */
+    function muvInjectDoc(raw, hostH, ck, scripts) {
+      var key = String(ck || '') + '@' + String(hostH || 0) + '#' + muvCardScriptsSig(scripts)
+      try {
+        if (Object.prototype.hasOwnProperty.call(muvInjectCache, key)) return muvInjectCache[key]
+      } catch (_) {}
+      // ★ `withCardScripts` 必须在**最外层**：它是往 `</body>` 里插东西的，放在里面的话
+      //   后面几层（含 bootstrap）再去数 `<script>` 区间时会把卡的脚本当成"卡自己的"，
+      //   让它们各自的落点判定跟着偏移。
+      var doc = withCardScripts(
+        withFrameHeightBootstrap(
+          withCardLibs(withCardReset(withCardCompat(rewriteVhMinHeight(raw), hostH), hostH))),
+        scripts)
+      // ★ 图片开销评估结论（2026-09-24，实测后**不改**）：
+      //   ① CDP 真机取证：切回会话时 iframe 内图片 **0 次网络重取**（memory cache
+      //      直接命中，连 fromDiskCache 事件都不产生）——"重新加载图片"在网络层
+      //      本来就不发生，懒加载没有收益；
+      //   ② 卡文档逐字节 parity 是 verify-visual 的硬契约（剥掉注入运行时后必须与
+      //      卡原文逐字相等，ST 保真度边界）——往卡文档里加 `loading="lazy"` 立刻
+      //      打红 14+ 项（实测）；
+      //   ③ iframe 内 lazy 与高度棘轮存在理论冲突（离屏图永不触发加载 ⇒ 高度卡死）。
+      //   ⇒ img/iframe lazy 都不启用，图片开销维持浏览器原生 memory cache 行为。
+      try {
+        muvInjectCache[key] = doc
+        var names = []
+        for (var k in muvInjectCache) {
+          if (Object.prototype.hasOwnProperty.call(muvInjectCache, k)) names.push(k)
+        }
+        while (names.length > MUV_INJECT_MAX) {
+          var gone = names.shift()
+          if (gone === key) { names.push(gone); continue }
+          try { delete muvInjectCache[gone] } catch (_) {}
+        }
+      } catch (_) {}
+      return doc
+    }
+
+    /**
+     * 构造承载「卡自带整页 HTML」的 iframe —— 所有这类 iframe 的唯一出口。
+     *
+     * 统一成一个出口的好处：沙箱常量只有一处（MUV_CARD_SANDBOX）、高度测量只有一处
+     * 注入点、默认尺寸只有一处。默认高度只在收到子文档报数之前生效；子文档没报数
+     * （脚本被卡里别的错误挡住等）就维持默认值，**不会比修之前更差**。
+     *
+     * ★ 默认高度 600px → 900px：真卡实测高度是 251 / 349 / 675 / 895 / 1636px，600px 明显偏矮，
+     *   用户看到的是"别人的窗口非常大，DSH 里又小又小"。900px 更接近常见卡的高度；收到
+     *   子文档报的内容包围盒就覆盖它（onMuvFrameHeightMessage），所以这只是兜底值。
+     *   故意**不设** max-height / max-width 上限。
+     *
+     * ★ 链的**顺序**是有讲究的（内层先跑，外层看到的是内层已改过的文档）：
+     *   `rewriteVhMinHeight` → `withCardCompat` → `withCardReset` → `withCardLibs`
+     *   → `withFrameHeightBootstrap` → `withCardScripts`
+     *  - vh 重写必须在最内层：它要**只**处理卡自己的 `min-height`，不碰我们注入的东西；
+     *  - compat 垫片要尽可能靠前（解析期就生效），且必须排在 reset 之前才能在
+     *    `<head>` 锚点上落在 reset 的 `<style>` 之后（两者都插在同一锚点，后跑的排前面）；
+     *  - 前端库（`withCardLibs`）插在 `</head>` 之前：仍在 body 之前（卡的脚本拿得到
+     *    `jQuery`/`Vue`，与 ST 一致），但排在 compat/reset **之后** ⇒ CDN 出问题时
+     *    不会连带推迟我们自己那两段；
+     *  - 高度引导脚本在前端库之后、卡脚本之前（它也是插在"最后一个 `</body>` 之前"，
+     *    早插会被后面的 head 注入打乱）；
+     *  - **卡的 TavernHelper 脚本在最外层**（`withCardScripts` 的一组
+     *    `<script type="module">`）：module 天生 defer ⇒ 执行一定排在 compat 垫片 /
+     *    reset / 前端库 / 引导这些**经典脚本之后**，位置不决定顺序，所以把它放在
+     *    文档最后（不影响前面任何一个锚点的搜索）。
+     * @param {string} html 卡自带的整页 HTML
+     * @returns {string}
+     */
+    function cardHtmlIframe(html) {
+      ensureFrameHeightListener()
+      ensureCardCompatListener()
+      ensureCardMask()
+      var raw = String(html == null ? '' : html)
+      // ★ 首屏遮蔽的判据（见 `ensureCardMask` 与宿主样式里那条注释）：文档**自带初始主题
+      //   属性**（`<body data-theme="night">` 这类）才有"先画默认主题、等卡初始化才换"的
+      //   错色期。没有这个属性的卡文档**照旧不遮蔽** —— 波及面刻意收窄到"真的会错色"的那一类。
+      var mask = /<(?:body|html)\b[^>]*\sdata-theme\s*=/i.test(raw) ? ' data-muv-mask="1"' : ''
+      var hostH = muvHostViewportHeight(0)
+      // ★ `rewriteVhMinHeight` 只收一个形参（注入前的卡文档）。这里原来多传了一个 `hostH`
+      //   —— 函数内是自取 `window.innerHeight` 的，多出来的实参被静默丢掉。功能无害，
+      //   但它**遮蔽了真实契约**（读调用点的人会以为 vh 是由调用方决定的）。删掉实参。
+      var doc = muvInjectDoc(raw, hostH, muvCompatKey(raw), muvCardScriptsNow())
+      // ★ 种子现算覆盖（见 muvKvSeedFill）：产物可能来自缓存（内存/上游持久），里面的
+      //   KV 种子是构建时的冻结快照 —— 出口上用当前账本（含持久层回捞）重算一遍，
+      //   卡的解析期同步读才能拿到跨刷新/跨会话的真实值，不靠 hello 回填的异步竞速。
+      doc = muvKvSeedFill(doc, muvCompatKey(raw))
+      return '<iframe class="muv-iframe" data-muv-kv="' + escAttr(muvCompatKey(raw)) + '"' + mask +
+        ' srcdoc="' + escAttr(doc) +
+        '" sandbox="' + MUV_CARD_SANDBOX +
+        '" style="display:block;width:100%;height:900px;border:none;border-radius:8px;background:transparent"></iframe>'
+    }
+
+    /**
+     * 这张卡里有没有一条正则脚本会去消费 `<StatusPlaceHolderImpl/>`？
+     *
+     * 判据刻意做得**很窄**（只有在 findRegex 里逐字出现 `StatusPlaceHolderImpl` 才算），
+     * 因为它决定我们要不要往每条消息尾部追加一个占位符 —— 猜错的代价是给一张不认这个
+     * 标记的卡塞进一段它渲染不出来的文本。
+     *
+     * 三种卡形态都要认：`{regexScripts:[…]}`（muv-table 的规范化产物，门禁夹具用的就是它）、
+     * 裸 chara_card_v3（`data.extensions.regex_scripts`）、以及顶层的 `regex_scripts`
+     * —— 与 `regex-engine.js:regexScriptsOf` 认的那三种保持一致，别只认一种。
+     * @param {object|null} cardJson
+     * @returns {boolean}
+     */
+    function cardWantsStatusPlaceholder(cardJson) {
+      try {
+        if (!cardJson || typeof cardJson !== 'object') return false
+        var list = cardJson.regexScripts
+        if (!list && cardJson.data && cardJson.data.extensions) list = cardJson.data.extensions.regex_scripts
+        if (!list) list = cardJson.regex_scripts
+        if (!list || !list.length) return false
+        for (var i = 0; i < list.length; i++) {
+          var s = list[i]
+          if (!s || s.disabled) continue
+          if (String(s.findRegex || '').indexOf('StatusPlaceHolderImpl') >= 0) return true
+        }
+      } catch (_) {}
+      return false
+    }
+
+    /**
+     * ★★ 补齐 `<StatusPlaceHolderImpl/>` —— 这一条救回的是整张卡的 ERA 状态栏。
+     *
+     * 为什么必须有：占位符**不是**模型写的，也不是预设/世界书里的任何一句要求的。
+     * `card.json` 的 `tavern_helper.scripts[0]`（名为 `ERA变量框架1.4.11`）的 data 里写着
+     * `"在ai消息尾部生成特殊符号": true, "特殊符号值": "<StatusPlaceHolderImpl/>"` ——
+     * **是那个 148 KB 的酒馆助手脚本往每条 AI 消息尾部追加它**。
+     * DSH 没有酒馆助手执行器，所以：
+     *   · 卡的正则 `[2]「ERA 状态栏」`（`findRegex = /<StatusPlaceHolderImpl\/>/gsi`，
+     *     210,219 字符，全卡最大的脚本）**永远没有可命中的目标**；
+     *   · 而它产出的正是 210 KB 的 ERA 状态栏页面（资源条 8 个 chip / CG 画廊 / 城市地图 /
+     *     选项区 / 数值）。
+     * 实测全文扫描：`<StatusPlaceHolderImpl/>` 在预设 0 次、世界书 0 次、开场白 0 次，
+     * 只出现在两处 —— 本条正则的 findRegex，和那个酒馆助手脚本的 data 里。
+     * ⇒ 不补它，那张状态栏在 DSH 里**永无可能出现**。
+     *
+     * 补法：把占位符追加在**消息尾部**（与酒馆助手的语义一致：「在ai消息尾部生成特殊符号」）。
+     * 位置正确很重要 —— `applyDecoratedHtml` 的 ② 分支就是按「占位符在正文末尾」来放
+     * 状态栏的。
+     *
+     * 幂等 + 保守：正文里已经有占位符就不再追加（模型的某轮可能自己写了）；
+     * 卡不认这个标记就一个字符都不加。
+     * @param {string} text
+     * @param {object|null} cardJson
+     * @returns {string}
+     */
+    function withStatusPlaceholder(text, cardJson) {
+      try {
+        if (!text) return text
+        if (STATUS_PH_TEST.test(text)) return text
+        if (!cardWantsStatusPlaceholder(cardJson)) return text
+        // 追加而不是替换：`beautifyMuv` 的原文是 `body.innerText`，尾部很可能就是
+        // `</content>` 这样的信封收尾。另起一行放占位符，卡的正则 `[2]` 才有一个
+        // 干净的落点（它把整个占位符换成 ```` ``` ```` + 整页文档）。
+        return String(text).replace(/\s+$/, '') + '\n' + STATUS_PH_TEXT
+      } catch (_) {
+        return text
+      }
+    }
+
+    /**
+     * 本卡在**本次装饰**里处于第几层（SillyTavern 的 `depth` 口径）。
+     *
+     * 口径与 ST 一致 —— **最新一条是 0，越旧越大**。卡侧脚本
+     * `[8]「自动总结，隐藏6楼以上除摘要外内容」` 的 `minDepth = 7` 就是按这个口径写的
+     * （`regex-engine.js` 的 `depthAllows` 直接比大小）。
+     *
+     * ★ 这个换算**必须**在能看到 DOM 消息列表的地方做（`_decorateOne` 就在那个作用域里），
+     *   所以函数体在那边、接受的是已经算好的「本条之后还有几条」。
+     *   第一版把整件事放在工厂作用域并 `typeof messageTargets === 'function'` 兜底 ——
+     *   那个名字在工厂作用域里**永远**不是函数，于是恒定返回 0、看起来"接上了"其实没接上。
+     * @param {number} laterCount 页面上排在本条**之后**的消息条数
+     * @returns {number}
+     */
+    function muvDepthFromLaterCount(laterCount) {
+      var n = typeof laterCount === 'number' && isFinite(laterCount) && laterCount > 0 ? Math.floor(laterCount) : 0
+      return n
+    }
+
+    /**
+     * 这条消息是不是**已经有**状态栏了？（占位符 / 卡自带皮肤 / `<Status_block>` 三条路）
+     *
+     * 文本级兜底的**优先级判据**：上面三条任一命中，兜底一个字符都不动
+     * ——「占位符路径优先，既有行为不变」这条要求就落在这里。
+     * @param {string} text 已经过占位符/`<Status_block>` 处理的文本
+     * @param {string} sbHtml 卡自带的状态栏 HTML（`d.statusBarHtml`），没有就是空
+     * @returns {boolean}
+     */
+    function muvStatusAlreadyRendered(text, sbHtml) {
+      var s = String(text == null ? '' : text)
+      return !!sbHtml
+        || STATUS_PH_TEST.test(s)
+        || s.indexOf('class="muv-statusbar-wrap"') >= 0
+        || /<\s*Status_block\s*>/i.test(s)
+    }
+
+    /**
+     * 把「状态折叠块」的正文交给服务端既有的 loose 级联渲染。
+     *
+     * 为什么不在这里自己解析：`<details><summary>[角色状态]</summary>```- 😃 名字…```</details>`
+     * 那套形状（去围栏/去标签/section/角色块/字段行）已经在 `lib/status-cascade.js` 的
+     * loose 级里实现过一整个版本（含一串踩过的坑）——重写一份必然分叉。所以只把判定过的
+     * **块体**发给 `/api/muv-engine/render-status` 的新 `body` 入口（不经过
+     * `extractStatusBody`，因为这里没有 `<Status_block>` 包裹）。
+     * 服务端不可达时返回 ''（此时**不动**原文：宁可留着裸块，也不许把内容删掉）。
+     * @param {string} body
+     * @returns {Promise<string>} 渲染出的 HTML，'' 表示没渲染出来
+     */
+    async function muvRenderLooseStatusBody(body) {
+      try {
+        const r = await fetch('/api/muv-engine/render-status', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ body: body })
+        })
+        const d = await r.json()
+        return d && d.ok && d.html ? String(d.html) : ''
+      } catch (_) { return '' }
+    }
+
+    /**
+     * 文本级状态栏兜底：把消息开头/正文里的裸元信息渲染成状态栏，并把原文段**移除**。
+     *
+     * 两件都要成立才会改文本：判据命中（`muvTextStatusProbe` / `muvTextDetailsOf`）
+     * **并且**渲染成功。任何一步不算数就原样返回 —— 调用方（`_decorateOne`）见到
+     * `html === raw` 就不动 DOM，所以「没救回来」的代价只是维持现状，不会更差。
+     *
+     * ★ 替换串铁律：这里两处大段拼接（状态栏容器）一律用**函数式替换**，见
+     *   `muvFrameBlock` 的长注释（`$&` / `$'` / `` $` `` 会被字符串替换解析掉）。
+     * @param {string} text
+     * @param {boolean} already 已经有状态栏了（`muvStatusAlreadyRendered` 的结论）
+     * @returns {Promise<string>}
+     */
+    async function muvApplyTextStatus(text, already) {
+      if (!muvTextStatusOn() || already) return text
+      var out = String(text)
+      var probe = muvTextStatusProbe(out)
+      var details = muvTextDetailsOf(out)
+      if (!probe.prefix && !details) return text
+      var changed = false
+
+      if (probe.prefix) {
+        var inner = muvTextStatusPrefixHtml(probe.prefix)
+        if (inner) {
+          var wrap = muvTextStatusWrap('prefix', probe.prefix.raw, '', inner)
+          // ★ 函数式替换（铁律）：wrap 里是拼出来的 HTML，字符串替换会把 `$&` 吃掉
+          var next = out.replace(probe.prefix.raw, function () { return wrap })
+          if (next !== out) { out = next; changed = true }
+        }
+      }
+
+      if (details) {
+        var bodyHtml = await muvRenderLooseStatusBody(details.body)
+        if (bodyHtml) {
+          // 作者本来就用 `<details>` 折起来 ⇒ 还原成**折叠 UI**（默认收起），
+          // 内容是 loose 级的产物。summary 用的是块上原有的标签。
+          var innerHtml = '<details class="muv-sb-details"><summary>' + escHtml(details.label)
+            + '</summary>' + bodyHtml + '</details>'
+          var wrap2 = muvTextStatusWrap('details', details.raw, details.look, innerHtml)
+          var next2 = out.replace(details.raw, function () { return wrap2 })
+          if (next2 !== out) { out = next2; changed = true }
+        }
+      }
+
+      if (!changed) return text
+      try { ensureStatusCss() } catch (_) {}
+      return out
+    }
+
+    // ── 装饰产物内存缓存（2026-09-24，「切回会话秒开」）─────────────────────
+    //
+    // 取证（真机 CDP，`C:\deepseek harness\_probe-session-cache.mjs`）：切走→切回同一
+    // 会话，每条楼都重跑 beautifyMuv 全链 —— 每次切回 2~3 次 `/apply-regex-card`
+    // 服务端往返，首楼装饰 ~234ms。而产物其实是**纯函数**：给定（正文、depth、
+    // fullpage 旗标、卡），输出恒定 —— 服务端 `/apply-regex-card` 与 `/render-status`
+    // 都不读会话变量状态（见 lib/index.js 两个 handler）；变量更新走 era push
+    // （postMessage 推给**在线** iframe 的运行时通路），与"重装饰"无关。
+    //
+    // **缓存边界（2026-09-25 放宽）**：带 `iframe.muv-iframe` 的楼**与**带
+    // `.muv-statusbar-wrap` 的状态栏楼，都缓存。
+    //
+    // 为什么放宽（用户实测反馈：「点会话再切回去，状态栏要重新渲染」）：原边界把
+    // 内置 `.muv-sb` 与文本级状态栏楼排除在外，理由是"数值当场从消息文本解析、
+    // 缓存也省不了几毫秒"。但用户感知到的不是解析耗时，而是**切回来那段异步空窗** ——
+    // 取卡 + 服务端往返要 ~234ms，这期间该楼处于未装饰态，看起来就是"闪一下重渲染"。
+    // 缓存命中后这条路不再 await，同步交回产物，空窗消失。
+    //
+    // 为什么不冻变量：产物是**纯函数**（见上：两个 handler 都不读会话变量状态），
+    // 且键里现在带 `|v<rev>` 变量修订号 —— 任何真实变量变更都会 `muvVarRevBump()`
+    // 一次，把带变量的产物全部作废。见 `muvVarRev` 的长注释。
+    var muvDecorCache = {}
+    var muvDecorCacheAt = {}
+    /**
+     * 条目上限 / 单条体积上限 / **总字节上限**（2026-09-25 实测修正）。
+     *
+     * 为什么加总字节上限并把条数从 32 提到 512：真机实测（`_scratch\live-cache-count.mjs`，
+     * 逐行切走→切回数 `/apply-regex-card`）发现**命中的全是最后访问的三个会话，更早访问的全会
+     * 重装饰**（miss 23 / 41 / 3 次）—— 典型 LRU 被冲空。而 `32` 这个总条目上限实在太小：
+     * **一个长会话（实测 24 个产物楼）就能吃掉大半**，走三四个会话就全被挤掉，
+     * "切回秒开"于是只在最近几个会话上成立。
+     *
+     * 现在改成**双限界**：条数 ≤ 512 且总字节 ≤ 48MB。按条目是字符串、实测单条多为
+     * 几十 KB（农场 srcdoc ≈ 52KB、苍玄界封面 ≈ 119KB），48MB 足以装下十几个长会话；
+     * 真到上限时仍按 LRU 淘汰，内存不会被撑爆。
+     */
+    var MUV_DECOR_MAX = 512
+    var MUV_DECOR_ENTRY_MAX = 320 * 1024
+    var MUV_DECOR_TOTAL_MAX = 48 * 1024 * 1024
+    /** 当前缓存总字节（随写入/命中/淘汰维护；崩溃也不致命，只影响淘汰时机）。 */
+    var muvDecorBytes = 0
+
+    /**
+     * **变量状态修订号**（2026-09-25，"状态栏楼也能缓存"的安全性凭据）。
+     *
+     * 为什么需要：产物缓存键原先只含（会话、正文、depth、fullpage）—— 那是"产物是纯
+     * 函数"这个前提的直接翻译。放宽到缓存状态栏楼之后，必须再加一道**变量维度**的保险：
+     * 一旦真的有变量变更，带变量的产物要立刻作废，而不是等正文变化才自然失效。
+     *
+     * 挂在**真正的变更点**上（两处，都紧挨既有的 era 失效信号）：
+     *   ① `muvFeedVariables` POST `/extract` 成功 ⇒ 服务端 merge 进新变量；
+     *   ② 卡写变量 API POST `/state` 成功（`__muvVarWrite` 落地）。
+     * **故意不挂**在 `muvEraVars.data = null` 的第三处（约 L4445）：那是 TTL 过期重取，
+     * 数据可能一模一样 —— 挂上去只会让切回会话白白丢缓存。
+     *
+     * 计数而非时间戳：键要短、要稳定（同一状态同一键），时间戳会让每次读取都 miss。
+     *
+     * ★★ **必须按会话分开记**（2026-09-25 自查修正）：
+     *   第一版写成"全局单计数 + 切会话归零"，那是**错的**：A 会话的产物以 `v5` 存进缓存，
+     *   切到 B 时归零，切回 A 时键变 `v0` ⇒ **A 的缓存全部 miss** ⇒ 恰好把"切回秒开"
+     *   毁掉 —— 而切回秒开正是本缓存的立身之本。所以改成 `sid → rev` 的映射：
+     *   每个会话各自单调递增，切走切回**数值不变** ⇒ 键稳定 ⇒ 命中。
+     * @type {Object<string, number>}
+     */
+    var muvVarRevBySid = Object.create(null)
+
+    /**
+     * 取某会话的变量修订号（读不到会话 id 时退回 0 —— 与"键里必须带 sid"同一口径，
+     * 认不出会话的产物本来就不进缓存，见 `muvDecorKeyOf`）。
+     * @param {string} sid
+     * @returns {number}
+     */
+    function muvVarRevOf(sid) {
+      try { return (sid && muvVarRevBySid[sid]) || 0 } catch (_) { return 0 }
+    }
+
+    /** 记一次真实的变量变更（只影响**当前会话**，见 `muvVarRevBySid` 的长注释）。 */
+    function muvVarRevBump() {
+      try {
+        var sid = ''
+        try { sid = currentSessionId() } catch (_) { sid = '' }
+        if (!sid) return
+        muvVarRevBySid[sid] = ((muvVarRevBySid[sid] || 0) + 1) % 1000000007
+        // 有界：会话数超过 64 就丢掉最旧的一批（映射键就是会话 id，不会与产物缓存互相影响）
+        var ks = Object.keys(muvVarRevBySid)
+        if (ks.length > 64) { for (var i = 0; i < 16; i++) delete muvVarRevBySid[ks[i]] }
+      } catch (_) {}
+    }
+
+    /**
+     * 缓存键：会话 id + 正文键（与 `data-muv-kv` 同一个 `muvCompatKey` 散列）+
+     * depth + fullpage 旗标。depth/fullpage 进键是因为它们**真实改变产物**
+     * （`maxDepth/minDepth` 正则由 depth 决定；`muv-fullpage` 破格类由楼位旗标决定）。
+     *
+     * ★ fullpage **必须**进键（2026-09-25 恢复）：build k 曾去掉它，理由是"打标已写
+     *   在产物字符串里、缓存命中天然带标"—— 那句话**只在"打标与楼位无关"的前提下
+     *   自洽**。恢复楼位判据后，同一份 `text` 在封面楼与后续楼要产出**不同**的产物
+     *   字符串，键里不带 `|fp` 就会互相命中（封面楼的满宽产物被后续楼复用，或反之）。
+     *   详见 `muvFullpageFloor` 的长注释。
+     *
+     * ★ **变量修订号 `|v<n>` 也进键**（2026-09-25）：缓存边界从"只缓存 iframe 楼"
+     *   放宽到"也缓存状态栏楼"（用户实测反馈：切回会话状态栏要重新渲染）。产物虽是
+     *   纯函数，但状态栏的**观感**依赖变量，所以键里带一道变量维度保险 ——
+     *   任何真实变量变更都会 `muvVarRevBump()`，把带变量的产物一次作废。
+     *   同会话内数值不变 ⇒ 切走切回仍是同一键 ⇒ 命中（这正是要的秒开）。
+     *
+     * ★ 会话 id 只认**权威**来源（会话服务 / URL）：`currentSessionId()` 的第三档
+     *   DOM 属性兜底在切换瞬间是**旧会话**的值，拿它当键会把 A 会话的产物错记到
+     *   B 会话头上。认不出权威会话 ⇒ 返回 null ⇒ 本楼不缓存（与旧行为完全一致）。
+     * @param {string} text 装饰输入原文
+     * @param {number} depth 本次装饰的层号
+     * @returns {string|null}
+     */
+    function muvDecorKeyOf(text, depth) {
+      try {
+        var sid = ''
+        var svc = window.__DSH_TAVERN_SESSIONS__
+        if (svc && svc.list && typeof svc.list.getSnapshot === 'function') {
+          var snap = svc.list.getSnapshot()
+          var cur = snap && snap.current
+          if (cur && /^(session-)?[a-f0-9-]{20,}$/i.test(String(cur))) {
+            sid = 'session-' + String(cur).replace(/^session-/, '')
+          }
+        }
+        if (!sid) {
+          var m = location.href.match(/session[/=:-]([a-f0-9-]{20,})/i)
+          if (m && m[1]) sid = 'session-' + m[1].replace(/^session-/, '')
+        }
+        if (!sid) return null
+        var fp = false
+        try { fp = muvFullpageFloorNow() === true } catch (_) {}
+        var vr = 0
+        try { vr = muvVarRevOf(sid) } catch (_) {}
+        var d = (typeof depth === 'number' && isFinite(depth)) ? depth : 0
+        return sid + '|' + muvCompatKey(text) + '|d' + d + (fp ? '|fp' : '') + '|v' + vr
+      } catch (_) { return null }
+    }
+
+    function muvDecorCacheGet(key) {
+      try {
+        if (Object.prototype.hasOwnProperty.call(muvDecorCache, key)) {
+          muvDecorCacheAt[key] = Date.now()
+          return muvDecorCache[key]
+        }
+      } catch (_) {}
+      return null
+    }
+
+    /**
+     * 收"值得缓存"的产物（带卡 iframe **或**带状态栏 wrap、体积在限内），按最近使用 LRU 淘汰；
+     * 条目跨会话切换**保留** —— 那正是"切回秒开"的本体。
+     * 内存护栏 = **条数上限（512）与总字节上限（48MB）双限界**，见那两个常量的注释
+     * （原先是"条数 32"，实测一个长会话就能吃掉大半 ⇒ 切几个会话回来就 miss）。
+     * 原样返回 html（调用点直写 `return muvDecorStore(...)`）。
+     */
+    function muvDecorStore(key, rawText, html) {
+      try {
+        if (key && html && html !== rawText && html.length <= MUV_DECOR_ENTRY_MAX &&
+            (html.indexOf('<iframe class="muv-iframe"') >= 0 ||
+             html.indexOf('muv-statusbar-wrap') >= 0)) {
+          var prev = muvDecorCache[key]
+          if (typeof prev === 'string') { try { muvDecorBytes -= prev.length } catch (_) {} }
+          muvDecorCache[key] = html
+          muvDecorCacheAt[key] = Date.now()
+          try { muvDecorBytes += html.length } catch (_) {}
+          var keys = Object.keys(muvDecorCache)
+          // 双限界淘汰：条数超上限**或**总字节超上限都按 LRU 丢最旧的（见常量处注释）。
+          while (keys.length > MUV_DECOR_MAX || muvDecorBytes > MUV_DECOR_TOTAL_MAX) {
+            var oldest = keys[0], ot = Infinity
+            for (var i = 0; i < keys.length; i++) {
+              var t = muvDecorCacheAt[keys[i]] || 0
+              if (t < ot) { ot = t; oldest = keys[i] }
             }
-            if (last < nt.length) frag.appendChild(document.createTextNode(nt.slice(last)))
-            node.parentNode.replaceChild(frag, node)
-          } else if (nt !== t) {
-            node.textContent = nt
+            // 只省一条时不要再丢自己（keys.length===1 且只剩刚写进去的这条 ⇒ 说明单条就超总上限）
+            if (keys.length <= 1) break
+            try {
+              if (typeof muvDecorCache[oldest] === 'string') muvDecorBytes -= muvDecorCache[oldest].length
+              delete muvDecorCache[oldest]; delete muvDecorCacheAt[oldest]
+            } catch (_) {}
+            keys = Object.keys(muvDecorCache)
           }
         }
+      } catch (_) {}
+      return html
+    }
+
+    async function beautifyMuv(text, opts) {
+      if (!text) return text
+      // 第二参数是**可选**的：`{ depth }`。真实调用方目前只有装饰链（`_decorateOne`），
+      // 而酒馆面板那条 `MuvEngine.beautify(text)` 仍按单参调用 ⇒ 必须容忍 `opts` 为 undefined，
+      // 且缺省时按 depth 0 处理（与 `regex-engine.js` 的默认一致：就是「正在渲染的这一条」）。
+      var muvOpts = opts && typeof opts === 'object' ? opts : {}
+      var depth = typeof muvOpts.depth === 'number' && isFinite(muvOpts.depth) ? muvOpts.depth : 0
+      // MUV / tavern markers. `Status_?Block` accepts both the documented
+      // `<Status_block>` spelling and the `<StatusBlock>` variant cards use.
+      // （下面这几段讲的是**曾经**那份手写名单；名单已在本轮整体删除，见 ★★。）
+      //
+      // `<choices>` belongs in this list even though it is not a status marker:
+      // a large share of community cards answer with prose plus an options
+      // block and no status bar at all. Leaving it out sent those messages past
+      // this function entirely, so their options never rendered — the failure
+      // was silent, which is why it looked like "选项没了".
+      //
+      // ★ `<content>` / `<now_plot>` 同理（上一轮实测补上）：这两条是**本项目自己的**
+      //   输出信封 —— 角色卡与预设都按它们写规则。而模型并不是每一轮都带上状态栏
+      //   占位符：实测真实会话 `session-c98dfb13-…` 第 1 轮命中 `<Abstract`、
+      //   第 2~7 轮只有正文与这个信封。名单里没有它们时，那些轮次**在取卡之前**
+      //   就被这一行原样 return 掉 ⇒ 用户看到「前几轮有美化、之后每轮都是纯文本」，
+      //   而且没有任何报错。
+      //
+      // ★★ 于是本轮把枚举**整条去掉**，换成"标签无关"的形状判据。
+      //
+      //   理由是同一类 bug 已经发生**两次**，两次都是同一处枚举漏项：
+      //     第一次漏 `<content>` / `<now_plot>`（上一轮补的）；
+      //     第二次漏 `<video>` / `<img>`（本轮实测：真实角色扮演会话
+      //     `session-c98dfb13-…` 里，守卫放行的那一轮（含 `<content>`+`<video>`+`<img>`）
+      //     被完整美化；紧接着的下一轮正文里只有 `<audio>欢快</audio>`，一个白名单标记
+      //     都没有 ⇒ 整轮在取卡之前就返回，用户看到的就是"纯文本"）。
+      //   枚举注定继续漏：卡的标记由**卡**决定，卡随时能新增（`<audio>`/`<插图>`/
+      //   `<era_data>`/`<JSONPatch>`… 全是卡侧的自由发挥），而这份名单在引擎里。
+      //   所以判据改成"正文里出现任何 HTML 形态的标签就不跳过"：
+      //     `<` 后面必须是 `/` `!` 之一或字母/下划线/汉字 ⇒ `2 < 3`、`a <= b`、`1 <2`
+      //     这类普通文本**不会**误命中（`<` 后是空格/数字）；而 `<audio>`、`<video>`、
+      //     `<img>`、`</content>`、`<!DOCTYPE html>`、`<era_data>`、`<JSONPatch>`、
+      //     以及**中文标签**（`<插图>`、`<赏令接取>` 这类社区卡专属标记 —— 判据里的
+      //     汉字分支抄的是本文件里那条转义还原正则 `[a-zA-Z\u4e00-\u9fa5]`，
+      //     两条必须同时认中文名，否则又会出现"英文标记放行、中文标记跳过"的分叉），
+      //     一次全覆盖。
+      //   代价只是"多取一次卡"：取到卡之后若没有任何脚本命中，本函数末尾的
+      //   `if (normalized === text) return normalized` 会把原文原样交回，
+      //   调用方（`_decorateOne`）见到 `html === raw` 就不动 DOM ⇒ 无副作用。
+      //   这条已在 `verify-guard-tag-agnostic.mjs` 里用真实卡 + 真实回复量过
+      //   （纯散文/`2 < 3` 一档：取卡 0 次、DOM 与原样一致）。
+      //
+      //   仍然**不在**标签判据里的（如实记录）：
+      //     · `<!-- 注释 -->`（`<!` 后面是 `-`，不是名字）。没有任何渲染器认它。
+      //
+      // ★★ 第三次漏（2026-09-22 实锤，本轮修掉）：**占位符 greeting**。
+      //   社区卡大量使用「first_mes 只是短占位文本，靠卡的 markdownOnly 显示层正则把它
+      //   换成 ```html 包裹的整页 HTML」的模式（魔女卡的 7 字「星盟契约开场白」、
+      //   _足控天堂2 的「【主页】」→「星盟契约 · 缔约书」整页界面）。ST 的首楼因此
+      //   渲染出完整卡 UI，而上面那条形状判据只认 HTML 标签 —— **纯文本占位符在取卡
+      //   之前就被整楼跳过**，greeting 楼的正则替换从未发生（上面赌的"没有只带
+      //   【主页】的一轮"输给了占位符 greeting 楼）。
+      //   修法（最小改动，**不许**退化成"所有文本都取卡"）：
+      //     不含 HTML 标签、但去首尾空白后**足够短**（≤ 300 字符）的文本也放行去取卡。
+      //     · 无副作用的依据：就算卡的脚本全部落空，既有兜底
+      //       `normalized === text ⇒ 原样交回 ⇒ 调用方不动 DOM`（见本函数末尾）保证原样返回；
+      //     · 性能的依据：长散文（模型正文的绝对主力）不该多付一次取卡成本，只放短文本；
+      //       空白文本更没必要取卡（没有任何可装饰的东西）。
+      //     门禁：verify-guard-tag-agnostic.mjs 的决策臂 + B7（G 用例「【主页】」）。
+      var muvHasTag = /<[!\/]?[a-zA-Z_\u4e00-\u9fa5][^<>]*>/.test(text)
+      var muvTrimmedLen = String(text).trim().length
+      muvBeautifyTrace('enter', opts && opts.depth, 'len=' + muvTrimmedLen + ' tag=' + muvHasTag)
+      var muvShortOk = muvTrimmedLen > 0 && muvTrimmedLen <= 300
+      // ★ 第 35 轮：文本级状态栏形态也要放行 —— 这类消息可能既**没有 HTML 标签**
+      //   （纯 `[键:值]` 堆叠）、又**超过 300 字**（长状态前缀 + 长正文），两条既有
+      //   判据都拦不住它，而它正是本轮要救的那一类。判据本身是保守的
+      //   （≥2 个连续已知键、只在消息开头），所以这里放行不会退化成"所有文本都取卡"。
+      var muvTsShaped = !!(muvTextStatusProbe(text).prefix || muvTextDetailsOf(text))
+      if (!muvHasTag && !muvShortOk && !muvTsShaped) return text
+
+      // ★★ 切回会话秒开（2026-09-24）：缓存命中即直接交回上次的装饰产物 —— 跳过
+      //    取卡/服务端正则往返/级联/iframe 化全链。键与"缓存什么、不缓存什么"
+      //    的边界见 muvDecorKeyOf / muvDecorStore 的长注释（只缓存带卡 iframe 的
+      //    楼；状态栏楼、纯散文楼照旧现算，变量楼的数值不受任何影响）。
+      var muvCk = muvDecorKeyOf(text, depth)
+      if (muvCk) {
+        var muvHit = muvDecorCacheGet(muvCk)
+        if (muvHit != null) { muvBeautifyTrace('cache-hit', depth, 'len=' + String(muvHit).length); return muvHit }
       }
 
-      function muvStripOpt(s) {
-        s = String(s||'').trim().replace(/^["\u201c\u201d']|["\u201c\u201d']$/g,'')
-        s = s.replace(/^[\u{1F170}-\u{1F17E}]\s*/u,'').replace(/^[A-Za-z][.、)）]\s*/,'').replace(/^\d+[.、)）]\s*/,'')
-        return s.trim()
-      }
-
-      function muvBuildChoices(opts) {
-        var box = document.createElement('div')
-        box.className = 'muv-choices'
-        for (var i = 0; i < opts.length; i++) {
-          (function(text, idx){
-            var btn = document.createElement('button')
-            btn.type = 'button'
-            btn.className = 'muv-choice-btn'
-            btn.setAttribute('data-opt', String.fromCharCode(65+idx))
-            // textContent 而不是 innerHTML：选项文本可能来自模型（DOM 路径直接吃消息文本），
-            // 拼进 innerHTML 就等于给它一次注入机会；字符串路径那边本来也是转义的，
-            // 这样两条路径的转义口径也一致。
-            var letter = document.createElement('span')
-            letter.className = 'muv-choice-letter'
-            letter.textContent = String.fromCharCode(65+idx)
-            btn.appendChild(letter)
-            btn.appendChild(document.createTextNode(String(text == null ? '' : text)))
-            box.appendChild(btn)
-          })(opts[i], i)
-        }
-        return box
-      }
-
-      /**
-       * 把子树拼成一个字符串，**在 `<br>` 与块级边界补 `\n`**，并给出「字符 → 文本节点」的映射。
-       *
-       * 为什么不能直接拼 `nodeValue`：`<br>` 自己没有任何文本，而它恰恰是选项行的分隔符。
-       * 直接拼会得到 `A. 甲B. 乙`，把两个选项粘成一个（`innerText` 在这里是对的，
-       * 因为它按布局算换行；`textContent` 是错的）。实测就是这个坑：
-       * 粘在一起之后 `<choices>` 只解析出 1 个选项。
-       * @param {Element} root
-       * @returns {{text: string, map: Array<{node: Text, start: number}>}}
-       */
-      function muvTextWithBreaks(root) {
-        var text = ''
-        var map = []
-        var walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, null)
-        var n
-        var BLOCK = { P: 1, DIV: 1, LI: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1, PRE: 1, BLOCKQUOTE: 1, TR: 1, TABLE: 1, UL: 1, OL: 1 }
-        while ((n = walker.nextNode())) {
-          if (n.nodeType === 3) {
-            var v = n.nodeValue || ''
-            if (!v) continue
-            map.push({ node: n, start: text.length })
-            text += v
-            continue
-          }
-          var tag = n.tagName || ''
-          if (tag === 'BR') { text += '\n'; continue }
-          if (BLOCK[tag] && text && !/\n$/.test(text)) text += '\n'
-        }
-        return { text: text, map: map }
-      }
-
-      /**
-       * 把 DOM 里的一段文本换成**元素**（Range 手术）。
-       * @param {{node:Text,offset:number}} start
-       * @param {{node:Text,offset:number}} end
-       * @param {Node} node
-       * @returns {boolean}
-       */
-      function replaceRangeWithNode(start, end, node) {
-        try {
-          var range = document.createRange()
-          range.setStart(start.node, start.offset)
-          range.setEnd(end.node, end.offset)
-          range.deleteContents()
-          range.insertNode(node)
-          return true
-        } catch (_) { return false }
-      }
-
-      // 媒体元素允许保留的属性白名单。**`on*` 一律丢**：媒体标签的文本来自模型/卡，
-      // 直接 innerHTML 就等于把 `onerror=` 这类东西请进 DSH 自己的页面（同源执行）。
-      // 白名单化之后，最坏情况只是"属性被忽略"，而不是"脚本被执行"。
-      var MUV_MEDIA_ATTRS = {
-        src: 1, controls: 1, preload: 1, loop: 1, autoplay: 1, muted: 1, playsinline: 1,
-        poster: 1, width: 1, height: 1, id: 1, class: 1, style: 1, title: 1,
-        type: 1, kind: 1, srclang: 1, label: 1, crossorigin: 1, media: 1,
-      }
-
-      /**
-       * 把一个解析出来的媒体元素**按白名单**拷成新元素。
-       * @param {Element} srcEl
-       * @returns {Element|null}
-       */
-      function muvCloneMediaElement(srcEl) {
-        if (!srcEl || srcEl.nodeType !== 1) return null
-        var tag = String(srcEl.tagName || '').toLowerCase()
-        if (tag !== 'video' && tag !== 'audio' && tag !== 'source' && tag !== 'track') return null
-        var out = document.createElement(tag)
-        var attrs = srcEl.attributes || []
-        for (var i = 0; i < attrs.length; i++) {
-          var name = String(attrs[i].name || '').toLowerCase()
-          if (name.indexOf('on') === 0) continue
-          if (!MUV_MEDIA_ATTRS[name]) continue
-          try { out.setAttribute(name, attrs[i].value) } catch (_) {}
-        }
-        return out
-      }
-
-      /**
-       * 由一段媒体标签文本造出真正的元素（原生路径的 ④）。
-       *
-       * 用 `DOMParser` 解析**离线文档**（不是活动文档的 innerHTML），再逐属性白名单拷贝 ——
-       * 这样既能支持 `<video><source …></video>` 这种带子节点的形态，又不会把事件处理器
-       * 带进页面。
-       *
-       * 与字符串路径 `renderMediaTags()` 的取舍保持一致：
-       *  - 有 src（或带 `<source>` 子节点）→ 真实元素，缺 `controls` / `preload` 就补上；
-       *  - **一个属性都没有**的裸提示词 → 文字占位（`muv-video-ph` / `muv-audio`）；
-       *  - 有属性但没 src → 返回 null（**不动它**：那多半是脚本待填的元素，见 ② 的说明）。
-       * @param {string} segment
-       * @returns {Element|null}
-       */
-      function muvBuildMediaElement(segment) {
-        var parsed
-        try {
-          parsed = new DOMParser().parseFromString('<div id="muv-media-root">' + String(segment) + '</div>', 'text/html')
-        } catch (_) { return null }
-        var host = parsed && parsed.getElementById('muv-media-root')
-        var first = host && host.firstElementChild
-        if (!first) return null
-        var el = muvCloneMediaElement(first)
-        if (!el) return null
-        var kids = first.children || []
-        for (var i = 0; i < kids.length; i++) {
-          var child = muvCloneMediaElement(kids[i])
-          if (child) el.appendChild(child)
-        }
-        var hasSrc = !!el.getAttribute('src') || !!el.querySelector('source')
-        var hasSrcAttr = el.hasAttribute('src')
-        var hasChildren = !!(el.children && el.children.length)
-        var disposition = mediaTagDisposition(hasSrcAttr, hasSrc, !!(first.attributes && first.attributes.length), hasChildren)
-        if (disposition === 'skip') return null
-        if (disposition === 'placeholder') {
-          var ph = document.createElement('div')
-          ph.className = el.tagName === 'VIDEO' ? 'muv-video-ph' : 'muv-audio'
-          ph.textContent = (el.tagName === 'VIDEO' ? '🎬 ' : '🎵 ') + String(first.textContent || '').trim()
-          return ph
-        }
-        if (!el.hasAttribute('controls')) el.setAttribute('controls', '')
-        if (!el.hasAttribute('preload')) el.setAttribute('preload', 'metadata')
-        try { el.classList.add('muv-media') } catch (_) {}
-        return el
-      }
-
-      /**
-       * 原生路径的媒体标签渲染（DOM 层）—— ④。
-       *
-       * 为什么必须是 DOM 层：`renderMediaTags()` 的结果如果整条写回（`body.innerHTML = html`），
-       * 输入是 `innerText`（markdown 早被 DSH 渲染掉了），会把整条消息的 markdown 抹平。
-       * 实测过：媒体产物里没有任何状态栏片段 ⇒ `applyDecoratedHtml` 会落在那条最后手段上。
-       * 所以这里只把**那一段标签文本**换成元素，其余 DOM 一个不碰。
-       *
-       * 落点在 `<script>` / `<style>` 里的文本一律跳过（与字符串路径同一条红线：
-       * 那是代码，不是标记）。
-       * @param {Element} root
-       * @returns {number} 换掉的媒体标签数量
-       */
-      function muvRenderMediaTags(root) {
-        if (!root || root.nodeType !== 1) return 0
-        if (typeof DOMParser !== 'function') return 0
-        var done = 0
-        var from = 0
-        var re = /<(audio|video)\b[^>]*?(?:\/>|>[\s\S]*?<\/\1\s*>)/gi
-        for (var guard = 0; guard < 40; guard++) {
-          var walked = muvTextWithBreaks(root)
-          var pattern = new RegExp(re.source, re.flags)
-          pattern.lastIndex = from
-          var hit = pattern.exec(walked.text)
-          if (!hit) break
-          var a = locateInWalked(walked.map, hit.index)
-          var b = locateInWalked(walked.map, hit.index + hit[0].length)
-          // 跳过代码里的同名标签，以及定位不到的情况：把游标推过这一段，继续找下一个
-          var inCode = false
-          try {
-            inCode = !!(a && a.node.parentElement && a.node.parentElement.closest
-              && a.node.parentElement.closest('script, style'))
-          } catch (_) {}
-          if (!a || !b || inCode) { from = hit.index + hit[0].length; continue }
-          var built = muvBuildMediaElement(hit[0])
-          if (!built) { from = hit.index + hit[0].length; continue }
-          if (!replaceRangeWithNode(a, b, built)) { from = hit.index + hit[0].length; continue }
-          from = 0
-          done++
-        }
-        return done
-      }
-
-      /**
-       * `<插图>名字</插图>` → 占位块（原生路径的 ④ 之一）。
-       *
-       * 酒馆路径有这一步（`_tavernRenderTags` 里那段字符串替换），原生路径从来没有 ——
-       * 于是模型写的 `<插图>` 就是一段裸文本。这里在 DOM 层只换那一段，markdown 不受影响。
-       * 元素是**手工搭**的（textContent），不解析任何 HTML：名字来自模型，不该进解析器。
-       * @param {Element} root
-       * @returns {number}
-       */
-      function muvRenderIllustrations(root) {
-        if (!root || root.nodeType !== 1) return 0
-        var done = 0
-        var from = 0
-        for (var guard = 0; guard < 20; guard++) {
-          var walked = muvTextWithBreaks(root)
-          var re = /<插图>([\s\S]*?)<\/插图>/gi
-          re.lastIndex = from
-          var hit = re.exec(walked.text)
-          if (!hit) break
-          var a = locateInWalked(walked.map, hit.index)
-          var b = locateInWalked(walked.map, hit.index + hit[0].length)
-          var inCode = false
-          try {
-            inCode = !!(a && a.node.parentElement && a.node.parentElement.closest
-              && a.node.parentElement.closest('script, style'))
-          } catch (_) {}
-          if (!a || !b || inCode) { from = hit.index + hit[0].length; continue }
-          var box = document.createElement('div')
-          box.className = 'muv-illustration'
-          var icon = document.createElement('span')
-          icon.className = 'muv-illustration-icon'
-          icon.textContent = '🖼️'
-          box.appendChild(icon)
-          box.appendChild(document.createTextNode(' ' + String(hit[1] || '').trim()))
-          if (!replaceRangeWithNode(a, b, box)) { from = hit.index + hit[0].length; continue }
-          from = 0
-          done++
-        }
-        return done
-      }
-
-      /**
-       * 通用的「把一段标记文本换成元素」循环（第三类及其后续都复用它）。
-       *
-       * 与 `muvRenderMediaTags` 同样的三条纪律：跳过 `<script>/<style>` 里的同名文本
-       * （那是代码不是标记）、只动命中的那一段、有收敛上限。
-       * 决定「不处理」时把游标推过这一段继续找下一个，而不是直接 break ——
-       * 一条消息里可能有好几个同类块，其中一个形态不认识不该让后面的也漏掉。
-       * @param {Element} root
-       * @param {RegExp} re 需带 g 标志
-       * @param {(hit: RegExpExecArray) => Element|'remove'|null} build 返回元素=替换、
-       *   返回 `'remove'`=只删掉这一段（隐藏类标记）、返回 null=别碰（推过这一段继续找）
-       * @param {number} [maxRounds]
-       * @returns {number} 处理掉的块数
-       */
-      function muvReplaceTagBlocks(root, re, build, maxRounds) {
-        if (!root || root.nodeType !== 1) return 0
-        var done = 0
-        var from = 0
-        var limit = maxRounds || 40
-        for (var guard = 0; guard < limit; guard++) {
-          var walked = muvTextWithBreaks(root)
-          var pattern = new RegExp(re.source, re.flags)
-          pattern.lastIndex = from
-          var hit = pattern.exec(walked.text)
-          if (!hit) break
-          var a = locateInWalked(walked.map, hit.index)
-          var b = locateInWalked(walked.map, hit.index + hit[0].length)
-          var inCode = false
-          try {
-            inCode = !!(a && a.node.parentElement && a.node.parentElement.closest
-              && a.node.parentElement.closest('script, style'))
-          } catch (_) {}
-          if (!a || !b || inCode) { from = hit.index + hit[0].length; continue }
-          var node = null
-          try { node = build(hit) } catch (_) { node = null }
-          if (node === 'remove') {
-            if (!replaceRangeWithNode(a, b, document.createTextNode(''))) {
-              from = hit.index + hit[0].length
-              continue
-            }
-            from = 0
-            done++
-            continue
-          }
-          if (!node || !replaceRangeWithNode(a, b, node)) { from = hit.index + hit[0].length; continue }
-          from = 0
-          done++
-        }
-        return done
-      }
-
-      /**
-       * `<details class="…"><summary>标题</summary><pre|div>正文</pre|div></details>`。
-       * 正文一律用 `textContent` / `createTextNode`：这些内容来自模型，不该进 HTML 解析器。
-       * @param {string} cls
-       * @param {string} title
-       * @param {string} text
-       * @param {string} [bodyTag='pre']
-       * @returns {Element}
-       */
-      function muvDetailsBlock(cls, title, text, bodyTag) {
-        var box = document.createElement('details')
-        box.className = cls
-        var summary = document.createElement('summary')
-        summary.textContent = title
-        box.appendChild(summary)
-        var body = document.createElement(bodyTag === 'div' ? 'div' : 'pre')
-        body.textContent = String(text == null ? '' : text)
-        box.appendChild(body)
-        return box
-      }
-
-      /**
-       * `<tag class="…">文本</tag>` 这种最简元素（内容走 textContent）。
-       * @param {string} tag
-       * @param {string} cls
-       * @param {string} text
-       * @returns {Element}
-       */
-      function muvSimpleBlock(tag, cls, text) {
-        var el = document.createElement(tag)
-        el.className = cls
-        el.textContent = String(text == null ? '' : text)
-        return el
-      }
-
-      /**
-       * 原生路径要接的内联标签表 —— **与酒馆路径 `_tavernRenderTags` 对齐**
-       * （那里的字符串版 + `verify-decorate-dom.mjs` 是行为基准）。
-       *
-       * 每条规则一种产出：
-       *  - `{tag, cls}`         → 最简元素（内容走 textContent）
-       *  - `{tag, cls, prefix}` → 前面加个图标字符
-       *  - `{details, title}`   → 折叠卡
-       *  - `{hr: true}`         → `hr.muv-sep`
-       *  - `{remove: true}`     → 整段删掉（**内部块**，本来就不该给用户看）
-       *
-       * 做成表而不是逐条 `result.replace(...)`：两条路径的**集合**必须一致，
-       * 而集合散在 40 行里一定会漂移（前两类就是这么教育我们的）。
-       * @type {Array<object>}
-       */
-      var MUV_TAG_RULES = [
-        { re: /<speech>([\s\S]*?)<\/speech>/gi, tag: 'div', cls: 'muv-speech' },
-        { re: /<dialogue>([\s\S]*?)<\/dialogue>/gi, tag: 'div', cls: 'muv-dialogue' },
-        { re: /<(?:引用|quote)>([\s\S]*?)<\/(?:引用|quote)>/gi, tag: 'blockquote', cls: 'muv-quote' },
-        { re: /<(?:char|character)>([\s\S]*?)<\/(?:char|character)>/gi, tag: 'b', cls: 'muv-char-name' },
-        { re: /<inner>([\s\S]*?)<\/inner>/gi, tag: 'div', cls: 'muv-inner' },
-        { re: /<Drama>([\s\S]*?)<\/Drama>/gi, tag: 'div', cls: 'muv-drama' },
-        { re: /<story>([\s\S]*?)<\/story>/gi, tag: 'div', cls: 'muv-story' },
-        { re: /<narrative>([\s\S]*?)<\/narrative>/gi, tag: 'div', cls: 'muv-narrative' },
-        { re: /<action>([\s\S]*?)<\/action>/gi, tag: 'div', cls: 'muv-action' },
-        { re: /<(?:thought|thinking)>([\s\S]*?)<\/(?:thought|thinking)>/gi, tag: 'div', cls: 'muv-thought', prefix: '💭 ' },
-        { re: /<(?:feeling|emotion)>([\s\S]*?)<\/(?:feeling|emotion)>/gi, tag: 'span', cls: 'muv-feeling' },
-        { re: /<expression>([\s\S]*?)<\/expression>/gi, tag: 'span', cls: 'muv-expression' },
-        { re: /<(?:pose|posture)>([\s\S]*?)<\/(?:pose|posture)>/gi, tag: 'span', cls: 'muv-pose' },
-        { re: /<(?:location|scene)>([\s\S]*?)<\/(?:location|scene)>/gi, tag: 'div', cls: 'muv-location', prefix: '📍 ' },
-        { re: /<time>([\s\S]*?)<\/time>/gi, tag: 'span', cls: 'muv-time', prefix: '⏰ ' },
-        { re: /<weather>([\s\S]*?)<\/weather>/gi, tag: 'span', cls: 'muv-weather', prefix: '🌤️ ' },
-        { re: /<CG>([\s\S]*?)<\/CG>/gi, tag: 'div', cls: 'muv-cg', prefix: '🎨 ' },
-        { re: /<(?:inventory|背包)>([\s\S]*?)<\/(?:inventory|背包)>/gi, details: 'muv-inventory', title: '🎒 背包' },
-        { re: /<(?:skill|技能)>([\s\S]*?)<\/(?:skill|技能)>/gi, details: 'muv-skill', title: '⚔️ 技能' },
-        { re: /<JSONPatch>([\s\S]*?)<\/JSONPatch>/gi, details: 'muv-jsonpatch', title: '🔧 变量补丁' },
-        { re: /<sep\s*\/?>|<hr\s*\/?>/gi, hr: true },
-        // ↓ 内部块：删掉。原生路径原本把这些**原样显示**，等于把内部指令泄漏给用户。
-        //   只删「整块配对」的形态；没有收尾标签的（如单独的 `<system>`）宁可留着，不误删正文。
-        { re: /<rule_check>[\s\S]*?<\/rule_check>/gi, remove: true },
-        { re: /<rule_\w+>[\s\S]*?<\/rule_\w+>/gi, remove: true },
-        { re: /<dungeon_engine>[\s\S]*?<\/dungeon_engine>/gi, remove: true },
-        { re: /<user_setting>[\s\S]*?<\/user_setting>/gi, remove: true },
-        { re: /<system_prompt>[\s\S]*?<\/system_prompt>/gi, remove: true },
-        { re: /<status_current_variable>[\s\S]*?<\/status_current_variable>/gi, remove: true },
-        { re: /<Analysis>[\s\S]*?<\/Analysis>/gi, remove: true },
-        { re: /<style[^>]*>[\s\S]*?<\/style>/gi, remove: true },
-      ]
-
-      /**
-       * 卡牌专属「游戏标签」（苍玄界一类卡的 赏令 / 拍卖 / 盲盒 / 道友 / 飞剑 / 自由开局 …）。
-       *
-       * 酒馆路径 `_tavernRenderTags` 一直按卡字段渲染信息卡；原生路径此前**没有**，
-       * 这批标签整段露成裸文本（verify-decorate-dom.mjs 的 G_gamecard 门禁钉的就是它，
-       * HANDOFF §16.3 已知未覆盖第 1 条）。这里与酒馆路径同一份标签集合；配色不写在
-       * 元素上，走 `exports.apply` 里已有的 `[data-card="…"]` 属性选择器（改色只动 CSS）。
-       * @type {Array<{tag: string, icon: string}>}
-       */
-      var MUV_GAME_TAGS = [
-        { tag: '赏令接取', icon: '📜' },
-        { tag: '赏令完成', icon: '✅' },
-        { tag: '拍卖购入', icon: '💰' },
-        { tag: '盲盒开启', icon: '🎁' },
-        { tag: '道友收录', icon: '👥' },
-        { tag: '飞剑回信', icon: '📨' },
-        { tag: '自由开局', icon: '🎲' },
-      ]
-
-      /**
-       * `字段：值` 行解析（与酒馆路径同一口径：全/半角冒号都认，一行一条）。
-       * 全部走 textContent / createTextNode——内容来自模型，不进 HTML 解析器。
-       * @param {Element} card
-       * @param {string} text
-       * @returns {void}
-       */
-      function muvFillGameCardFields(card, text) {
-        var lines = String(text == null ? '' : text).split(/\r?\n/)
-        for (var i = 0; i < lines.length; i++) {
-          var m = /^([^：:\r\n]+)[：:]\s*([^\r\n]+)$/.exec(lines[i].trim())
-          if (!m) continue
-          var row = document.createElement('div')
-          row.className = 'muv-card-field'
-          var b = document.createElement('b')
-          b.textContent = m[1].trim()
-          row.appendChild(b)
-          row.appendChild(document.createTextNode(' ' + m[2].trim()))
-          card.appendChild(row)
-        }
-      }
-
-      /**
-       * 原生路径的游戏卡渲染（G_gamecard）。
-       *
-       * 复用 `muvReplaceTagBlocks` 的三条纪律（跳过 script/style 里的同名文本、
-       * 只动命中段、有收敛上限）；夹在媒体/插图之后、通用表之前跑都安全——
-       * 这批标签名不在 `MUV_TAG_RULES` 里，两张表不会互相抢块。
-       * @param {Element} root
-       * @returns {number} 处理掉的卡数
-       */
-      function muvRenderGameCards(root) {
-        var n = 0
-        for (var i = 0; i < MUV_GAME_TAGS.length; i++) {
-          (function (g) {
-            var re = new RegExp('<' + g.tag + '>([\\s\\S]*?)<\\/' + g.tag + '>', 'gi')
-            n += muvReplaceTagBlocks(root, re, function (hit) {
-              var card = document.createElement('div')
-              card.className = 'muv-game-card'
-              card.setAttribute('data-card', g.tag)
-              var title = document.createElement('div')
-              title.className = 'muv-game-card-title'
-              title.textContent = g.icon + ' ' + g.tag
-              card.appendChild(title)
-              muvFillGameCardFields(card, hit[1])
-              return card
-            })
-          })(MUV_GAME_TAGS[i])
-        }
-        return n
-      }
-
-      /**
-       * `<img src="…">` → 真图片（第三类之二）。
-       *
-       * 只认带 src 的；`alt` 保留，其余属性一律不要（`onerror` 之类同上白名单的考虑）。
-       * 真图片元素在 DOM 里没有文本节点，所以只有**被转义成文本**的 `<img>` 会命中。
-       * @param {Element} root
-       * @returns {number}
-       */
-      function muvRenderImages(root) {
-        return muvReplaceTagBlocks(root, /<img\s+[^>]*>/gi, function (hit) {
-          var seg = String(hit[0] || '')
-          var m = /(?:^|\s)src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i.exec(seg)
-          var srcValue = m ? (m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : m[3])) : ''
-          if (!srcValue) return null            // 没有 src 的不动它
-          var alt = /(?:^|\s)alt\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(seg)
-          var img = document.createElement('img')
-          img.className = 'muv-img'
-          img.setAttribute('src', srcValue)
-          img.setAttribute('loading', 'lazy')
-          img.setAttribute('style', 'max-width:100%;border-radius:8px;margin:6px 0')
-          if (alt) img.setAttribute('alt', alt[1] !== undefined ? alt[1] : alt[2])
-          return img
-        })
-      }
-
-      /**
-       * 按表渲染全部内联标签（第三类之二/之三）。
-       * @param {Element} root
-       * @returns {number}
-       */
-      function muvRenderTagRules(root) {
-        var n = 0
-        n += muvRenderImages(root)
-        // ★ 游戏卡先于通用表：标签集合不相交，但先处理"专属形态"再处理"通用形态"
-        //   是两条路径共同的安全次序（酒馆路径同样是游戏卡在通用标签之前）。
-        n += muvRenderGameCards(root)
-        for (var i = 0; i < MUV_TAG_RULES.length; i++) {
-          var rule = MUV_TAG_RULES[i]
-          n += muvReplaceTagBlocks(root, rule.re, (function (r) {
-            return function (hit) {
-              if (r.remove) return 'remove'
-              if (r.hr) {
-                var hr = document.createElement('hr')
-                hr.className = 'muv-sep'
-                return hr
-              }
-              var text = String(hit[1] == null ? '' : hit[1]).trim()
-              if (r.details) return muvDetailsBlock(r.details, r.title, text, 'pre')
-              return muvSimpleBlock(r.tag || 'div', r.cls, (r.prefix || '') + text)
-            }
-          })(rule))
-        }
-        return n
-      }
-
-      /**
-       * 变量块 / 推演块 / 摘要块的 DOM 渲染（第三类）。
-       *
-       * 原生路径上这些标签**一个渲染器都没有**（只有酒馆路径的 `_tavernRenderTags` 有），
-       * 于是模型输出里那一大坨 `<UpdateVariable>{…JSON…}</UpdateVariable>` 就原样显示给用户。
-       * 这里把它们收进折叠卡；`<Abstract>` 转成摘要条 —— 与酒馆路径同样的 class，
-       * 样式共用，但**元素是手工搭的**（textContent），JSON 里的 `<img onerror>` 之类
-       * 只会是文本。
-       * @param {Element} root
-       * @returns {number}
-       */
-      function muvRenderVariableBlocks(root) {
-        var n = 0
-        // ★ 元素形态 pass（先跑，2026-09-24 新增）。
-        //
-        //   泄漏机制实锤（tools/_probe-leak.mjs + 真机 session-7347d5f7）：DSH 把标签渲染成
-        //   **真元素**时（§20.4 实测的两种形态之一，`<variableedit>` 小写元素），字面标签
-        //   文本不在任何文本节点里 ⇒ 下面这些按**文本**匹配的正则永远打不中，
-        //   `<UpdateVariable>` 里嵌的 `<Analysis>` 英文行与 `<JSONPatch>` 的 JSON 数组
-        //   就以裸文本糊在正文里（实测 Edge 复现：varedit=0 / analysisLeak=1 / patchLeak=1）。
-        //
-        //   这里按**元素**再收一遍：外层整块折叠（内部嵌套的 Analysis/JSONPatch 随之消失）、
-        //   残留的 Analysis 删除、JSONPatch 折叠 —— 与酒馆路径 `_tavernRenderTags` 的集合对齐
-        //   （那里 5029 折 JSONPatch、5066 折变量块、5118 藏 Analysis）。内容一律 textContent。
-        var els = []
-        try { els = root.querySelectorAll('updatevariable, variableedit, variableinsert, variablethink, analysis, jsonpatch') } catch (_) { els = [] }
-        for (var ei = 0; ei < els.length; ei++) {
-          var el = els[ei]
-          // 外层整块折叠后，内层的嵌套元素已随之摘除 —— 只处理仍挂在本根上的
-          if (!el || !root.contains(el)) continue
-          var etag = String(el.tagName || '').toLowerCase()
-          var block = null
-          if (etag === 'updatevariable' || etag === 'variableedit' || etag === 'variableinsert') {
-            // 整块内容（含嵌套的 Analysis/JSONPatch 文本）收进折叠卡 —— 与文本形态的
-            // "JSON 解析不出就原样展示"同一口径；标签名作为元素时不占文本，无需剔除
-            block = muvDetailsBlock('muv-varedit', '🔧 变量更新', el.textContent, 'pre')
-          } else if (etag === 'variablethink') {
-            block = muvDetailsBlock('muv-varthink', '💭 变量推演', String(el.textContent || '').trim(), 'div')
-          } else if (etag === 'jsonpatch') {
-            block = muvDetailsBlock('muv-jsonpatch', '🔧 变量补丁', String(el.textContent || '').trim(), 'pre')
-          } else if (etag === 'analysis') {
-            block = 'remove' // 给模型的思考痕迹，不给用户看（与 MUV_TAG_RULES 的 remove 同语义）
-          }
-          if (!block) continue
-          try {
-            if (block === 'remove') el.parentNode.removeChild(el)
-            else el.parentNode.replaceChild(block, el)
-            n++
-          } catch (_) {}
-        }
-        // 以下为文本形态 pass（DSH 把标签转义成 &lt;…&gt; 文本的另一种形态）—— 既有行为不动
-        n += muvReplaceTagBlocks(root, /<(VariableEdit|VariableInsert|UpdateVariable)>([\s\S]*?)<\/\1>/gi, function (hit) {
-          var raw = String(hit[2] || '').trim()
-          var pretty = raw
-          // 能解析成 JSON 就美化缩进（与酒馆路径一致），否则原样展示
-          try { pretty = JSON.stringify(JSON.parse(raw), null, 2) } catch (_) {}
-          return muvDetailsBlock('muv-varedit', '🔧 变量更新', pretty, 'pre')
-        })
-        n += muvReplaceTagBlocks(root, /<VariableThink>([\s\S]*?)<\/VariableThink>/gi, function (hit) {
-          return muvDetailsBlock('muv-varthink', '💭 变量推演', String(hit[1] || '').trim(), 'div')
-        })
-        n += muvReplaceTagBlocks(root, /<Abstract>([\s\S]*?)<\/Abstract>/gi, function (hit) {
-          var box = document.createElement('div')
-          box.className = 'muv-abstract'
-          var icon = document.createElement('span')
-          icon.className = 'muv-abstract-icon'
-          icon.textContent = '📖'
-          box.appendChild(icon)
-          box.appendChild(document.createTextNode(' ' + String(hit[1] || '').trim()))
-          return box
-        })
-        return n
-      }

@@ -80,7 +80,7 @@ const SKIP_PARTS = !!process.env.MUV_MOVE_SKIP_PARTS_INSERT
 //     （这条来自一次真实误报：自查把注释里的字面量算成了"仍在读该环境变量"。）
 const TAMPER_LOOKUP = !!process.env.MUV_MOVE_TAMPER_LOOKUP   // 守卫反证：出现 0 次
 // ★ Lead 补漏：计数守卫的另一侧 —— 只造"该原文出现 2 次"的样本 ⇒ 必须 fail-closed 并点名次数
-const DUP_TARGET = !!process.env.MUV_MOVE_DUP_TARGET   // 守卫反证用：把待查文本改坏 ⇒ guard 必响
+const DUP_TARGET = !!process.env.MUV_MOVE_DUP_TARGET   // 守卫反证用：**制造重复副本**（该原文出现 ≥2 次）⇒ guard 必响
 const NO_DELETE = !!process.env.MUV_MOVE_NO_DELETE
 const NO_BUMP = !!process.env.MUV_MOVE_NO_BUMP
 const VALUE_CAPTURE = !!process.env.MUV_MOVE_VALUE_CAPTURE
@@ -151,8 +151,11 @@ if (!/const\s+__wiring\s*=\s*\{[\s\S]*?\n\s*\}\s*$/.test(modText)) fail('生成�
 const fnNeedle = TAMPER_LOOKUP ? (fnText + '\n// 故意改坏（守卫反证）') : (fnText + '\n')
 // ★ 计数守卫的**另一侧**（Lead 补漏）：TAMPER 只覆盖"出现 0 次"；这里覆盖"**出现 ≥2 次**"。
 //   `String.replace` 只替换**首次**出现 ⇒ 若有重复副本会留下**半搬运**产物（静默）⇒ 必须响亮。
-const countText = DUP_TARGET ? (hostText + fnNeedle + fnNeedle) : hostText
+const countText = DUP_TARGET ? (hostText + fnNeedle) : hostText   // 夹具只加 **1 份**重复副本 ⇒ 该原文共 2 份（与 ⑨ 支断言一致）
 const beforeCnt = countText.split(fnNeedle).length - 1
+// ★ 夹具自证：把**它自算的计数**打印出来 ⇒ 测试不必猜「守卫不灵」还是「夹具没造出重复」。
+//   只在注入下打印（默认路径的输出**一字不变**）。
+if (DUP_TARGET) console.log('  夹具：已制造 1 份重复副本（该原文共 ' + beforeCnt + ' 份）')
 if (beforeCnt !== 1) fail('承载片里该函数原文出现 ' + beforeCnt + ' 次（要求**恰好 1 次**）——'
   + '改错地方 / 有重复副本都会让"搬运"变成半搬运，故在此 fail-closed')
 // ★ 守卫的**本义**是"该片里必须能找到这段逐字原文"（防"改错了地方"），而**不是**"移除动作必须被施加" ⇒

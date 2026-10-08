@@ -24,12 +24,22 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { tokenize, functionScopes, scopeGroupReport } from '../tools/client-scope.mjs'
 
 const SELF = fileURLToPath(import.meta.url)
 const HERE = path.dirname(SELF)
 const REPO = path.resolve(HERE, '..')
 const NODE = process.execPath
-const MIN_ASSERTIONS = 10
+// ★ 下限口径：**先测量再写死**。2026-10-08 本笔落地时实测 pass+fail = 26
+//   （复算：node tests/test-move-segment.mjs | tail -1）。本笔新增 ⑨/⑨-正对照/同作用域组 共 6 条 ⇒ 10 → 20。
+const MIN_ASSERTIONS = 20
+
+// ★ 搬迁目标（**参数化**：换目标只改这一处）。
+//   目标刻意保留 = **笔 B 要真搬走的那个函数**（ensureStatusCss）⇒ 本测试 = 真搬迁的**同形预演**。
+//   ★ 连带（写给笔 B）：笔 B 落地时必须**在同一笔里**把这里的 TARGET 换成另一个仍未搬的函数，
+//     否则下面的 assertTargetStillInArtifact() 会（**正确地**）把语料判红。
+const TARGET = { fn: 'ensureStatusCss', module: 'mod-status-css.js', wiring: 'sbCss=MUV_SB_CSS' }
+const FN_DECL = 'function ' + TARGET.fn
 let pass = 0, fail = 0
 const cleaned = []
 /** ★ 尚未清理的沙盒（用于**崩溃路径**兜底，见 cleanupAll）。 */
@@ -69,6 +79,44 @@ const check = (name, cond, detail) => {
 /** 失败时把**子进程全量输出**附上（含 exit code）—— 这是"横幅没出现"能被区分出来的前提。 */
 const fullOut = (r) => 'exit=' + r.status + '  ---stdout---\n' + String(r.stdout || '') + '\n---stderr---\n' + String(r.stderr || '')
 
+// ── ★ 诊断①：本测试的搬迁目标必须**还在产物里**（已被真搬迁 ⇒ 明确失败并点名 + 下一步；不许静默换目标）──
+function assertTargetStillInArtifact(repoDir = REPO) {
+  const art = fs.readFileSync(path.join(repoDir, 'lib', 'client.js'), 'utf8')
+  const n = art.split(FN_DECL).length - 1
+  if (n !== 1) {
+    throw new Error('诊断：搬迁目标 `' + TARGET.fn + '` 在产物里出现 ' + n + ' 次（应为 1）。'
+      + ' ⇒ 很可能它**已经被真搬迁过** ⇒ 下一步：把 TARGET 换成**另一个仍未搬**的函数（并同步本文件的夹具）。'
+      + ' ★ 这是**明确失败**，不是跳过（本仓禁止静默）。')
+  }
+}
+
+/** ★ 诊断②：承载片**动态推导**（不再写死 part-02.js）——按 MANIFEST 行区间取包含该函数首行的那一片；
+ *  并在**原承载片里**校验该原文**恰好 1 次**（≠1 ⇒ 明确失败并点名 + 下一步）。 */
+function hostPartOf(repoDir = REPO) {
+  const art = fs.readFileSync(path.join(repoDir, 'lib', 'client.js'), 'utf8')
+  const toks = tokenize(art)
+  let s = -1
+  for (let i = 0; i < toks.length; i++) {
+    if (toks[i].type !== 'ident' || toks[i].value !== 'function') continue
+    const idt = toks[i + 1]
+    if (!idt || idt.value !== TARGET.fn) continue
+    s = art.slice(0, toks[i].start).split('\n').length
+    break
+  }
+  if (s < 0) throw new Error('诊断：产物里找不到 `function ' + TARGET.fn + '` ⇒ 下一步：确认 TARGET.fn 是否已被改名/搬走。')
+  const mf = JSON.parse(fs.readFileSync(path.join(repoDir, 'src', 'client', 'MANIFEST.json'), 'utf8'))
+  const p = mf.parts.find((x) => x.startLine <= s && s <= x.endLine)
+  if (!p) throw new Error('诊断：找不到承载 ' + TARGET.fn + '（产物行 ' + s + '）的分片 ⇒ 下一步：核对 MANIFEST 行区间。')
+  const rel = p.path.replace('src/client/', '')
+  const inPart = fs.readFileSync(path.join(repoDir, 'src', 'client', rel), 'utf8').split(FN_DECL).length - 1
+  if (inPart !== 1) throw new Error('诊断：原承载片 ' + rel + ' 里 `' + FN_DECL + '` 出现 ' + inPart + ' 次（应为 1）'
+    + ' ⇒ 下一步：确认它是否已被复制（重复副本）或半搬运；本测试不许静默继续。')
+  return rel.replace(/\.js$/, '.js')
+}
+assertTargetStillInArtifact()
+const HOST = hostPartOf()
+console.log('（本测试目标 = ' + TARGET.fn + '，接线 ' + TARGET.wiring + '，承载片 = ' + HOST + '）')
+
 function makeSandbox(tag) {
   const dir = path.join(os.tmpdir(), 'muv-move-' + tag + '-' + Date.now())
   fs.rmSync(dir, { recursive: true, force: true })
@@ -84,7 +132,7 @@ function dropSandbox(dir) {
   cleaned.push(dir)
 }
 const runGen = (dir, env = {}) => spawnSync(NODE, [
-  'tools/move-segment.mjs', '--fn', 'ensureStatusCss', '--module', 'mod-status-css.js',
+  'tools/move-segment.mjs', '--fn', TARGET.fn, '--module', TARGET.module,
   '--scope', '<箭头函数@行4>', '--wiring', 'sbCss=MUV_SB_CSS',
 ], { cwd: dir, encoding: 'utf8', maxBuffer: 1 << 28, env: { ...process.env, ...env } })
 const judge = (dir, flag) => spawnSync(NODE, ['tools/build-client.mjs', flag], { cwd: dir, encoding: 'utf8', maxBuffer: 1 << 28 })
@@ -102,17 +150,17 @@ console.log('① ★ 正对照：正常搬一段 ⇒ 生成器 exit=0 且四条�
   const d = makeSandbox('pos')
   const r = runGen(d)
   check('生成器 exit=0', r.status === 0, fullOut(r))
-  check('打印的 parts 顺序里含新片', /mod-status-css\.js/.test(String(r.stdout || '')), fullOut(r))
+  check('打印的 parts 顺序里含新片', new RegExp(TARGET.module.replace('.', '\\.')).test(String(r.stdout || '')), fullOut(r))
   for (const f of ['--check', '--levels', '--uniqueness', '--ledger']) {
     const j = judge(d, f)
     check('  ' + f + ' exit=0', j.status === 0, fullOut(j))
   }
   const art = fs.readFileSync(path.join(d, 'lib', 'client.js'), 'utf8')
   check('★ 无损：函数在产物里**恰好 1 次**（多重集合口径）',
-    art.split('function ensureStatusCss').length - 1 === 1,
-    '次数=' + (art.split('function ensureStatusCss').length - 1))
-  check('★ 无损：承载片里原函数**已消失**（不是复制）',
-    fs.readFileSync(path.join(d, 'src', 'client', 'part-02.js'), 'utf8').split('function ensureStatusCss').length - 1 === 0)
+    art.split(FN_DECL).length - 1 === 1,
+    '次数=' + (art.split(FN_DECL).length - 1))
+  check('★ 无损：承载片（动态推导 = ' + HOST + '）里原函数**已消失**（不是复制）',
+    fs.readFileSync(path.join(d, 'src', 'client', HOST), 'utf8').split(FN_DECL).length - 1 === 0, '承载片 = ' + HOST)
   dropSandbox(d)
 }
 
@@ -138,7 +186,7 @@ console.log('\n③ fail-closed 守卫：脏工作树 ⇒ **拒绝运行**（不�
   check('★ exit≠0 且给出"工作树不干净"的拒绝理由',
     r.status !== 0 && /工作树不干净/.test(String(r.stderr || '')), fullOut(r))
   check('★ 被拒后**没有**新模块片（不产出半成品）',
-    !fs.existsSync(path.join(d, 'src', 'client', 'mod-status-css.js')))
+    !fs.existsSync(path.join(d, 'src', 'client', TARGET.module)))
   dropSandbox(d)
 }
 
@@ -149,7 +197,7 @@ console.log('\n⑤ ★ B1：搬了**不删原文**（copy 而非 move）⇒ 必�
   if (assertInjectionBanner(r, 'NO_DELETE')) {
     const j = judge(d, '--uniqueness')
     const o = String(j.stderr || '') + String(j.stdout || '')
-    check('★ B1 生效后 `--uniqueness` 红并点名', j.status !== 0 && /ensureStatusCss|声明/.test(o),
+    check('★ B1 生效后 `--uniqueness` 红并点名', j.status !== 0 && new RegExp(TARGET.fn + '|声明').test(o),
       'exit=' + j.status + '  ' + o.slice(0, 400))
   } else {
     check('★ B1 生效后 `--uniqueness` 红并点名（**因注入未生效 ⇒ 无法判定**）', false,
@@ -200,8 +248,78 @@ console.log('\n⑧ ★ 守卫仍会响（加严后的反证）：把待查文本
   check('★ 注入自证：守卫按 TAMPER 后的计数报错（出现 0 次）', /出现 0 次/.test(o), fullOut(r))
   check('★ 守卫红并点名（该函数原文出现 0 次 / 找不到逐字原文）',
     r.status !== 0 && /恰好 1 次|找不到该函数的逐字原文/.test(o), fullOut(r))
-  check('★ 被拒后没有产出半成品（不写新模块片）', !fs.existsSync(path.join(d, 'src', 'client', 'mod-status-css.js')))
+  check('★ 被拒后没有产出半成品（不写新模块片）', !fs.existsSync(path.join(d, 'src', 'client', TARGET.module)))
   dropSandbox(d)
+}
+
+console.log('\n⑨ ★ 计数守卫的另一侧（**出现 2 次**）：必须 fail-closed 并**点名那个数**')
+{
+  const d = makeSandbox('dup')
+  const r = runGen(d, { MUV_MOVE_DUP_TARGET: '1' })
+  const o = String(r.stderr || '') + String(r.stdout || '')
+  // ★ 两件：① **点名「出现 2 次」那个数** —— 只判 exit≠0 的话，别的守卫先红也会"通过"；
+  //   ② **夹具自证**：夹具自己打印它造了几份，守卫报出的计数必须与之一致。
+  // ★ 这里**不要求注入横幅**：DUP 的本意就是让守卫在打印横幅**之前** fail-closed
+  //   ⇒ 横幅缺席是**预期结果**（与 ⑧/TAMPER 同型）。
+  check('★ 夹具自证：夹具自报「已制造 1 份重复副本（该原文共 2 份）」', /夹具：已制造 1 份重复副本（该原文共 2 份）/.test(o), fullOut(r))
+  check('★ 点名那个数：守卫报「出现 2 次」（= 原始 1 份 + 夹具追加 1 份）', /出现\s*2\s*次/.test(o), fullOut(r))
+  check('★ 红（fail-closed，不是只打印）', r.status !== 0, fullOut(r))
+  check('★ 被拒后没有产出半成品（不写新模块片）', !fs.existsSync(path.join(d, 'src', 'client', TARGET.module)))
+  dropSandbox(d)
+}
+
+console.log('\n⑨-正对照：同一夹具**不设** DUP 开关 ⇒ 守卫不响（证明上面的红确实来自"重复副本"）')
+{
+  const d = makeSandbox('dupctl')
+  const r = runGen(d)
+  const o = String(r.stderr || '') + String(r.stdout || '')
+  check('★ 正对照：exit=0、不报「出现 2 次」、且仍打印无损证据 1/0',
+    r.status === 0 && !/出现\s*2\s*次/.test(o) && /函数体（接线化后）在产物里出现次数 = 1/.test(o)
+      && /承载片里原函数原文出现次数 = 0/.test(o), fullOut(r))
+  dropSandbox(d)
+}
+
+// ★ 同作用域组：名单**自推导**（不硬编码）——用 functionScopes 取包含该函数的最小分组，
+//   再按 token 收该组内的 function 声明名；断言 scopeGroupReport 该组 ok=true（+ 空分组反证）。
+console.log('\n⑩ ★ 搬迁目标的同作用域组必须 ok=true（名单自推导，不硬编码）')
+{
+  const cs = await import(pathToFileURL(path.join(REPO, 'tools', 'client-scope.mjs')).href)
+  const srcNow = fs.readFileSync(path.join(REPO, 'lib', 'client.js'), 'utf8')
+  const toks = cs.tokenize(srcNow)
+  let start = -1
+  for (let i = 0; i < toks.length; i++) {
+    if (toks[i].type !== 'ident' || toks[i].value !== 'function') continue
+    const idt = toks[i + 1]
+    if (!idt || idt.value !== TARGET.fn) continue
+    start = toks[i].start
+    break
+  }
+  if (start < 0) throw new Error('诊断：找不到 ' + TARGET.fn + ' 的声明位置')
+  // ★ 名单自推导（不硬编码）：候选取**承载片里的**函数（同片 ⇒ 天然是近邻），
+  //   再按 scopeGroupReport 报出的 scope **逐个核对**，只留下与目标同 scope 的那些。
+  //   先用"最紧的包含分组"收窄成 195 个（整个工厂）是错的 —— 那正是 scopeGroupReport 会判
+  //   "跨作用域"的那种名单；这里改成"按 scope 字段逐个筛"。
+  const scopeOf = (nm) => {
+    const g = cs.scopeGroupReport({ src: srcNow, names: [nm] })
+    return g.members[0] ? g.members[0].scope : null
+  }
+  const myScope = scopeOf(TARGET.fn)
+  if (!myScope) throw new Error('诊断：拿不到 ' + TARGET.fn + ' 的 scope ⇒ 下一步：核对 scopeGroupReport().members[0].scope 的形态。')
+  const partText = fs.readFileSync(path.join(REPO, 'src', 'client', HOST), 'utf8')
+  const partToks = cs.tokenize(partText)
+  const cand = []
+  for (let i = 0; i < partToks.length; i++) {
+    if (partToks[i].type !== 'ident' || partToks[i].value !== 'function') continue
+    const idt = partToks[i + 1]
+    if (idt && idt.type === 'ident') cand.push(idt.value)
+  }
+  const uniq = [...new Set(cand)].filter((nm) => scopeOf(nm) === myScope)
+  const grp = cs.scopeGroupReport({ src: srcNow, names: uniq })
+  console.log('    目标 scope = ' + myScope)
+  console.log('    推导出的同作用域名单（' + uniq.length + ' 个，取自承载片 ' + HOST + '）：' + uniq.join(', '))
+  check('★ 同作用域组 ok=true 且 members ≥ 1（防空分组假绿）', grp.ok === true && grp.members.length >= 1 && grp.members.length === uniq.length,
+    JSON.stringify({ ok: grp.ok, members: grp.members.length, names: uniq.length, problems: grp.problems }).slice(0, 400))
+  check('★ 反证：空分组 ⇒ ok=false（这条断言**会红**）', cs.scopeGroupReport({ src: srcNow, names: [] }).ok === false)
 }
 
 console.log('\n④ 非空跑下限 + 自证清理（hermetic）')

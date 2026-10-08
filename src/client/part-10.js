@@ -1,3 +1,39 @@
+      try { document.documentElement.setAttribute('data-muv-engine', MUV_BUILD) } catch (_) {}
+      try { console.log('[muv-engine] client loaded ' + MUV_BUILD) } catch (_) {}
+
+      // ★ 轻量 LaTeX 渲染
+      if (!window._tavernLatexInstalled) {
+        window._tavernLatexInstalled = true
+        window._tavernRenderLatex = function(text) {
+          if (!text || text.indexOf('\\(') === -1) return text
+          return text.replace(/\\\(([\s\S]*?)\\\)/g, function(_, latex) {
+            var html = latex
+              .replace(/\\scalebox\{[^}]*\}\{/g, '').replace(/\}\s*$/g, '')
+              .replace(/\\begin\{array\}\{[^}]*\}/g, '').replace(/\\end\{array\}/g, '')
+              .replace(/\\fcolorbox\{([^}]*)\}\{([^}]*)\}\{/g, function(_, border, bg) {
+                return '<div style="border:2px solid '+border+';background:'+bg+';border-radius:6px;padding:8px 10px;margin:6px 0">'
+              })
+              .replace(/\\colorbox\{([^}]*)\}\{([^}]*)\}/g, function(_, color, content) {
+                return '<span style="background:'+color+';padding:2px 8px;border-radius:4px;display:inline-block">'+content+'</span>'
+              })
+              .replace(/\\textcolor\{([^}]*)\}\{([^}]*)\}/g, function(_, color, content) {
+                return '<span style="color:'+color+'">'+content+'</span>'
+              })
+              .replace(/\\rule\{([^}]*)\}\{([^}]*)\}/g, function(_, w, h) {
+                return '<span style="display:inline-block;width:'+w+';height:'+h+';background:currentColor;border-radius:2px;vertical-align:middle"></span>'
+              })
+              .replace(/\\overline\{[^}]*\}/g, '<hr style="border:none;border-top:1px solid #c9a45c;margin:4px 0">')
+              .replace(/\\Large\s/g, '<span style="font-size:18px">').replace(/\\large\s/g, '<span style="font-size:16px">').replace(/\\footnotesize\s/g, '<span style="font-size:11px">')
+              .replace(/\\quad/g, ' &nbsp; ').replace(/\\textbf\{([^}]*)\}/g, '<b>$1</b>').replace(/\\bullet/g, '•')
+              .replace(/\\\\/g, '<br>').replace(/[\{\}]/g, '')
+            var opens = (html.match(/<div/g)||[]).length - (html.match(/<\/div>/g)||[]).length
+            var openSp = (html.match(/<span/g)||[]).length - (html.match(/<\/span>/g)||[]).length
+            while (opens-- > 0) html += '</div>'
+            while (openSp-- > 0) html += '</span>'
+            return '<div class="muv-latex-block">'+html+'</div>'
+          })
+        }
+
         // ★ 通用标签渲染器：纯字符串替换，零性能开销
         window._tavernRenderTags = function(text) {
           if (!text) return text
@@ -682,10 +718,3 @@
        * @param {string} text
        * @returns {Element}
        */
-      function muvSimpleBlock(tag, cls, text) {
-        var el = document.createElement(tag)
-        el.className = cls
-        el.textContent = String(text == null ? '' : text)
-        return el
-      }
-

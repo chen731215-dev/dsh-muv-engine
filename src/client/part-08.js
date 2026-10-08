@@ -1,3 +1,15 @@
+        if (!blocks.length) return
+        var sid = ''
+        try { sid = currentSessionId() } catch (_) { sid = '' }
+        if (!sid) return
+        // 指纹取"整批块的 长度 + 头 + 尾"：原来只看最后一块的前 120 字，
+        // 加了 era_data 之后最后一块可能只是个消息键，指纹会退化成"同一会话同长度就一样"。
+        var joined = blocks.join('\n')
+        var sig = sid + '|' + joined.length + '|' + joined.slice(0, 80) + '|' + joined.slice(-80)
+        if (muvVarFedSig[sig]) return
+        muvVarFedSig[sig] = 1
+        var keys = Object.keys(muvVarFedSig)
+        if (keys.length > 512) { for (var d = 0; d < 128; d++) delete muvVarFedSig[keys[d]] }
         fetch('/api/muv-engine/extract', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -683,34 +695,5 @@
         ' srcdoc="' + escAttr(doc) +
         '" sandbox="' + MUV_CARD_SANDBOX +
         '" style="display:block;width:100%;height:900px;border:none;border-radius:8px;background:transparent"></iframe>'
-    }
-
-    /**
-     * 这张卡里有没有一条正则脚本会去消费 `<StatusPlaceHolderImpl/>`？
-     *
-     * 判据刻意做得**很窄**（只有在 findRegex 里逐字出现 `StatusPlaceHolderImpl` 才算），
-     * 因为它决定我们要不要往每条消息尾部追加一个占位符 —— 猜错的代价是给一张不认这个
-     * 标记的卡塞进一段它渲染不出来的文本。
-     *
-     * 三种卡形态都要认：`{regexScripts:[…]}`（muv-table 的规范化产物，门禁夹具用的就是它）、
-     * 裸 chara_card_v3（`data.extensions.regex_scripts`）、以及顶层的 `regex_scripts`
-     * —— 与 `regex-engine.js:regexScriptsOf` 认的那三种保持一致，别只认一种。
-     * @param {object|null} cardJson
-     * @returns {boolean}
-     */
-    function cardWantsStatusPlaceholder(cardJson) {
-      try {
-        if (!cardJson || typeof cardJson !== 'object') return false
-        var list = cardJson.regexScripts
-        if (!list && cardJson.data && cardJson.data.extensions) list = cardJson.data.extensions.regex_scripts
-        if (!list) list = cardJson.regex_scripts
-        if (!list || !list.length) return false
-        for (var i = 0; i < list.length; i++) {
-          var s = list[i]
-          if (!s || s.disabled) continue
-          if (String(s.findRegex || '').indexOf('StatusPlaceHolderImpl') >= 0) return true
-        }
-      } catch (_) {}
-      return false
     }
 

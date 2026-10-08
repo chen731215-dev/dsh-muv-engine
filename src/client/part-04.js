@@ -595,6 +595,3 @@
      */
     function muvTextStatusOn() {
       try { if (typeof MUV_TEXT_STATUS !== 'undefined') return !!MUV_TEXT_STATUS } catch (_) {}
-      return true
-    }
-

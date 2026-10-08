@@ -972,36 +972,3 @@
           try { Object.defineProperty(ev, 'which', { get: function () { return 13 } }) } catch (_) {}
           ta.dispatchEvent(ev)
         }
-        log('通道② 键盘序列 Enter(keydown+keypress+keyup, keyCode=13) 已派发')
-      } catch (e) {
-        log('通道② 键盘序列异常：' + (e && e.message) + '；回退最小 keydown')
-        try { ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true })); log('通道② 兜底 keydown 已派发') } catch (_) {}
-      }
-      // 注意：此处不 return —— 两个通道都试过，但**绝不**清空 ta.value（防吞字）。
-    }
-
-    function muvDeliverUserText(text, mode) {
-      var textarea = null
-      try {
-        textarea = document.querySelector('textarea[data-muv-macro-hooked]') ||
-          document.querySelector('textarea[placeholder*="消息"], textarea[placeholder*="Message"], textarea[placeholder*="输入"]')
-      } catch (_) { textarea = null }
-      if (!textarea) {
-        try {
-          var all = document.querySelectorAll('textarea')
-          for (var i = 0; i < all.length; i++) {
-            if (all[i].offsetParent !== null && !all[i].readOnly && all[i].rows >= 2) { textarea = all[i]; break }
-          }
-        } catch (_) { textarea = null }
-      }
-      if (!textarea) {
-        // ── contenteditable 输入框（DSH 真机取证 2026-09-25）：DSH WebUI 的聊天输入框
-        //    根本不是 `<textarea>` —— 会话视图全页 0 个 textarea，输入框是
-        //    `[contenteditable="true"]`（类名 uV2eYG_input，发送钮 aria-label「发送消息」）。
-        //    旧代码走到这里直接 `return false` 静默放弃 ⇒ 卡的「发送到酒馆」链路
-        //    （状态栏选项点击等）全部无声无息，且没有任何日志（bug：选项点击没反应）。
-        //    verify-user-send 门禁此前没抓到，因为夹具用的是假 textarea —— 与真实 DOM 不符。
-        //    fix：contenteditable 走 caret 移到末尾 + insertText **追加**（同一条铁律：
-        //    绝不清空输入框，宁可消息留在框里让用户手动按一下）。
-        var ce = null
-        try { ce = document.querySelector('[contenteditable="true"]') } catch (_) { ce = null }

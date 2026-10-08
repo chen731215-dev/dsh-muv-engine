@@ -2,14 +2,21 @@
 // ★ `tools/move-segment.mjs` —— 把"搬一段"做成**一次原子操作**（task-16 骨架段的关键缺口）
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// 当前状态：**可用**（修好后；此前 `261ef87` 的版本**会静默丢函数，勿用**）
-//   · 那个 bug 是它**自己的正向跑**抓出来的：产物 557532 → 557250、`--check` exit=1（分片数 19≠20）、
-//     `--ledger` exit=1（账本里的模块片不存在）。根因：`build-client` 按 MANIFEST 里**已有的 `parts`
-//     数组**拼装（**不枚举目录**），而当时那版只写了模块**文件**、**没把新片插进 `parts`**
-//     ⇒ 重生成时它没被算进去 ⇒ **函数被从承载片移除却没被拼回**。
-//   ⇒ 教训（已进台账）：**清单是真相源**（S2/S5）⇒ "重切分"必须由本工具**显式做**；
-//     也**不许**改成"按目录枚举"（那会让新增/删除分片静默跟随目录）。
+// ★★ 长期约束（**挪目录之前先读这句**）：本文件**必须留在 `tools/` 根**。
+//   理由：runner 的语料根是 `ALL_DIRS = ['tests', 'tools/verify', 'tools/repro']` —— `tools/` 根**不在**语料里，
+//   所以 `--all` 不会收它。但**它会写仓库**（承载片 / 新模块片 / `tools/build-client.mjs` 的 EXPECTED_PARTS /
+//   MANIFEST / 并 `execFileSync(build-client)`）⇒ 一旦有人把它挪进 `tools/verify/` 或 `tools/repro/`，
+//   `--all` 就会**把一个会写仓库的脚本当测试执行**（这正是 `verify-guard-samples.gen.mjs` 进
+//   `CORPUS_EXCLUDE` 的那条理由）。⇒ **挪目录必须同时加 `CORPUS_EXCLUDE` 条目**。
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// 当前状态：**可用**（2026-10-08 修好；此前 `261ef87` 的版本**会静默丢函数，勿用**）
+//   · 那个 bug 是它**自己的正向跑**抓出来的：产物 557532 → 557250、`--check` exit=1（分片数 19≠20）、
+//     `--ledger` exit=1。根因：`build-client` 按 MANIFEST 里**已有的 `parts` 数组**拼装（**不枚举目录**），
+//     而当时那版只写了模块**文件**、**没把新片插进 `parts`** ⇒ 函数被移除却没被拼回。
+//   · 修法「重切分」由本工具**显式做**；**不许**改成"按目录枚举"（那会让新增/删除分片静默跟随目录，
+//     与 S2/S5 的"清单声明制 + 禁止静默重生成"冲突）。
+//
 //
 // 四步原子操作（漏一步就留下"清单与分片不一致"，而它**看起来只是判据红了**）：
 //   ① 改分片：把函数从承载片移除、生成模块片，并**把新片插入 `parts` 数组**（含 startLine/endLine/深度）
@@ -131,15 +138,25 @@ const textOf = (p) => (p.path === modPath ? modText : (p.path === host.path ? ne
       cur = nl + 1
     } }
   let off = 0, cursor = 0
-  for (const p of ordered) {
+  for (let i = 0; i < ordered.length; i++) {
+    const p = ordered[i]
     const t = textOf(p)
     p.startLine = cursor + 1
     p.lines = t.split('\n').length - (t.endsWith('\n') ? 1 : 0)
     p.endLine = cursor + p.lines
     p.bytes = Buffer.byteLength(t, 'utf8')
     p.depthAtStart = depthAt.get(off) || 0
-    p.depthAtEnd = depthAt.get(off + t.length - (t.endsWith('\n') ? 1 : 0)) || p.depthAtStart
+    // ★ `depthAtEnd` 必须等于**下一片的 `depthAtStart`**（分片是连续行区间 ⇒ 构造性连续）。
+    //   先前写成"查该片最后一个换行处的深度"⇒ 那个偏移**不在** map 的键集里 ⇒ `.get()` 得 undefined
+    //   ⇒ 回退成 0 ⇒ `--check` 报"边界深度不连续"（实测 part-01 结束深度 0 ≠ mod-text 起始深度 2）。
+    p.depthAtEnd = null
     off += t.length; cursor += p.lines
+  }
+  for (let i = 0; i + 1 < ordered.length; i++) ordered[i].depthAtEnd = ordered[i + 1].depthAtStart
+  {
+    const last = ordered[ordered.length - 1]
+    const lt = textOf(last)
+    last.depthAtEnd = depthAt.get(off - lt.length + lt.length - 1) ?? (last.depthAtStart || 0)
   }
 }
 

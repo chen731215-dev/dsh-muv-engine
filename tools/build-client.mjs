@@ -60,6 +60,20 @@ export const EXPECTED_PARTS = 12
 export const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex')
 
 /**
+ * 只在**对比清单**时用的行尾归一化。
+ *
+ * ★ 为什么"清单对比"要归一化、而"分片 ↔ 产物"对比**不**归一化：
+ *   · 清单记的是**内容**（sha256 / 字节数）；而"内容"在版本控制语义里就是 **blob（LF）**。
+ *     本仓 `.gitattributes` 已把 `lib/client.js` 与 `src/client/**` 都钉成 LF，但
+ *     **别人机器上的一次普通 `git clone` 可能在 attribute 生效前就检出了 CRLF**
+ *     （本会话反复踩过这一类）⇒ 清单对比若按原始字节较真，会在**默认 clone** 上假红。
+ *   · "分片 ↔ 产物"**必须**逐字节、**不许**归一化 —— 归一化就不是逐字节了，
+ *     而那正是这条判据存在的意义。两侧同形态时它天然成立（`.gitattributes` 负责同形态）。
+ *   ⇒ 一句话：**清单比"内容"，产物比"字节"。**
+ */
+const lf = (s) => String(s).replace(/\r\n/g, '\n')
+
+/**
  * **拼装**（纯函数）：分片文本首尾**直接相接**。
  * 约定：第 1..N-1 片自带行尾；最后一片不带（与产物的"无尾随换行"一致）。
  * ⇒ 不需要任何分隔符逻辑，`join('')` 就是全部。
@@ -99,8 +113,10 @@ export function freshnessReport({ parts, artifact, manifest }) {
   for (let i = 0; i < Math.min(parts.length, declared.length); i++) {
     const p = parts[i], d = declared[i]
     if (p.path !== d.path) { problems.push('第 ' + (i + 1) + ' 片路径不符：' + p.path + ' ≠ ' + d.path); continue }
-    const bytes = Buffer.byteLength(p.text, 'utf8')
-    const sha = sha256(p.text)
+    // ★ 清单比"内容"（归一化后），见 lf 的长注释：默认 clone 可能是 CRLF，按原始字节较真会假红
+    const norm = lf(p.text)
+    const bytes = Buffer.byteLength(norm, 'utf8')
+    const sha = sha256(norm)
     if (bytes !== d.bytes) problems.push(p.path + ' 字节数不符：实际 ' + bytes + ' ≠ 清单 ' + d.bytes)
     if (sha !== d.sha256) problems.push(p.path + ' sha256 不符（清单声明的是上一次生成时的内容）')
   }

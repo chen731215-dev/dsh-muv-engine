@@ -120,7 +120,7 @@
      * 不动点；可一旦某次报小了（高度测量有漏算，见 verify-frame-gap.mjs），内容跟着缩，
      * **再也长不回去**。用户的观感就是"卡片塌了、立绘很小、框里还有滚动条"。
      *
-     * ST 的做法（`C:\_st_spec\SPEC.md`，另一个人真机实测抽出）：把 `min-height:100vh` 改写成
+     * ST 的做法（开发机上的 `_st_spec/SPEC.md`，真机实测抽出；属易失产物，不在仓内）：把 `min-height:100vh` 改写成
      * `min-height:var(--TH-viewport-height)`，值取**父窗口的 innerHeight**。我们照做，但直接落成
      * 像素值、不用 CSS 变量（少一层依赖，也少一处可能取不到变量的地方）：
      *
@@ -257,7 +257,7 @@
     }
 
     /**
-     * 注入卡文档的 **reset 样式**（照 ST 平价，`C:\_st_spec\SPEC.md` 真机实测抽出）。
+     * 注入卡文档的 **reset 样式**（照 ST 平价，开发机上的 `_st_spec/SPEC.md` 真机实测抽出；属易失产物，不在仓内）。
      *
      * ST 原文（`ST-IFRAME-SPEC.md` §3，`b1()` 里那一段，逐字）：
      *   `*,*::before,*::after{box-sizing:border-box;}`

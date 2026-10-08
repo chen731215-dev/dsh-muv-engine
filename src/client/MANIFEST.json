@@ -3,8 +3,8 @@
   "linesNote": "各分片 lines 之和 = 产物 split('\\n') 的长度；产物的 \\n 个数比它少 1（末行无尾随换行）。",
   "artifact": {
     "path": "lib/client.js",
-    "bytes": 556913,
-    "sha256": "b97f0450c2c1f120f85cf499eedb14a6e904c045395c9868706924ab7079338b"
+    "bytes": 556911,
+    "sha256": "97335c4afbaf2a5dddc8562d2b43d1995fb0cca2a33eeca9a9f01dabf5261047"
   },
   "parts": [
     {
@@ -22,8 +22,8 @@
       "startLine": 6,
       "endLine": 60,
       "lines": 55,
-      "bytes": 1799,
-      "sha256": "83a58824027c1b27e02714cffd1585c12a259166c325a6f79d8a747011570ace",
+      "bytes": 1797,
+      "sha256": "e79b41c0ac647c8aecdeca4c767ceff2d36b503f87d74b3473ff0a4c6d4ff260",
       "depthAtStart": 2,
       "depthAtEnd": 2,
       "part": "mod-text（S2 段1 搬入：splitArgs / findClosingFence / readStartTag）"

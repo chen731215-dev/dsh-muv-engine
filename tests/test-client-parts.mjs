@@ -14,7 +14,7 @@
 //
 // 运行：node tests/test-client-parts.mjs
 
-import { freshnessReport, loadFromDisk, assemble, EXPECTED_PARTS } from '../tools/build-client.mjs'
+import { freshnessReport, loadFromDisk, assemble, refreshedManifest, EXPECTED_PARTS } from '../tools/build-client.mjs'
 import { tokenize } from '../tools/client-scope.mjs'
 
 /** 非空跑下限（实测：12 个分片 / 556776 字节）。低于它说明"什么都没分析到"。 */
@@ -282,6 +282,44 @@ console.log('\n④ 拼装是"直接相接"（没有分隔符魔法）')
     assemble(['a\n', 'b']) === 'a\nb')
   const r = freshnessReport({ parts, artifact: assemble(parts.map((p) => p.text)), manifest })
   check('用分片自己拼出来的产物喂判据 ⇒ 绿（恒成立：产物 == 它的分片）', r.ok === true, r.problems.join(' | '))
+}
+
+console.log('\n⑤ 生成路径的"刷新清单"逻辑也被判据盯着（不许有未经验证的路径）')
+{
+  // 场景：改了分片 → 该跑一次生成。生成必须**同时**刷新产物与清单，
+  // 否则"清单里的 artifact.sha256 还是旧的" ⇒ form-free 变式报红，而使用者会以为产物错了。
+  const clone = () => ({ parts: parts.map((p) => ({ ...p })), artifact, manifest: JSON.parse(JSON.stringify(manifest)) })
+  const c = clone()
+  const edited = c.parts[2].text + '\n// 注入的一行（模拟"改了分片"）\n'
+  c.parts[2] = { ...c.parts[2], text: edited }
+  const built = assemble(c.parts.map((p) => p.text))
+  c.artifact = built                                  // 生成会重写产物
+  check('刷新前：清单是旧的 ⇒ 必然红（这就是为什么生成必须刷新清单）',
+    freshnessReport({ parts: c.parts, artifact: c.artifact, manifest: c.manifest }).ok === false)
+
+  const fresh = refreshedManifest({ parts: c.parts, built, manifest: c.manifest })
+  const after = freshnessReport({ parts: c.parts, artifact: built, manifest: fresh })
+  check('★ 刷新清单后：`--check` 转绿（生成路径自洽）', after.ok, after.problems.join(' | '))
+
+  // 幂等：同样的输入再刷新一次，结果必须逐字相同（否则生成永不收敛）
+  const again = refreshedManifest({ parts: c.parts, built, manifest: fresh })
+  check('★ 刷新是**幂等**的（同样输入两次 → 结果逐字相同）',
+    JSON.stringify(again) === JSON.stringify(fresh))
+
+  // 行数口径：以换行结尾的分片，lines 不得把尾随空元素算进去
+  const endsNl = c.parts.filter((p) => p.text.endsWith('\n'))
+  const declOf = (path) => fresh.parts.find((d) => d.path === path)
+  check('★ lines 口径：以换行结尾的分片，lines == split(\'\\n\').length − 1',
+    endsNl.length > 0 && endsNl.every((p) => declOf(p.path).lines === p.text.split('\n').length - 1),
+    endsNl.length + ' 片以换行结尾')
+  check('lines 之和 == 产物行数（刷新后仍成立）',
+    fresh.parts.reduce((s, d) => s + d.lines, 0) === built.split('\n').length,
+    fresh.parts.reduce((s, d) => s + d.lines, 0) + ' vs ' + built.split('\n').length)
+
+  // 不许改入参（纯函数）
+  const snapshot = JSON.stringify(c.manifest)
+  refreshedManifest({ parts: c.parts, built, manifest: c.manifest })
+  check('刷新是纯函数（不改入参清单）', JSON.stringify(c.manifest) === snapshot)
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)

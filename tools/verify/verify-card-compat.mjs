@@ -867,7 +867,7 @@ async function runArm(arm) {
       'format=' + JSON.stringify(shimApi.format) + ' chatIsArr=' + JSON.stringify(shimApi.chatIsArr))
 
     // ★ 父页探测：判据必须照**真卡的实际形状**写，不能照想象写。
-    //   取证（C:\deepseek harness\_scratch\probe2.out.txt，从 1.txt 里逐字抠出来的 resolveTH）：
+    //   取证（开发机上的 `_scratch/probe2.out.txt`，从聊天记录里逐字抠出来的 resolveTH；该文件属易失产物，不在仓内）：
     //     function resolveTH(){ var c=[]; try{c.push(window.TavernHelper)}catch(e){}
     //       try{c.push(W.TavernHelper)}catch(e){} try{c.push(window.parent&&window.parent.TavernHelper)}catch(e){} … }
     //   也就是「**多条探针各自 try 包住**，`window.X` 排第一，父页/顶层只是备选」。

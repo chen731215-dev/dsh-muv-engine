@@ -16,13 +16,13 @@
 //
 // 运行：node tests/test-decorate-invariants.mjs
 
-import { extractFunction, lf, mutateOnce, readSourceText, scopeReport, tokenize, wiringReport }
-  from '../tools/client-scope.mjs'
+import { clientSource } from './test-client-source.mjs'
+import { extractFunction, lf, mutateOnce, scopeReport, tokenize, wiringReport } from '../tools/client-scope.mjs'
 
-// ★ 读源码一律走 readSourceText（读 + **归一化行尾**）。见本文件【⑥】——
-//   本仓 core.autocrlf=true 且无 .gitattributes ⇒ CI 检出是 LF、Windows 普通 clone 检出是 CRLF。
-//   不归一化就会变成"CI 绿、默认 clone 红"（看起来像真失败）。
-const SRC = readSourceText(new URL('../lib/client.js', import.meta.url))
+// ★ 读源码一律走**收口点** `clientSource()`：它内部做归一化行尾（S2 ① 把归一化上收到读口）。
+//   本仓 core.autocrlf=true 且无 .gitattributes ⇒ 同一提交在不同检出形态下行尾不同：
+//   CI 检出 LF、Windows 普通 clone 检出 CRLF。见本文件【⑥】。
+const SRC = clientSource()
 
 /**
  * ★ **非空跑下限**：本文件断言的是"这么多个函数被真的提取并执行了"。

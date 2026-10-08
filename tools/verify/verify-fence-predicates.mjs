@@ -14,9 +14,9 @@
 // them in one scope.
 import fs from 'node:fs'
 import path from 'node:path'
+import { engineSourcePath, readEngineSource } from './verify-shared.mjs'
 const REPO_ROOT = path.resolve(new URL('../../', import.meta.url).pathname.replace(/^\//, ''))   // 分家后住 tools/verify/，仓库根在上 2 级
-const SRC_PATH = process.env.MUV_CLIENT_SRC || path.join(REPO_ROOT, 'lib', 'client.js')
-const SRC = fs.readFileSync(SRC_PATH, 'utf8').replace(/\r\n/g, '\n')
+const SRC = readEngineSource()
 const T = String.fromCharCode(96)
 const BT3 = T + T + T
 

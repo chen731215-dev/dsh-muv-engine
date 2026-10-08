@@ -27,6 +27,7 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { readEngineSource } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
@@ -157,7 +158,7 @@ async function runArm(label, clientSrc) {
   }
 }
 
-const CUR = readFileSync(path.join(REPO_ROOT, 'lib', 'client.js'), 'utf8')
+const CUR = readEngineSource()
 function breakDropDef(src) {
   const start = src.indexOf('        function messageRootOf(bodyEl) {')
   if (start < 0) throw new Error('对照臂 broken 的记号找不到（messageRootOf 的定义？）')

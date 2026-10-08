@@ -37,11 +37,12 @@ import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { engineSourcePath, readEngineSource } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
-const SRC_PATH = process.env.MUV_CLIENT_SRC || path.join(REPO_ROOT, 'lib', 'client.js')
-const CLIENT_RAW = readFileSync(SRC_PATH, 'utf8')
+const SRC_PATH = engineSourcePath()
+const CLIENT_RAW = readEngineSource()
 const OUT = path.join(os.tmpdir(), 'muv-deco-isolation')
 mkdirSync(OUT, { recursive: true })
 

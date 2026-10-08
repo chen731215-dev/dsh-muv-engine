@@ -24,11 +24,10 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { extractFunction } from '../../tests/test-client-source.mjs'
-import { moduleVarStatements } from './verify-shared.mjs'
+import { readEngineSource, moduleVarStatements } from './verify-shared.mjs'
 const REPO_ROOT = path.resolve(new URL('../../', import.meta.url).pathname.replace(/^\//, ''))   // 分家后住 tools/verify/，仓库根在上 2 级
 
-const SRC = process.env.MUV_CLIENT_SRC || path.join(REPO_ROOT, 'lib', 'client.js')
-const raw = readFileSync(SRC, 'utf8')
+const raw = readEngineSource()
 const BREAK = (() => {
   const a = process.argv.find(x => x.startsWith('--break='))
   return a ? a.slice('--break='.length) : ''

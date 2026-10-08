@@ -33,13 +33,14 @@ import { execFileSync } from 'node:child_process'
 // 预先算好那份响应，再由页面里的 fetch 桩返回 —— 桩给的是真服务端会给的答案，
 // 不是手写的 HTML（手写就等于把被测对象抄一遍）。
 import { renderStatusFromText } from '../../lib/status-cascade.js'
+import { engineSourcePath, readEngineSource } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
 // 可以指向任意一份源码：用来做「修复前 vs 修复后」的对照。
 // **必须做对照** —— 只看"现在通过了"无法区分「修复生效」和「这条判据本来就测不到东西」。
-const SRC_PATH = process.env.MUV_CLIENT_SRC || path.join(REPO_ROOT, 'lib', 'client.js')
-const CLIENT = readFileSync(SRC_PATH, 'utf8')
+const SRC_PATH = engineSourcePath()
+const CLIENT = readEngineSource()
 const OUT = path.join(os.tmpdir(), 'muv-visual-main')
 mkdirSync(OUT, { recursive: true })
 

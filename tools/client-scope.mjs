@@ -708,6 +708,16 @@ function analyzeScopes(tokens, from, to) {
  * 枚举 `src` 中 `atOffset` 处**外层作用域**的绑定（逐层，含每一层的语句级声明）。
  * 用途：判断自由标识符能不能解析到"外层模块级绑定"。
  * 只收**该层相对深度 0** 的声明 —— 更深的声明在别的块里，本函数看不见。
+ *
+ * ★★ **`atOffset` 必须是在【归一化后】文本里的偏移。**
+ * 这里会在入口 `lf(src)`，但**偏移是你传进来的**、不会跟着换算：
+ *   · 传"归一化后的文本 + 它自己的偏移"（用 token 的 `start`）⇒ 正确；
+ *   · 传"CRLF 文本的偏移"配同一份内容 ⇒ 每个换行差 1 个 `\r`，结果会**静默偏大**
+ *     （实测同一目标：LF 偏移 → 293 个外层绑定；CRLF 偏移配 CRLF 文本 → **296**，不报错）。
+ * 仓内调用者一律走同源的 `enclosingBindingsIn(tokens, cand.start)`（token 偏移与文本同源）⇒
+ * 目前**没有** live bug；记在这里是因为它是个"看起来能用"的坑，别留给下一个搬家人。
+ * @param {string} src
+ * @param {number} atOffset **归一化后**文本里的字符偏移（别用 `indexOf` 在原始文本上数）
  * @returns {Map<string, number>} 名字 -> 第几层外层（1 = 最近）
  */
 export function enclosingBindings(src, atOffset) {

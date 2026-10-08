@@ -35,7 +35,7 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { readPngCard } from '../../../dsh-muv-table/lib/png-card.js'
 import { regexScriptsOf } from '../../lib/regex-engine.js'
-import { openPage, sleep, fenceBodyOf, looksLikeDoc, extractFunction, moduleVarStatements, DEFAULT_CARD_DIR } from './verify-shared.mjs'
+import { readEngineSource, openPage, sleep, fenceBodyOf, looksLikeDoc, extractFunction, moduleVarStatements, DEFAULT_CARD_DIR } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
@@ -467,7 +467,7 @@ const ENVELOPE = {
   state: { data: RUNTIME, updatedAt: Date.now() },
 }
 
-const nowSrc = readFileSync(path.join(REPO_ROOT, 'lib', 'client.js'), 'utf8')
+const nowSrc = readEngineSource()
 const MARK = 'post({__muvEventOut:'
 const noBridgeSrc = nowSrc.split(MARK).join('post({__muvEventOutOff:')
 const hits = nowSrc.split(MARK).length - 1

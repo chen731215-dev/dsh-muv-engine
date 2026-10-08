@@ -67,10 +67,11 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { applyAllRegexScripts, regexScriptsOf, extractStatusBarHtml } from '../../lib/regex-engine.js'
 import { readPngCard } from '../../../dsh-muv-table/lib/png-card.js'
+import { engineSourcePath, readEngineSource } from './verify-shared.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..', '..')   // 分家后住 tools/verify/，仓库根在上 2 级
-const SRC_PATH = process.env.MUV_CLIENT_SRC || path.join(REPO_ROOT, 'lib', 'client.js')
+const SRC_PATH = engineSourcePath()
 const ENGINE_PATH = path.join(REPO_ROOT, 'lib', 'regex-engine.js')
 const SAMPLES_PATH = path.join(__dirname, 'verify-guard-samples.json')
 const CARD_PNG = process.env.MUV_GUARD_CARD
@@ -166,7 +167,7 @@ function neverGuard(src) {
   return lines.join('\n')
 }
 
-const SRC_RAW = fs.readFileSync(SRC_PATH, 'utf8')
+const SRC_RAW = readEngineSource()
 let SRC = SRC_RAW
 if (BREAK === 'guard-enum') SRC = revertGuard(SRC_RAW)
 else if (BREAK === 'guard-never') SRC = neverGuard(SRC_RAW)

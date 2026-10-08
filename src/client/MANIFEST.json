@@ -12,7 +12,8 @@
         "splitArgs": "717ccc3bc5782d496a8d276d4c8e1bddd5351987601f041a997370be39fb477d",
         "findClosingFence": "7080d70289dae6654e3ac8c9b7d119fb8f13a739fad6324349d96ec0eff40270",
         "readStartTag": "2ce276bd35a7803a04831095803a784421ba742cf746a9563037d3f87587673b"
-      }
+      },
+      "preMoveScope": "工厂体（深度 2）—— 段1：三个函数同层零依赖，搬迁时逐条打印过"
     },
     "src/client/mod-vr-ui.js": {
       "functions": {
@@ -20,7 +21,8 @@
         "vrNewSessionButton": "9968016b14c6a4a446f8a41e070acc73d9a970788d31d329634c5de854f7a288",
         "vrCreateEntry": "70f72f8f685e590cf6be8e26c453a4044d93f94451fd7b7fc4a5987b4a8d36fc",
         "vrCreatePanel": "f7238f772d98305c10c9cc2ad2f22b4ba8f29d50e659b4f5bbe8109f4df49cd4"
-      }
+      },
+      "preMoveScope": "<匿名函数表达式>@行7148 —— 段2（就地划界，未位移）"
     },
     "src/client/mod-dom-utils.js": {
       "functions": {
@@ -28,7 +30,8 @@
         "insertIntoInput": "f1885722ec50f866aa13aff842559671ee62b1438f9b8536449548d50a6a54c0",
         "messageRootOf": "a18c4bf05c97dee1cce9e26861e102325caf271a3bcdcaa19e8779132995d9d9",
         "muvIsVisibleInDom": "603dd923448ae07fc4ec8551db2f8c3023e2a742e78b76a10e7e8f6f269c53aa"
-      }
+      },
+      "preMoveScope": "<匿名函数表达式>@行7148 —— 段3（真位移 593 行）"
     },
     "src/client/mod-text-parse.js": {
       "functions": {
@@ -36,14 +39,16 @@
         "extractStatusWrap": "d7e64ac20bb2ba58dfe622120bdcd4d7d3a5d726cab77fc37d7229a5a87839ee",
         "muvRegExpEscape": "fbb972960de841e9b537aa28be4651dc975601579a27c7a9970c6bd698b48d8e",
         "muvTsSegmentsOf": "932d5ffeb77bb4047e9c83441ad90d2de01fa88009e28507c0ea27d33259aae5"
-      }
+      },
+      "preMoveScope": "<匿名函数表达式>@行7148 —— 段4（真位移 401 行）"
     },
     "src/client/mod-card-render.js": {
       "functions": {
         "muvSimpleBlock": "0be1b98be4088b79eae5c13401944f0c3e006e5478c92140ce5cca08fbb353d4",
         "muvFillGameCardFields": "7c598225e7a29d001bd6f79b083ad0bc886fd82e59694e7373d8f46025d06345",
         "muvStyleTavernOpts": "ae296d0c8d38ded1d3dcd56677107434d8e53b812e72cbad9477d7aae9f2ad0e"
-      }
+      },
+      "preMoveScope": "<匿名函数表达式>@行6014 —— 段5（真位移 433 行）"
     }
   },
   "parts": [
@@ -237,5 +242,6 @@
       "depthAtStart": 4,
       "depthAtEnd": 0
     }
-  ]
+  ],
+  "preMoveScopeNote": "每个模块必须记「搬前的作用域归属」（P2）：档 B 的包装器会把作用域同质化，\"同段同作用域\"这条保护会**不会红、只是不再保护**；而**事后补记无据** ⇒ 必须在动刀前落。"
 }

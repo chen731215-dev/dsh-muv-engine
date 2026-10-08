@@ -59,14 +59,42 @@ const beforePath = process.env.MUV_BEFORE_SRC || path.join(OUT, 'client-before.j
 //   提取器随即报「找不到函数 ×××」——而这个失败**看起来像源码问题**，会把人带到错的方向
 //   （我就先怀疑了「另一个 agent 改坏了函数」，其实是自己的对照臂被写坏了）。
 if (!process.env.MUV_BEFORE_SRC) {
-  const head = execFileSync('git', ['show', 'HEAD:lib/client.js'], { cwd: __dirname, maxBuffer: 1 << 28 }).toString('utf8')
-  if (head.indexOf('\uFFFD') >= 0 || head.split('\n').length < 2000) {
-    throw new Error('HEAD 上的 lib/client.js 取出来不是可用 UTF-8 —— 「修复前」的基准取错了')
+  // ───────────────────────────────────────────────────────────────────────────
+  // ★★ 基准必须**显式给出**（`MUV_BEFORE_REV` 或 `MUV_BEFORE_SRC`），**不再默认 `HEAD`**。
+  //
+  // 为什么改：本脚本原来的设计前提是「**HEAD 就是**"A/B/C 全都没做"的那个提交」。
+  //   但**修复早已落地** ⇒ HEAD 现在**含** `withCardReset` ⇒ 那个前提**已失效**，
+  //   脚本每次都在下面那条 guard 上抛错 ⇒ **这条门禁此前一直是红的（跑不出结论）**。
+  //
+  // ★ 而且"换一个 sha"这条路**不存在**：实测本仓**全部 43 个提交**（含根提交 `e6f8c7e`）
+  //   都含 `function withCardReset` —— 历史在 `e6f8c7e`（chore(security)!: …重建 wip/card-interactive）
+  //   被**重建**过 ⇒ **本仓历史里不存在"修复前"的基准提交**。
+  //
+  // ⇒ 所以正确的做法是：**要求调用方把对照臂显式交进来**，并在拿不到时
+  //   **响亮失败 + 给出可执行的下一步**（而不是抛"基准提交选错了"那种会把人引去翻历史的错）。
+  // ───────────────────────────────────────────────────────────────────────────
+  const rev = process.env.MUV_BEFORE_REV
+  if (!rev) {
+    throw new Error('缺少"修复前"对照臂：本仓历史里已无该状态'
+      + '（全部 43 个提交都含 withCardReset；历史在根提交 e6f8c7e 被重建过）'
+      + ' ⇒ 请用 MUV_BEFORE_SRC=<文件> 提供修复前源码，'
+      + '或设 MUV_BEFORE_REV=<提交>（该提交必须存在且**不含** withCardReset）')
   }
-  // HEAD 就是「A/B/C 全都没做」的那个提交：它**不该**有 withCardReset。
-  // 反过来写（要求 HEAD 里必须有）会把对照臂从一个真基准换成一个不存在的版本。
+  let head
+  try {
+    head = execFileSync('git', ['show', rev + ':lib/client.js'], { cwd: __dirname, maxBuffer: 1 << 28 }).toString('utf8')
+  } catch (e) {
+    throw new Error('MUV_BEFORE_REV=' + rev + ' 取不到 lib/client.js（提交不存在 / 没有该文件）'
+      + ' ⇒ 基准没拿到，对照臂无效')
+  }
+  if (head.indexOf('\uFFFD') >= 0 || head.split('\n').length < 2000) {
+    throw new Error('MUV_BEFORE_REV=' + rev + ' 上的 lib/client.js 不是可用 UTF-8 —— 「修复前」的基准取错了')
+  }
+  // 这一条是**基准校验**本身：基准里**不该**有 withCardReset。
+  // 反过来写（要求基准里必须有）会把对照臂从一个真基准换成一个不存在的版本。
+  // ★ 反证（已实测）：把它指向一个**已知含**该函数的提交（例如 HEAD）⇒ 必须在这里报红。
   if (head.indexOf('function withCardReset') >= 0) {
-    throw new Error('HEAD 上已经有 withCardReset —— 基准提交选错了，对照不再是"修复前"')
+    throw new Error('MUV_BEFORE_REV=' + rev + ' 上已经有 withCardReset —— 基准提交选错了，对照不再是"修复前"')
   }
   writeFileSync(beforePath, head, 'utf8')
 }

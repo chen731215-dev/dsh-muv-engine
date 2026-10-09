@@ -26,7 +26,8 @@
      * 在 SillyTavern 里这是「把这段当 HTML 渲染」的约定，但 DSH 的 markdown 渲染器
      * 会老实把它当**代码块**——用户看到的是几十 KB 原始 HTML 文本，界面完全出不来。
      *
-     * 这里只挑**确实是 HTML 文档**的围栏（以 `<!DOCTYPE` 或 `<html` 开头）下手，
+     * 这里只挑**确实是 HTML 文档**的围栏下手（`<!DOCTYPE` / `<html` 开头，或
+     * `<head>` 开头且 `<head`/`<body>` 配套 —— 后者是 task-24 补的，见 isDoc 处注释），
      * 普通代码块（```js / ```python …）原样不动——误伤代码块比不渲染更糟。
      * 不认识的、没闭合的围栏也一样原样放行。
      *
@@ -102,7 +103,15 @@
         if (!close) continue
         var body = source.slice(open.lastIndex, close.start)
         var head = body.replace(/^\s+/, '').slice(0, 40).toLowerCase()
-        var isDoc = head.indexOf('<!doctype') === 0 || head.indexOf('<html') === 0
+        // ★ task-24（2026-10-09）：补第三条路 —— 没写 doctype/html、`<head>` 直出的整页文档。
+        //   真卡 `_足控天堂2` 的「状态栏（手机使用）」就是 `<head>…<body>…</body>` 直出
+        //   （14590 字，本机真卡 6 条真红里 3 条的红源：围栏不被认 ⇒ iframe=0、
+        //   围栏残留成第 4 个代码块、半截 HTML 裸奔）。
+        //   口径与 `muvIsPageSourceText`（本文件）对齐：`<head` 与 `<body` 同时出现
+        //   即认；单个不认 —— 片段/教程代码块不误伤。`head`（前 40 字）管开头，
+        //   `body`（围栏夹的全文）管配套。
+        var isDoc = head.indexOf('<!doctype') === 0 || head.indexOf('<html') === 0 ||
+          (head.indexOf('<head') === 0 && /<body[\s>]/i.test(body))
         // 是文档 → 只替换围栏本身；不是 → 整块（含围栏）原样抄过去
         segments.push({ iframe: false, text: source.slice(pos, isDoc ? m.index : close.end) })
         if (isDoc) {

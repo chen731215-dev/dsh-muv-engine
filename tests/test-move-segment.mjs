@@ -33,13 +33,21 @@ const NODE = process.execPath
 // ★ 下限口径：**先测量再写死**。2026-10-08 本笔落地时实测 pass+fail = 26
 //   （复算：node tests/test-move-segment.mjs | tail -1）。本笔新增 ⑨/⑨-正对照/同作用域组 共 6 条 ⇒ 10 → 20。
 //   ★ task-32 再新增 ⑪ 段（真算 + 两条反证 + 输入敏感性）共 11 条 ⇒ 20 → 31。
-const MIN_ASSERTIONS = 31
+//   ★ 笔 B' 新增 ⑩ 段的"跨作用域会咬"反证 + 其自证共 2 条 ⇒ 31 → 33。
+const MIN_ASSERTIONS = 33
 
-// ★ 搬迁目标（**参数化**：换目标只改这一处）。
-//   目标刻意保留 = **笔 B 要真搬走的那个函数**（ensureStatusCss）⇒ 本测试 = 真搬迁的**同形预演**。
-//   ★ 连带（写给笔 B）：笔 B 落地时必须**在同一笔里**把这里的 TARGET 换成另一个仍未搬的函数，
-//     否则下面的 assertTargetStillInArtifact() 会（**正确地**）把语料判红。
-const TARGET = { fn: 'ensureStatusCss', module: 'mod-status-css.js', wiring: 'sbCss=MUV_SB_CSS' }
+// ★ 搬迁目标（**参数化**：换目标只改 `TARGET` + `TARGET_SCOPE` 两处）。
+//   ★ 笔 B'（本笔）：原目标是 `ensureStatusCss`（**笔 B 要真搬走的那个**，故意留作"真搬迁预演"）。
+//     `task-31` 一旦真搬走它，下面 `assertTargetStillInArtifact()` 会（**正确地**）判红 ⇒
+//     必须**先于**笔 B 把目标切到**下一个仍未搬**的函数。
+//   ⇒ 本笔换成 `muvVarRevOf`（3 行 · 外层依赖恰 1 个 `muvVarRevBySid` · 零活变量 · 被引仅 2 次 ·
+//     承载片 `part-09.js`）。**不是**随便挑的：它满足生成器的硬要求"函数体里**至少有一条可接线**"
+//     （`emptyStatusBar` 那类纯字面量函数体**没有**外层标识符 ⇒ 接线会判"多余"⇒ 不能当目标）。
+//   ★ 禁"从 MANIFEST 动态挑目标"（会把**可审测试**变成**移动靶**，见 HANDOFF §44.5）：目标必须硬编码在此。
+const TARGET = { fn: 'muvVarRevOf', module: 'mod-var-rev.js', wiring: 'muvVarRevBySid=muvVarRevBySid' }
+// ★ 目标的作用域归属（`scopeGroupReport().scope` 的现测值）。**硬编码**（与 fn 一样，不许动态推导）：
+//   它同时被 `--scope`（生成器账本字段）与 ⑩ 段的同作用域断言消费。
+const TARGET_SCOPE = '<箭头函数@行4>'
 const FN_DECL = 'function ' + TARGET.fn
 let pass = 0, fail = 0
 const cleaned = []
@@ -152,7 +160,9 @@ function makeSandbox(tag) {
 }
 const runGen = (dir, env = {}) => spawnSync(NODE, [
   'tools/move-segment.mjs', '--fn', TARGET.fn, '--module', TARGET.module,
-  '--scope', '<箭头函数@行4>', '--wiring', 'sbCss=MUV_SB_CSS',
+  // ★ 笔 B'：这两处原先**硬编码**（`'<箭头函数@行4>'` / `'sbCss=MUV_SB_CSS'`）⇒ 换目标时会**静默不同步**
+  //   （`--scope` 传错值不影响生成器通过，却会让账本字段失真）。现改为从 TARGET/TARGET_SCOPE 取。
+  '--scope', TARGET_SCOPE, '--wiring', TARGET.wiring,
 ], { cwd: dir, encoding: 'utf8', maxBuffer: 1 << 28, env: { ...process.env, ...env } })
 const judge = (dir, flag) => spawnSync(NODE, ['tools/build-client.mjs', flag], { cwd: dir, encoding: 'utf8', maxBuffer: 1 << 28 })
 
@@ -339,6 +349,34 @@ console.log('\n⑩ ★ 搬迁目标的同作用域组必须 ok=true（名单自�
   check('★ 同作用域组 ok=true 且 members ≥ 1（防空分组假绿）', grp.ok === true && grp.members.length >= 1 && grp.members.length === uniq.length,
     JSON.stringify({ ok: grp.ok, members: grp.members.length, names: uniq.length, problems: grp.problems }).slice(0, 400))
   check('★ 反证：空分组 ⇒ ok=false（这条断言**会红**）', cs.scopeGroupReport({ src: srcNow, names: [] }).ok === false)
+  // ★ 笔 B' 补：上面那条"按 scope 逐个筛"在本语料下**筛掉 0 个**（2026-10-09 实测：part-09.js 里跨作用域函数数 = 0）
+  //   ⇒ 它**无法自证会咬**（同一族：判据要能被证明会咬）。所以补一条**判据层**反证：
+  //   拿一个**真实存在**的跨作用域对照，与目标组成混合名单 ⇒ 必须 ok=false 且**点名两个作用域**。
+  //   ★ 对照**不硬编码**（不写死 fenceBlank）：现场扫出第一个与目标 scope 不同的函数 ⇒ 换目标时自动跟随。
+  //   ★ 并且**自证这条反证不是空转**：必须真的找到了对照（found === true），否则判红。
+  const crossOther = (() => {
+    const seen = new Set()
+    for (let i = 0; i < toks.length; i++) {
+      if (toks[i].type !== 'ident' || toks[i].value !== 'function') continue
+      const idt = toks[i + 1]
+      if (!idt || idt.type !== 'ident' || seen.has(idt.value)) continue
+      seen.add(idt.value)
+      const s = scopeOf(idt.value)
+      if (s && s !== myScope) return { nm: idt.value, scope: s }
+    }
+    return null
+  })()
+  check('★ 自证：本语料里**确实存在**一个与目标不同作用域的函数（否则下一条反证是空转）',
+    crossOther !== null, '未找到跨作用域对照 ⇒ 下一步：核对 scopeGroupReport 是否把所有函数都归到同一 scope。')
+  if (crossOther) {
+    const mixed = cs.scopeGroupReport({ src: srcNow, names: [TARGET.fn, crossOther.nm] })
+    const bothNamed = (mixed.problems || []).some((p) => p.includes(myScope) && p.includes(crossOther.scope))
+    check('★ 反证（判据层·会咬）：同作用域目标 + 跨作用域对照 ⇒ ok=false 且**点名两个作用域**',
+      mixed.ok === false && bothNamed,
+      JSON.stringify({ ok: mixed.ok, target: myScope, other: crossOther.scope, problems: mixed.problems }).slice(0, 400))
+  } else {
+    check('★ 反证（判据层·会咬）：（**因找不到跨作用域对照 ⇒ 无法判定**）', false, '对照缺失')
+  }
 }
 
 console.log('\n⑪ ★ task-32：`preMoveScopeEvidence` 必须**真算**（不许写死）+ 两条反证')

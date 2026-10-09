@@ -85,15 +85,6 @@
       + '.muv-sb-details>summary{cursor:pointer;font-size:11px;letter-spacing:.6px;opacity:.6;font-weight:600;padding:3px 0}'
       + '.muv-sb-details[open]>summary{margin-bottom:2px}'
 
-    function ensureStatusCss() {
-      try {
-        if (document.getElementById('muv-status-css')) return
-        var s = document.createElement('style')
-        s.id = 'muv-status-css'
-        s.textContent = MUV_SB_CSS
-        document.head.appendChild(s)
-      } catch (_) {}
-    }
 
     /** 按顶层逗号切分参数（跳过引号内的逗号）。 */
 

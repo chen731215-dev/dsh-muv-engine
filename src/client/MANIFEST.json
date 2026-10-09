@@ -3,8 +3,8 @@
   "linesNote": "各分片 lines 之和 = 产物 split('\\n') 的长度；产物的 \\n 个数比它少 1（末行无尾随换行）。",
   "artifact": {
     "path": "lib/client.js",
-    "bytes": 557532,
-    "sha256": "9770ef073307c5b3d542f9b92f4a2d8fcb9122124af86823811e629b2ff914e9"
+    "bytes": 557724,
+    "sha256": "db6130376260c6fa50b57bde8ece9c6707e2ae8daded7affa293560eaa472e39"
   },
   "modules": {
     "src/client/mod-text.js": {
@@ -54,6 +54,19 @@
       },
       "preMoveScope": "<匿名函数表达式>@行6014 —— 段5（真位移 433 行）",
       "preMoveScopeEvidence": "reconstructed"
+    },
+    "src/client/mod-status-css.js": {
+      "functions": {
+        "ensureStatusCss": "769aea55df2beeb01a38e21485224d2fc7f7ba57cbb7016f26d0a6c9f6433a42"
+      },
+      "preMoveScope": "<箭头函数@行4>",
+      "preMoveScopeEvidence": "live",
+      "wiring": {
+        "sbCss": {
+          "kind": "accessor",
+          "target": "MUV_SB_CSS"
+        }
+      }
     }
   },
   "parts": [
@@ -80,17 +93,27 @@
     {
       "path": "src/client/part-02.js",
       "startLine": 61,
-      "endLine": 780,
-      "lines": 720,
-      "bytes": 42545,
-      "sha256": "2217717a52eb1a018764291c450e3ac2d6d449c6c39ee3e8ed956e077d16f41c",
+      "endLine": 771,
+      "lines": 711,
+      "bytes": 42259,
+      "sha256": "4ee40e88c78588615e724d764eec43b3333d58ad87674623b25a3981459af1cc",
+      "depthAtStart": 2,
+      "depthAtEnd": 2
+    },
+    {
+      "path": "src/client/mod-status-css.js",
+      "startLine": 772,
+      "endLine": 785,
+      "lines": 14,
+      "bytes": 478,
+      "sha256": "482542ae9df583413086707d9233af5f26586d129e2f9cfbef7c6aa0643d5b3b",
       "depthAtStart": 2,
       "depthAtEnd": 2
     },
     {
       "path": "src/client/part-03.js",
-      "startLine": 781,
-      "endLine": 1634,
+      "startLine": 786,
+      "endLine": 1639,
       "lines": 854,
       "bytes": 59461,
       "sha256": "095ef2dbeaa69b61a6ed85bcc9d336205060327c4dc492ea04ac386c512726bf",
@@ -99,8 +122,8 @@
     },
     {
       "path": "src/client/part-04.js",
-      "startLine": 1635,
-      "endLine": 2231,
+      "startLine": 1640,
+      "endLine": 2236,
       "lines": 597,
       "bytes": 41842,
       "sha256": "10e55d7c9f143fc2a9e0c3ff520bb7584fb821627553fc70a9d5bff45c4ccf2c",
@@ -109,8 +132,8 @@
     },
     {
       "path": "src/client/part-05.js",
-      "startLine": 2232,
-      "endLine": 2684,
+      "startLine": 2237,
+      "endLine": 2689,
       "lines": 453,
       "bytes": 27458,
       "sha256": "101617b83215c1aa03ce0a9233f1eb7b38d07d8d4a894e80b886547018f69c26",
@@ -119,8 +142,8 @@
     },
     {
       "path": "src/client/part-06.js",
-      "startLine": 2685,
-      "endLine": 3658,
+      "startLine": 2690,
+      "endLine": 3663,
       "lines": 974,
       "bytes": 81347,
       "sha256": "5b9f57f0debb8d14a9954a4b1721a006179d5807d974ba66fac1189b08d9daad",
@@ -129,8 +152,8 @@
     },
     {
       "path": "src/client/part-07.js",
-      "startLine": 3659,
-      "endLine": 4400,
+      "startLine": 3664,
+      "endLine": 4405,
       "lines": 742,
       "bytes": 39236,
       "sha256": "af34ba061a7e1adc16cf149910f649ec7ffcfd9c9e1e9e31222c7585480da58b",
@@ -139,8 +162,8 @@
     },
     {
       "path": "src/client/part-08.js",
-      "startLine": 4401,
-      "endLine": 5099,
+      "startLine": 4406,
+      "endLine": 5104,
       "lines": 699,
       "bytes": 37227,
       "sha256": "d9abcee63790a0c0fd041f0c5bec0e036a42efbdc691b53c3b9088f89618c95b",
@@ -149,8 +172,8 @@
     },
     {
       "path": "src/client/part-09.js",
-      "startLine": 5100,
-      "endLine": 5820,
+      "startLine": 5105,
+      "endLine": 5825,
       "lines": 721,
       "bytes": 44372,
       "sha256": "b95552f8fe30d31d6e9c3ee945b67523301a644c8e3e54610696164464e057cd",
@@ -159,8 +182,8 @@
     },
     {
       "path": "src/client/part-10.js",
-      "startLine": 5821,
-      "endLine": 6540,
+      "startLine": 5826,
+      "endLine": 6545,
       "lines": 720,
       "bytes": 50673,
       "sha256": "83b6d56136ad2db6646edeb84c416fd64d7fa2b5dc25b32421a3d9de4eadea1c",
@@ -169,8 +192,8 @@
     },
     {
       "path": "src/client/mod-card-render.js",
-      "startLine": 6541,
-      "endLine": 6578,
+      "startLine": 6546,
+      "endLine": 6583,
       "lines": 38,
       "bytes": 1668,
       "sha256": "4be7eaf4e75ee36c446602f241c6aa21df89849a80f7feebf542e32f1a58f279",
@@ -179,8 +202,8 @@
     },
     {
       "path": "src/client/part-11.js",
-      "startLine": 6579,
-      "endLine": 7319,
+      "startLine": 6584,
+      "endLine": 7324,
       "lines": 741,
       "bytes": 50591,
       "sha256": "2f2c006736c39b41dba2e5ceec7d5fa983aab1d13537284441c345e17898b1f1",
@@ -189,8 +212,8 @@
     },
     {
       "path": "src/client/mod-dom-utils.js",
-      "startLine": 7320,
-      "endLine": 7370,
+      "startLine": 7325,
+      "endLine": 7375,
       "lines": 51,
       "bytes": 2109,
       "sha256": "d94858a475dea62f1af938f10f883705048d708baec8a56d4b0173a50372744c",
@@ -199,8 +222,8 @@
     },
     {
       "path": "src/client/part-12.js",
-      "startLine": 7371,
-      "endLine": 7654,
+      "startLine": 7376,
+      "endLine": 7659,
       "lines": 284,
       "bytes": 11112,
       "sha256": "f4d1845146be3b8c4bf01d0b4b0f14c9abdaf632d13e3a5625f67199e7eb768f",
@@ -209,8 +232,8 @@
     },
     {
       "path": "src/client/mod-vr-ui.js",
-      "startLine": 7655,
-      "endLine": 7708,
+      "startLine": 7660,
+      "endLine": 7713,
       "lines": 54,
       "bytes": 5203,
       "sha256": "4b07c4d2d6ed43a40c6ee38329223eb6577a04a7aa2e89cbd5e9147d8b286ad5",
@@ -219,8 +242,8 @@
     },
     {
       "path": "src/client/part-13.js",
-      "startLine": 7709,
-      "endLine": 8162,
+      "startLine": 7714,
+      "endLine": 8167,
       "lines": 454,
       "bytes": 22515,
       "sha256": "443b4dcffe5a540215e76f47cfe758e20d14f1d66e290da8799d9be6f1e36d30",
@@ -229,8 +252,8 @@
     },
     {
       "path": "src/client/mod-text-parse.js",
-      "startLine": 8163,
-      "endLine": 8223,
+      "startLine": 8168,
+      "endLine": 8228,
       "lines": 61,
       "bytes": 2630,
       "sha256": "e143bc73d11b9cc9c7219dd5488fb599d982ddba632349405f59905515d95f27",
@@ -239,13 +262,13 @@
     },
     {
       "path": "src/client/part-14.js",
-      "startLine": 8224,
-      "endLine": 8847,
+      "startLine": 8229,
+      "endLine": 8852,
       "lines": 624,
       "bytes": 35565,
       "sha256": "092b76e60620e5dcedbd34b1054eef433026fd85927bc5d93e77ce455a744d95",
       "depthAtStart": 4,
-      "depthAtEnd": 0
+      "depthAtEnd": 4
     }
   ],
   "preMoveScopeNote": "每个模块必须记「搬前的作用域归属」（P2）：档 B 的包装器会把作用域同质化，\"同段同作用域\"这条保护会**不会红、只是不再保护**；而**事后补记无据** ⇒ 必须在动刀前落。",

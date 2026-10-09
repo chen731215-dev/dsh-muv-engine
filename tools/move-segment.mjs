@@ -307,7 +307,18 @@ if (!modText.startsWith(indent + '// ── ') || modText.indexOf(WIRING_BLOCK) 
 //   原先用 `String.replace(fnText + '\n', '')`（**只替换首次出现**）⇒ 若同一片里该原文出现 2 次，
 //   "移除"只删 1 处，而"不是原样就算过"的守卫会**放行** ⇒ 留下一个**半搬运**的产物（静默）。
 //   ⇒ 先数次数，不为 1 就**响亮**失败；再算 `wouldRemove`、再按注入决定是否施加。
-const fnNeedle = TAMPER_LOOKUP ? (fnText + '\n// 故意改坏（守卫反证）') : (fnText + '\n')
+// ★★ 缺陷修复（2026-10-09，task-31 真搬迁后揪出）：原 needle 从 `function` **token 起点**切（`fnText`），
+//   **不含**该行的前导缩进 ⇒ `hostText.replace(fnText+'\n','')` 只删掉 `function … }`，而把
+//   **那一行的 4 个缩进空格**留成一条**纯空白行**（实测：`part-02.js` 出现唯一一处 `^[ \t]+$` 行，
+//   而先前几次搬迁的承载片 `part-03.js`/`part-09.js` 都是 0 处 ⇒ 这是**本工具新引入的瑕疵**）。
+//   ⇒ 移除/计数一律用 **`fnLine = indentReal + fnText`**（含前导缩进）⇒ 连行首缩进一起删，不留白行。
+//   ★ 口径辨析（别混）：`fnText` 仍用于"该片里必须有这段逐字原文"的存在性判据（L141）与
+//     "承载片里还剩几次"的无损证据（L423）—— 那两处要的是**token 口径**（与 `build-client::fnText()` 一致）。
+//     **只有"移除并连行首缩进一起删"这一件事**要用 `fnLine`。⇒ 两个名字并存，各服务各自的口径。
+const fnLine = indentReal + fnText
+const fnNeedle = TAMPER_LOOKUP ? (fnLine + '\n// 故意改坏（守卫反证）') : (fnLine + '\n')
+if (!hostText.includes(fnLine)) fail('承载片里没有该函数的**逐字整行原文**（含前导缩进）'
+  + ' ⇒ 分片与产物不一致，或缩进推导有误，请先修好')
 // ★ 计数守卫的**另一侧**（Lead 补漏）：TAMPER 只覆盖"出现 0 次"；这里覆盖"**出现 ≥2 次**"。
 //   `String.replace` 只替换**首次**出现 ⇒ 若有重复副本会留下**半搬运**产物（静默）⇒ 必须响亮。
 const countText = DUP_TARGET ? (hostText + fnNeedle) : hostText   // 夹具只加 **1 份**重复副本 ⇒ 该原文共 2 份（与 ⑨ 支断言一致）

@@ -97,6 +97,12 @@ const VALUE_CAPTURE = !!process.env.MUV_MOVE_VALUE_CAPTURE
 //     ⇒ 它声称验"位置"、实则只验"存在"、且**永不报红**。现改为按偏移真判位置 ⇒ 这条注入证明它会咬。
 const BAD_INDENT = !!process.env.MUV_MOVE_BAD_INDENT
 const WIRING_TAIL = !!process.env.MUV_MOVE_WIRING_TAIL
+// ★★ 2026-10-09 审查后新增一条**故障注入**（承接 `8a5d48b` 的未竟边界；**仅供常驻反证**）：
+//   · `MUV_MOVE_BLANK_TWO=1` ⇒ 故意吞 **0** 个相邻空行（= 恢复旧行为）⇒ 承载片删除处必然出现**连续双空行**
+//     ⇒ 必须被"空行判据"红并点名（证明该判据会咬）。
+//     来由：`8a5d48b` 只保证"不留**纯空白行**"，**没管**"前后分隔空行坍塌成连续双空行"；
+//     实测 `dd861a9` 删 `ensureStatusCss` 后 `part-02.js` 的最大连续空行 1 → **2**，而**当时无判据能咬**。
+const BLANK_TWO = !!process.env.MUV_MOVE_BLANK_TWO
 
 function fail(msg) { console.error('❌ move-segment：' + msg); process.exit(1) }
 const WIRING = allOf('wiring').map((s) => {
@@ -324,7 +330,26 @@ if (!modText.startsWith(indent + '// ── ') || modText.indexOf(WIRING_BLOCK) 
 //     "承载片里还剩几次"的无损证据（L423）—— 那两处要的是**token 口径**（与 `build-client::fnText()` 一致）。
 //     **只有"移除并连行首缩进一起删"这一件事**要用 `fnLine`。⇒ 两个名字并存，各服务各自的口径。
 const fnLine = indentReal + fnText
-const fnNeedle = TAMPER_LOOKUP ? (fnLine + '\n// 故意改坏（守卫反证）') : (fnLine + '\n')
+// ★★ 缺陷修复（2026-10-09，审查方揪出 · 承接 `8a5d48b`）：`8a5d48b` 只保证"不留**纯空白行**"，
+//   但**没管**"删除后**前后两个分隔空行坍塌成连续双空行**"。
+//   实测：`dd861a9` 删 `ensureStatusCss` 后，`part-02.js` 的**最大连续空行**由父提交的 1 变成 **2**
+//   （既有承载片 `part-03`/`part-09` 均为 1）⇒ 这是本工具**新引入的排版差异**，且**当时无任何判据能咬**
+//   （四条既有判据 + 三条缩进判据都只看深度/唯一性/账本/缩进，都不看空行数）。
+//   ★ 形态：原文恒为 `…内容\n` + `\n`(分隔A) + `fnLine\n` + `\n`(分隔B) + `下一个/** … */`
+//     ⇒ 只删 `fnLine\n` 会**同时留下 A 与 B** ⇒ 双空行。
+//   ⇒ 修法：needle **连同一个相邻空行一起吞** —— 优先吞**后随**的那个（`fnLine\n\n`），
+//     若函数恰在片末（无后随空行）则退回吞**前导**的那个（`\nfnLine\n`），都没有就只删本行。
+//   ★ 不用"删完再做 ≤1 归一"的通法：那会**顺带压掉别处的双空行**（part-11/12/13 本就有合法的双空行）
+//     ⇒ 超出本工具职责、且会污染与本笔无关的字节。**只动我们删的那一处相邻空行。**
+const blankSwallow =
+  BLANK_TWO ? 'none'                        // ★ 故障注入：吞 0 个 ⇒ 复现"连续双空行"
+  : hostText.includes(fnLine + '\n\n') ? 'trailing'
+  : (hostText.includes('\n' + fnLine + '\n') ? 'leading' : 'none')
+const fnNeedle = TAMPER_LOOKUP
+  ? (fnLine + '\n// 故意改坏（守卫反证）')
+  : (blankSwallow === 'trailing' ? (fnLine + '\n\n')
+    : blankSwallow === 'leading' ? ('\n' + fnLine + '\n')
+    : (fnLine + '\n'))
 if (!hostText.includes(fnLine)) fail('承载片里没有该函数的**逐字整行原文**（含前导缩进）'
   + ' ⇒ 分片与产物不一致，或缩进推导有误，请先修好')
 // ★ 计数守卫的**另一侧**（Lead 补漏）：TAMPER 只覆盖"出现 0 次"；这里覆盖"**出现 ≥2 次**"。
@@ -344,6 +369,48 @@ if (beforeCnt !== 1) fail('承载片里该函数原文出现 ' + beforeCnt + ' �
 const wouldRemove = hostText.replace(fnNeedle, '')
 if (wouldRemove === hostText) fail('承载片里找不到该函数的逐字原文（无法定位待搬代码）')
 const newHostText = NO_DELETE ? hostText : wouldRemove   // B1：copy 而非 move
+
+// ★★★ **空行判据**（2026-10-09 审查后新增；`MUV_MOVE_BLANK_TWO` 注入就是为它而设）：
+//   背景：`8a5d48b` 修的是"**纯空白行**"（`^[ \t]+$`），但**没有**判据管"**连续空行数**"。
+//   实测（审查方揪出）：`dd861a9` 删 `ensureStatusCss` 后，`part-02.js` 的最大连续空行 1 → **2**
+//     （前后两个分隔空行都留下了），而**当时没有任何判据能咬** —— 又是"没有判据的形态"。
+//   ★ 口径（**断言一件事，且只断言这一件**）：**删除动作不得让承载片的"最大连续空行"增大**。
+//     · 正常（吞 1 个相邻空行）⇒ 不变（本例恒为 1）⇒ 绿；
+//     · 吞 0 个（旧行为）⇒ 该片最大连续空行 +1 ⇒ 必须红（`BLANK_TWO` 注入真跑验证会咬）。
+//   ★ 故意**不**同时判"吞多了"：那是另一种失效模式（会让片变短），若把它塞进同一条判据，
+//     判据的"可证伪点"就变成双向、难以单点反证。**一条判据只咬一件事**（本仓铁律）。
+//     吞多了由既有 `--check`（产物/分片逐字节 + 行数）与 `--ledger`（文本摘要）间接约束，不在此重复。
+//   ★ 按**整片**统计（不只看删除邻域）：本工具若在别处误伤空行也会被抓到 ⇒ 覆盖面更宽。
+//   ★★ 位置要求：本判据**必须在 `wouldRemove` 定义之后**（它要读移除后的文本）——
+//      初版误放在前面 ⇒ `ReferenceError: Cannot access 'wouldRemove' before initialization`（真跑抓到）。
+if (!NO_DELETE) {
+  const maxBlank = (t) => {
+    let m = 0; let c = 0
+    for (const l of t.split('\n')) { if (l === '') { c++; if (c > m) m = c } else { c = 0 } }
+    return m
+  }
+  const blankBefore = maxBlank(hostText)
+  const blankAfter = maxBlank(wouldRemove)
+  if (blankAfter > blankBefore) {
+    fail('空行判据不成立：移除函数后承载片的最大连续空行 = ' + blankAfter + '，原为 ' + blankBefore
+      + ' ⇒ 删除处留下了**连续双空行**（前后两个分隔空行都没吞）—— 这是本工具新引入的排版差异，'
+      + '既有四条判据与三条缩进判据**都咬不到**。⇒ 下一步：核对 `blankSwallow` 是否吞了**恰好 1 个**相邻空行。')
+  }
+  // ★ 反证自证（防空转）：注入"吞 0 个"时**必须**真的让读数增大 ⇒ 否则注入没生效、判据也没被验证。
+  //   ★★ 实测教训（2026-10-09，本注入首次接上时抓到）：**不是每个搬迁目标都能证明这条判据**。
+  //      `muvVarRevOf` 的上下文是 `*/` 紧接 `function`（**前侧无空行**）、后侧 1 个空行
+  //      ⇒ 即使吞 0 个，最大连续空行仍是 **1**（没有"两个分隔空行"可叠加）⇒ 读数无差分。
+  //      能证明的是 `ensureStatusCss` 那种"**前后各 1 个空行**"的语境（实测：吞 0 ⇒ 1→2）。
+  //   ⇒ 处置：**如实报告"本目标无法自证"**，而不是假装通过、也不是悄悄放过（fail-closed 的正当用法）。
+  //     常驻测试里该判据另有**判据层差分**（⑫-c 同型，纯字符串、不需要真搬）作为主证据；
+  //     本注入在"目标天然可证"时才追加**端到端**证据。
+  if (BLANK_TWO && blankAfter === blankBefore) {
+    fail('BLANK_TWO 注入无法自证：注入后最大连续空行读数未变（前=' + blankBefore + ' / 后=' + blankAfter
+      + '）⇒ 本次搬迁目标**天然无法证明**"空行判据会咬"（它前后没有"两个分隔空行"可叠加）。'
+      + '⇒ 下一步：换一个"函数前后**各**有一个空行"的目标再验（如历史案例 ensureStatusCss），'
+      + '或改用**判据层差分**（纯字符串复现"吞 0 ⇒ 1→2"）作为该判据的主证据。**不许**把这条降级成假绿。')
+  }
+}
 
 // ── ★ 重切分：新 parts 顺序 + 逐片元数据（**显式职责**）──
 const baseParts = manifest.parts.map((p) => ({ ...p }))
@@ -391,7 +458,7 @@ const textOf = (p) => (p.path === modPath ? modText : (p.path === host.path ? ne
   }
 }
 
-const INJ = [SKIP_PARTS && 'SKIP_PARTS', NO_DELETE && 'NO_DELETE', NO_BUMP && 'NO_BUMP', VALUE_CAPTURE && 'VALUE_CAPTURE', TAMPER_LOOKUP && 'TAMPER_LOOKUP', DUP_TARGET && 'DUP_TARGET', BAD_INDENT && 'BAD_INDENT', WIRING_TAIL && 'WIRING_TAIL'].filter(Boolean)
+const INJ = [SKIP_PARTS && 'SKIP_PARTS', NO_DELETE && 'NO_DELETE', NO_BUMP && 'NO_BUMP', VALUE_CAPTURE && 'VALUE_CAPTURE', TAMPER_LOOKUP && 'TAMPER_LOOKUP', DUP_TARGET && 'DUP_TARGET', BAD_INDENT && 'BAD_INDENT', WIRING_TAIL && 'WIRING_TAIL', BLANK_TWO && 'BLANK_TWO'].filter(Boolean)
 console.log('  注入生效：' + (INJ.length ? INJ.join(',') + '  ★' : '（无注入）'))
 console.log('① 分片：' + host.path + ' 移除 ' + fnText.split('\n').length + ' 行；新增 ' + modPath
   + '（' + modText.split('\n').length + ' 行）' + (SKIP_PARTS ? '   ★★ 故障注入：**跳过 parts 插入**' : ''))

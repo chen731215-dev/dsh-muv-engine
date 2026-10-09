@@ -1640,5 +1640,56 @@ console.log('\n[24] 文本级状态栏：判据（裸方括号前缀 / 状态折
     onMsg.indexOf('if (isReady) { muvCardShow(frame); return }') > 0)
 }
 
+// ── 25. task-22：补占位符的门收紧 —— 卡认标记还要「消息带状态 或 会话有变量」 ──
+//
+// 第 119 轮真机实锤：一张「按名查库误命中 + 自带消费占位符正则」的卡（黄金庭院），
+// 每条无数据消息都被挂一张全 `未知` 的空状态栏。修法 = withStatusPlaceholder 加第三道门
+// （muvMsgSignalsStatus / muvSessionHasVariables）。这里用 buildFrom 逐字提取真函数，
+// deps 注入 muvEraVars / muvEraLocator（工厂级状态），把两支正向 + 三支防回归全部钉死。
+console.log('\n[25] task-22：占位符门收紧（消息带状态 或 会话有变量）')
+{
+  const mk = (eraVars) => buildFrom(['withStatusPlaceholder'], {
+    STATUS_PH_TEST: /<StatusPlaceHolderImpl\s*\/>/i,
+    STATUS_PH_TEXT: '<StatusPlaceHolderImpl/>',
+    muvEraVars: eraVars,
+    muvEraLocator: () => 'sessionId=s1',
+  }, 'withStatusPlaceholder')
+  const sig = buildFrom(['muvMsgSignalsStatus'], {}, 'muvMsgSignalsStatus')
+  const CARD = { data: { extensions: { regex_scripts: [{ findRegex: '/<StatusPlaceHolderImpl\\/>/gsi', replaceString: 'x' }] } } }
+  const NOCARD = { data: { extensions: { regex_scripts: [{ findRegex: '/x/g', replaceString: 'y' }] } } }
+  const PH = '<StatusPlaceHolderImpl/>'
+  const plain = '<content>纯文本，没有任何变量块</content>'
+  const withSig = '<content>正文</content>\n<UpdateVariable>\n<initvar>日期=2026-10-10</initvar>\n</UpdateVariable>'
+  const hasPh = (s) => /<StatusPlaceHolderImpl\s*\/>\s*$/.test(String(s))
+
+  // 信号判定（纯函数档）
+  check('信号判定：四种标记都认，且大小写不敏感',
+    sig('<UpdateVariable>') && sig('<initvar>') && sig('<VariableEdit ') && sig('<era_data>') &&
+    sig('<updatevariable>') && sig('<INITVAR>'))
+  check('信号判定：`[\\s>]` 钉死标签形态 —— 同前缀的别的标签不误认',
+    !sig('<UpdateVariableX>') && !sig('<initvarFoo>'))
+  check('信号判定：普通文本不误认（提到词不算、闲聊不算、空串不算）',
+    !sig('正文提到 UpdateVariable 这个词') && !sig('<content>闲聊</content>') && !sig(''))
+
+  // 门组合（端到端档：真函数 + 注入的会话变量状态）
+  check('★ 卡认 + 消息带内联变量块 ⇒ 补（无争议支）', hasPh(mk(null)(withSig, CARD)),
+    JSON.stringify(String(mk(null)(withSig, CARD)).slice(-40)))
+  check('★ 卡认 + 无信号 + 会话变量树非空（locator 归属本会话）⇒ 照补（保住脚本自拉数据的 ERA 卡）',
+    hasPh(mk({ locator: 'sessionId=s1', data: { stat_data: { 日期: ['2026'] } }, inflight: false })(plain, CARD)))
+  check('★★ 卡认 + 无信号 + 会话无变量 ⇒ **不补**（task-22 核心：空状态栏不再刷屏）',
+    mk({ locator: 'sessionId=s1', data: {}, inflight: false })(plain, CARD) === plain,
+    JSON.stringify(String(mk({ locator: 'sessionId=s1', data: {}, inflight: false })(plain, CARD)).slice(-40)))
+  check('★ 卡认 + 无信号 + 变量树未就绪（null）⇒ 不补',
+    mk({ locator: 'sessionId=s1', data: null, inflight: false })(plain, CARD) === plain)
+  check('★ 卡认 + 无信号 + 缓存归属**别的会话** ⇒ 不补（防跨会话陈旧变量）',
+    mk({ locator: 'sessionId=old', data: { a: 1 }, inflight: false })(plain, CARD) === plain)
+  check('★ 卡认 + 无信号 + 本会话取数在途 ⇒ 乐观补（防首帧竞态把 ERA 楼灭灯）',
+    hasPh(mk({ locator: 'sessionId=s1', data: null, inflight: true })(plain, CARD)))
+  check('幂等：正文已有占位符 ⇒ 原样（回归哨兵）',
+    mk(null)(withSig + '\n' + PH, CARD) === withSig + '\n' + PH)
+  check('反向：卡不认标记 ⇒ 一个字符不加（回归哨兵）',
+    mk({ locator: 'sessionId=s1', data: { a: 1 }, inflight: false })(withSig, NOCARD) === withSig)
+}
+
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`)
 process.exit(fail ? 1 : 0)

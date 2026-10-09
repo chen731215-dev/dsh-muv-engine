@@ -365,17 +365,54 @@ const arms = [
 if (oldPath) arms.push({ label: 'before', srcPath: oldPath, source: readFileSync(oldPath, 'utf8') })
 
 // ── 静态断言：占位符到底会不会被补上（用真卡 JSON 走真函数） ──
-console.log('\n=== 静态：withStatusPlaceholder 对真卡的行为 ===')
+// ★ task-22（2026-10-10）改判据：withStatusPlaceholder 收紧为「卡认标记 且
+//   （消息带状态信号 或 会话有变量树）」——本段从"打印"升格为**硬判据**（进 verdict），
+//   并把新依赖（muvMsgSignalsStatus / muvSessionHasVariables / muvEraVars / muvEraLocator）一并喂进去。
+const staticChecks = makeChecks()
 {
-  const box = new Function('STATUS_PH_TEST', 'STATUS_PH_TEXT', nowSrc.match(/[ \t]*function cardWantsStatusPlaceholder[\s\S]*?\n    \}/)[0] + '\n' + nowSrc.match(/[ \t]*function withStatusPlaceholder[\s\S]*?\n    \}/)[0] + '\n return { a: withStatusPlaceholder, b: cardWantsStatusPlaceholder }')
-  const api = box(/<StatusPlaceHolderImpl\s*\/>/i, '<StatusPlaceHolderImpl/>')
+  const c = staticChecks
+  const grab = (n) => nowSrc.match(new RegExp('[ \\t]*function ' + n + '[\\s\\S]*?\\n    \\}'))[0]
+  const box = new Function('STATUS_PH_TEST', 'STATUS_PH_TEXT', 'muvEraVars', 'muvEraLocator',
+    grab('cardWantsStatusPlaceholder') + '\n' + grab('muvMsgSignalsStatus') + '\n' +
+    grab('muvSessionHasVariables') + '\n' + grab('withStatusPlaceholder') +
+    '\n return { a: withStatusPlaceholder, b: cardWantsStatusPlaceholder, sig: muvMsgSignalsStatus }')
+  const api = box(/<StatusPlaceHolderImpl\s*\/>/i, '<StatusPlaceHolderImpl/>',
+    { locator: 'sessionId=t', data: null, inflight: false }, function () { return 'sessionId=t' })
   const sample = '<content>正文</content>'
-  const outA = api.a(sample, cardJson)
+  const PH = '<StatusPlaceHolderImpl/>'
+  const withSig = '<content>正文</content>\n<UpdateVariable>\n<initvar>日期=2026-10-10</initvar>\n</UpdateVariable>'
+  // 正向①：消息带内联变量块 ⇒ 补（无争议的那一支）
+  c.check('★ 真卡 + 消息带 <UpdateVariable> 块 ⇒ 尾部补上占位符',
+    /<StatusPlaceHolderImpl\s*\/>\s*$/.test(api.a(withSig, cardJson)),
+    JSON.stringify(String(api.a(withSig, cardJson)).slice(-40)))
+  // 正向②：无信号但会话变量树非空（locator 归属本会话）⇒ 补（保住脚本自拉数据的 ERA 卡）
+  const warmBox = new Function('STATUS_PH_TEST', 'STATUS_PH_TEXT', 'muvEraVars', 'muvEraLocator',
+    grab('cardWantsStatusPlaceholder') + '\n' + grab('muvMsgSignalsStatus') + '\n' +
+    grab('muvSessionHasVariables') + '\n' + grab('withStatusPlaceholder') +
+    '\n return { a: withStatusPlaceholder }')
+  const warm = warmBox(/<StatusPlaceHolderImpl\s*\/>/i, '<StatusPlaceHolderImpl/>',
+    { locator: 'sessionId=t', data: { stat_data: { 日期: ['2026'] } }, inflight: false }, function () { return 'sessionId=t' })
+  c.check('★ 真卡 + 无内联块 + 会话变量树非空 ⇒ 照补（脚本自拉数据的 ERA 卡不被误杀）',
+    /<StatusPlaceHolderImpl\s*\/>\s*$/.test(warm.a(sample, cardJson)),
+    JSON.stringify(String(warm.a(sample, cardJson)).slice(-40)))
+  // ★ task-22 核心：无信号 + 会话无变量 ⇒ **不补**（第 119 轮那个「全未知」空卡的根治）
+  c.check('★ 真卡 + 无信号 + 会话无变量树 ⇒ **不补**（空状态栏不再刷屏）',
+    api.a(sample, cardJson) === sample,
+    JSON.stringify(String(api.a(sample, cardJson)).slice(-40)))
+  // 陈旧 locator：缓存是别的会话的 ⇒ 不算数（否则切会话后又刷屏）
+  const staleBox = new Function('STATUS_PH_TEST', 'STATUS_PH_TEXT', 'muvEraVars', 'muvEraLocator',
+    grab('cardWantsStatusPlaceholder') + '\n' + grab('muvMsgSignalsStatus') + '\n' +
+    grab('muvSessionHasVariables') + '\n' + grab('withStatusPlaceholder') +
+    '\n return { a: withStatusPlaceholder }')
+  const stale = staleBox(/<StatusPlaceHolderImpl\s*\/>/i, '<StatusPlaceHolderImpl/>',
+    { locator: 'sessionId=别的会话', data: { a: 1 }, inflight: false }, function () { return 'sessionId=t' })
+  c.check('★ 无信号 + 缓存归属**别的会话** ⇒ 不补（防跨会话陈旧变量）',
+    stale.a(sample, cardJson) === sample)
+  // 幂等 / 反向（原有语义，回归哨兵）
+  const idem = api.a(withSig + '\n' + PH, cardJson)
+  c.check('幂等：正文已有占位符时不重复追加', (idem.match(/StatusPlaceHolderImpl/g) || []).length === 1)
   const outN = api.a(sample, { data: { extensions: { regex_scripts: [{ findRegex: '/x/g', replaceString: 'y' }] } } })
-  const idem = api.a(sample + '\n<StatusPlaceHolderImpl/>', cardJson)
-  console.log('  真卡：尾部补上占位符 = ' + /<StatusPlaceHolderImpl\s*\/>/.test(outA) + '   尾部 = ' + JSON.stringify(outA.slice(-30)))
-  console.log('  幂等：正文已有占位符时不重复追加 = ' + ((idem.match(/StatusPlaceHolderImpl/g) || []).length === 1))
-  console.log('  反向：卡不认这个标记时一个字符都不加 = ' + (outN === sample))
+  c.check('反向：卡不认这个标记时一个字符都不加', outN === sample)
 }
 
 // ── 第一部分：占位符 → [2] 真的命中（**这一部分才是"补占位符有用没有"的判据**） ──
@@ -434,6 +471,8 @@ console.log('\n=== 汇总 ===')
 const rowsOf = (r) => (r && (r.rows || r.checks)) || []
 const count = (r) => ({ p: rowsOf(r).filter((x) => x.ok).length, f: rowsOf(r).filter((x) => !x.ok).length })
 const p1 = count(part1)
+console.log('  [静态] 占位符门（task-22 收紧后语义）: ' + count(staticChecks).p + ' 通过 / ' + count(staticChecks).f + ' 失败')
+for (const x of rowsOf(staticChecks)) if (!x.ok) console.log('       FAIL: ' + x.name + '  -> ' + x.detail)
 console.log('  [第一部分] 占位符 → [2] 命中: ' + p1.p + ' 通过 / ' + p1.f + ' 失败')
 for (const x of rowsOf(part1)) if (!x.ok) console.log('       FAIL: ' + x.name + '  -> ' + x.detail)
 for (const r of reports) {
@@ -442,10 +481,10 @@ for (const r of reports) {
   for (const x of rowsOf(r)) if (!x.ok) console.log('       FAIL: ' + x.name + '  -> ' + x.detail)
 }
 const after = reports.find((r) => r.arm === 'after')
-const verdict = { ok: count(after).f === 0 && p1.f === 0, part1Fail: p1.f, afterFail: count(after).f, arms: {} }
+const verdict = { ok: count(after).f === 0 && p1.f === 0 && count(staticChecks).f === 0, part1Fail: p1.f, afterFail: count(after).f, staticFail: count(staticChecks).f, arms: {} }
 for (const r of reports) verdict.arms[r.arm] = count(r)
-console.log('  结论: ' + (verdict.ok ? '绿灯（第一部分 + after 臂全绿）'
-  : (p1.f ? '红：第一部分 ' + p1.f + ' 条失败' : '红：after 臂 ' + verdict.afterFail + ' 条失败')))
+console.log('  结论: ' + (verdict.ok ? '绿灯（静态判据 + 第一部分 + after 臂全绿）'
+  : (count(staticChecks).f ? '红：静态判据 ' + verdict.staticFail + ' 条失败' : (p1.f ? '红：第一部分 ' + p1.f + ' 条失败' : '红：after 臂 ' + verdict.afterFail + ' 条失败'))))
 console.log('  CG 画廊（portalOverlay）: ' + JSON.stringify(after && after.cgGallery))
 console.log('  CG 详情（cgModalOverlay）: ' + JSON.stringify(after && after.cgCharModal))
 console.log('  地图    : ' + JSON.stringify(after && after.mapModal))

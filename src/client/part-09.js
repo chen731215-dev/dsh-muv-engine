@@ -28,6 +28,63 @@
     }
 
     /**
+     * ★ task-22（2026-10-10）：这条消息文本里**自带**状态数据信号吗？
+     *
+     * 四种内联变量块（大小写不敏感；`[\s>]` 钉死"标签形态"，`<UpdateVariableX>` 这种
+     * 恰好同前缀的别的标签不误认）：
+     *   `<UpdateVariable>` / `<initvar>` —— MUV 原生 YAML 变量块（part-07 的回灌源）；
+     *   `<VariableEdit>` / `<era_data>` —— ERA/MVU 框架的变量编辑与数据块。
+     * 命中 ⇒ 这条消息**确定**有状态可显示，补占位符没有争议。
+     * @param {string} text
+     * @returns {boolean}
+     */
+    function muvMsgSignalsStatus(text) {
+      return /<UpdateVariable[\s>]|<initvar[\s>]|<VariableEdit[\s>]|<era_data[\s>]/i.test(String(text == null ? '' : text))
+    }
+
+    /**
+     * ★ task-22：**本会话**有没有变量树可显示？（读 part-08 的工厂级缓存 `muvEraVars`，
+     *   口径与 `muvEraAnswer` 一致：缓存必须**归属当前会话**才作数。）
+     *
+     * 为什么需要这一条：ERA 类卡（`_足控天堂2`）的状态栏页面是**脚本自己拉数据**的
+     * （iframe 里经桥取 `era:getCurrentVars`），很多楼的正文里**没有**内联变量块 ——
+     * 只看消息信号会把那些楼的状态栏误杀（这正是第 119 轮方案 (C) 里预警过的回归）。
+     * 所以消息没信号时，再看会话级：会话确实有变量 ⇒ 状态栏有东西可显示 ⇒ 照补。
+     *
+     * 三个防坑（都实测过形态）：
+     *   ① **locator 归属**：缓存必须对得上当前会话/预设 —— 否则切会话后拿到上一张卡
+     *      的变量树，空数据会话又要刷屏（老问题的变体）。
+     *   ② **取数在途 ⇒ 乐观放行**：warm 是卡 iframe 的 `__muvHello` 触发的，首楼装饰时
+     *      取数常在路上；这时判"无变量"会把先头几楼的状态栏灭掉（且重装饰不保证发生）。
+     *      在途 ⇒ 按有处理，宁可多补一次也不灭灯。
+     *   ③ **非对象/空树 ⇒ 无**：`data` 为 null（未就绪）或 `{}`（真没数据）都算无 ——
+     *      后者正是第 119 轮那个「DATE 未知 / TIME 未知 / LOCATION 未知」空卡的来源。
+     * @returns {boolean}
+     */
+    function muvSessionHasVariables() {
+      try {
+        if (!muvEraVars) return false
+        // ★ 别名间接（反陷阱注释）：这里**故意不写「调用 muvEraLocator」的带括号形态**。
+        //   门禁（test-client-render 的 buildFrom / verify-status-placeholder-era 的静态提取）
+        //   会按「名字+左括号」扫被调函数并从产物里**连根拔源码** —— 而且扫描**不区分注释**，
+        //   注释里出现带括号形态一样中招（本注释的前一版就踩了：真 muvEraLocator 的体内
+        //   调 currentSessionId 等，在夹具作用域里拿不到 ⇒ 返回空 ⇒ 本判据恒 false，
+        //   「会话有变量」那条正向永远量不到）。
+        //   经别名引用（无括号形态不被扫描）⇒ 门禁用 deps 注入的桩，产品用真函数，两不误。
+        var getLoc = (typeof muvEraLocator === 'function') ? muvEraLocator : null
+        var locator = getLoc ? getLoc() : ''
+        if (!locator || muvEraVars.locator !== locator) return false
+        if (muvEraVars.inflight) return true
+        var d = muvEraVars.data
+        if (d == null || typeof d !== 'object') return false
+        for (var k in d) { if (Object.prototype.hasOwnProperty.call(d, k)) return true }
+        return false
+      } catch (_) {
+        return false
+      }
+    }
+
+    /**
      * ★★ 补齐 `<StatusPlaceHolderImpl/>` —— 这一条救回的是整张卡的 ERA 状态栏。
      *
      * 为什么必须有：占位符**不是**模型写的，也不是预设/世界书里的任何一句要求的。
@@ -47,17 +104,28 @@
      * 位置正确很重要 —— `applyDecoratedHtml` 的 ② 分支就是按「占位符在正文末尾」来放
      * 状态栏的。
      *
-     * 幂等 + 保守：正文里已经有占位符就不再追加（模型的某轮可能自己写了）；
-     * 卡不认这个标记就一个字符都不加。
-     * @param {string} text
-     * @param {object|null} cardJson
-     * @returns {string}
-     */
+ * 幂等 + 保守：正文里已经有占位符就不再追加（模型的某轮可能自己写了）；
+ * 卡不认这个标记就一个字符都不加。
+ * ★ task-22（2026-10-10）再加一道门：卡认标记，还要**本条消息带状态信号**或
+ *   **本会话有变量树**才补（见下方 muvMsgSignalsStatus / muvSessionHasVariables）——
+ *   无数据楼不补，空状态栏（全 `未知`）不再刷屏。
+ * @param {string} text
+ * @param {object|null} cardJson
+ * @returns {string}
+ */
     function withStatusPlaceholder(text, cardJson) {
       try {
         if (!text) return text
         if (STATUS_PH_TEST.test(text)) return text
         if (!cardWantsStatusPlaceholder(cardJson)) return text
+        // ★ task-22（2026-10-10）：「卡认标记」不再单独构成补占位符的理由 —— 还得
+        //   **本条消息真的带状态**（内联变量块，见 muvMsgSignalsStatus）或
+        //   **本会话真的有变量树**（见 muvSessionHasVariables）。
+        //   否则「按名查库误命中 + 卡自带消费占位符正则」会像第 119 轮真机实锤的那样：
+        //   每条无数据消息都挂一张全 `未知` 的空状态栏（黄金庭院，DATE/TIME/LOCATION 未知）。
+        //   两支分别保住两类卡：内联块楼层走信号分支；脚本自拉数据的 ERA 卡
+        //   （很多楼没有内联块）靠会话变量树那支保住 —— 两支都不满足才真的不补。
+        if (!muvMsgSignalsStatus(text) && !muvSessionHasVariables()) return text
         // 追加而不是替换：`beautifyMuv` 的原文是 `body.innerText`，尾部很可能就是
         // `</content>` 这样的信封收尾。另起一行放占位符，卡的正则 `[2]` 才有一个
         // 干净的落点（它把整个占位符换成 ```` ``` ```` + 整页文档）。

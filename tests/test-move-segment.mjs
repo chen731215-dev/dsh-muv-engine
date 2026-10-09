@@ -39,7 +39,8 @@ const NODE = process.execPath
 //   ★ 笔 B' 新增 ⑩ 段的"跨作用域会咬"反证 + 其自证共 2 条 ⇒ 31 → 33。
 //   ★ task-31（笔 B）新增 ⑫ 段（两条新故障注入 + 新旧判据差分证明）共 11 条 ⇒ 33 → 44。
 //     明细：⑫-0 自证 1 条 · ⑫-a 4 条 · ⑫-b 3 条 · ⑫-c（新旧判别力差分）3 条 = 11。
-const MIN_ASSERTIONS = 44
+//   ★ task-31 首跑 CI 后：⑪-a 补 1 条（取值必须 ∈ 既有词表 `{pre-knife, reconstructed}`）⇒ 44 → 45。
+const MIN_ASSERTIONS = 45
 
 // ★ 搬迁目标（**参数化**：换目标只改 `TARGET` + `TARGET_SCOPE` 两处）。
 //   ★ 笔 B'（本笔）：原目标是 `ensureStatusCss`（**笔 B 要真搬走的那个**，故意留作"真搬迁预演"）。
@@ -389,21 +390,27 @@ console.log('\n⑪ ★ task-32：`preMoveScopeEvidence` 必须**真算**（不�
   const cs = await import(pathToFileURL(path.join(REPO, 'tools', 'client-scope.mjs')).href)
   const srcNow = fs.readFileSync(path.join(REPO, 'lib', 'client.js'), 'utf8')
 
-  // ⑪-a 正对照：正常搬 ⇒ 账本写 `live`，且同一条 console 里**打印出真算读数**
+  // ⑪-a 正对照：正常搬 ⇒ 账本写 `pre-knife`，且同一条 console 里**打印出真算读数**
+  //   ★ 2026-10-09 笔 B 首跑 CI 修正：原值 `'live'` **不在既有词表内**
+  //     （权威词表在 `tools/build-client.mjs::moduleRegistryReport` = `{'pre-knife','reconstructed'}`）
+  //     ⇒ `tests/test-client-parts.mjs` ④-2 正向断言会红。现改为 `'pre-knife'`（= 动刀前可复核读数，正是本工具产出的东西）。
   {
     const d = makeSandbox('scope-ok')
     const r = runGen(d)
     const o = String(r.stdout || '') + String(r.stderr || '')
     check('★ ⑪-a 正对照：exit=0', r.status === 0, fullOut(r))
-    check('★ ⑪-a 正对照：打印 preMoveScopeEvidence = **live**（值来自读数）',
-      /preMoveScopeEvidence = \*\*live\*\*/.test(o) && /真算：scope=/.test(o), fullOut(r))
-    // 账本落盘值 = live（读沙盒里的 MANIFEST，不读主仓）
+    check('★ ⑪-a 正对照：打印 preMoveScopeEvidence = **pre-knife**（值来自读数）',
+      /preMoveScopeEvidence = \*\*pre-knife\*\*/.test(o) && /真算：scope=/.test(o), fullOut(r))
+    // 账本落盘值 = pre-knife（读沙盒里的 MANIFEST，不读主仓）
     let ev = null
     try {
       const mf = JSON.parse(fs.readFileSync(path.join(d, 'src', 'client', 'MANIFEST.json'), 'utf8'))
       ev = mf.modules['src/client/' + TARGET.module] && mf.modules['src/client/' + TARGET.module].preMoveScopeEvidence
     } catch { /* 诊断在下一条 */ }
-    check('★ ⑪-a 正对照：账本 `preMoveScopeEvidence` === "live"', ev === 'live', '实际 = ' + JSON.stringify(ev))
+    check('★ ⑪-a 正对照：账本 `preMoveScopeEvidence` === "pre-knife"', ev === 'pre-knife', '实际 = ' + JSON.stringify(ev))
+    // ★ 加严（2026-10-09）：取值必须落在**既有词表**内 —— 防再次自造近义词（`live` 事件就是漏了这条）
+    check('★ ⑪-a 加严：账本取值 ∈ 既有词表 {pre-knife, reconstructed}',
+      ['pre-knife', 'reconstructed'].includes(ev), '实际 = ' + JSON.stringify(ev))
     dropSandbox(d)
   }
 

@@ -25,7 +25,7 @@
 //   ① 改分片：把函数从承载片移除、生成模块片，并**把新片插入 `parts` 数组**（含 startLine/endLine/深度）
 //   ② 跑 build-client 重生成（**非静默**：刷新 bytes/sha256 与 artifact.sha256）
 //   ③ 补 `MANIFEST.modules` 账本条目（preMoveScope + preMoveScopeEvidence:**真算**（`scopeGroupReport`;
-//      ok ⇒ live，算不出 ⇒ fail-closed）+ wiring）
+//      算得出 ⇒ `'pre-knife'`（**既有词表**，见 build-client::moduleRegistryReport），算不出 ⇒ fail-closed）+ wiring）
 //   ④ 显式 bump `EXPECTED_PARTS`
 //
 // 形态约定（本工具**统一产出**）：
@@ -141,27 +141,35 @@ const hostText = fs.readFileSync(path.join(REPO, host.path), 'utf8')
 if (!hostText.includes(fnText)) fail('承载片里没有该函数的**逐字**原文 ⇒ 分片与产物不一致，请先修好')
 
 // ── ★★ task-32：`preMoveScopeEvidence` 必须**真算**，不许写死 ──────────────
-//   问题（`muv-dev` 发现、Lead 立项）：早先这里恒写 `'live'` 字面量，而**生成器从未调用过
-//   `scopeGroupReport`** ⇒ `task-31` 验收里"`preMoveScopeEvidence: live` 的**可复核性**"这一条
-//   **不可能被满足**（写死的值天然不可复核）。
+//   问题（`muv-dev` 发现、Lead 立项）：早先这里恒写一个字面量，而**生成器从未调用过
+//   `scopeGroupReport`** ⇒ `task-31` 验收里"证据字段的**可复核性**"这一条**不可能被满足**
+//   （写死的值天然不可复核）。
 //   修法：搬前**真算**一遍同作用域归属 —— `scopeGroupReport({ src, names: [FN] })`：
-//     · `ok === true` 且 `members.length ≥ 1`  ⇒ 证明**算得出来** ⇒ `'live'`（值**由读数决定**）
-//     · 算不出来（`ok === false` 或成员为空）    ⇒ 报错 fail-closed（**不许降级默认 live**）
-//   ★ 为什么不用 `'reconstructed'` 兜底：本工具**只在"原文仍在原处"时跑**
-//     （上面 `beforeCnt === 1` 与 `wouldRemove !== hostText` 两条守卫已强制）⇒ 此刻源码就是**搬前态**，
-//     算出来的归属是**实测**而非事后重建 ⇒ 只有 `live` 一种诚实结论；算不出即"工具坏了"，该红。
+//     · `ok === true` 且 `members.length ≥ 1`  ⇒ 证明**算得出来** ⇒ `'pre-knife'`（值**由读数决定**）
+//     · 算不出来（`ok === false` 或成员为空）    ⇒ 报错 fail-closed（**不许降级默认**）
+//   ★★ 取值必须落在**既有词表**内（2026-10-09 笔 B 首跑 CI 揪出，**这是本笔真错**）：
+//     权威定义在 `tools/build-client.mjs::moduleRegistryReport()`（P2 段，L490–496）——
+//     只认 **`'pre-knife'`**（动刀前可复核读数）或 **`'reconstructed'`**（事后重建）。
+//     我（task-32）先前在这里自造了 `'live'` ⇒ **不在词表内** ⇒
+//     `tests/test-client-parts.mjs` 的 ④-2 正向断言（递归真实仓库、要求每条 ∈ 词表）**直接红**。
+//     ★ 教训：**新增一个"枚举取值"前，先去它的**消费方**（这里 = `moduleRegistryReport`）核词表**，
+//       别在生产者侧自造近义词 —— 两处各写一遍 = 必静默漂移（与"参数与事实必须同源"同族）。
+//     ★ 为什么是 `'pre-knife'` 而不是 `'reconstructed'`：本工具**只在"原文仍在原处"时跑**
+//       （上面 `beforeCnt === 1` 与 `wouldRemove !== hostText` 两条守卫已强制）⇒ 此刻源码就是**搬前态**，
+//       算出来的归属是**当时的实测读数**（别人可照着重算）⇒ `'pre-knife'` 是**唯一诚实**的结论；
+//       算不出即"工具坏了"，该红（**不许**降级成 `'reconstructed'` 蒙混）。
 //   ★ 反证（常驻测试两向，`tests/test-move-segment.mjs`）：
 //     `MUV_MOVE_SCOPE_UNRESOLVED=1` ⇒ 强制判空 ⇒ 必须**非零退出并点名**（证明判据不是永真）；
-//     正对照 ⇒ 同一夹具不设开关时 `ok=true` 且账本写 `live`。
+//     正对照 ⇒ 同一夹具不设开关时 `ok=true` 且账本写 `pre-knife`。
 const FORCE_SCOPE_UNRESOLVED = !!process.env.MUV_MOVE_SCOPE_UNRESOLVED
 const preSrc = fs.readFileSync(path.join(REPO, host.path), 'utf8')
 const scopeGrp = scopeGroupReport({ src: artifact, names: [FN] })
 const scopeMembers = scopeGrp.members.filter((m) => m.name === FN).length
 const scopeOk = scopeGrp.ok && scopeMembers >= 1
 // ★ 反证支：把"算不出"注入进来（仅供常驻测试）；正常使用不会设它。
-const scopeEvidence = FORCE_SCOPE_UNRESOLVED ? 'unresolved' : (scopeOk ? 'live' : 'unresolved')
-if (scopeEvidence !== 'live') {
-  fail('搬前同作用域归属**算不出来** —— preMoveScopeEvidence 不能写死、也不许降级默认 live。'
+const scopeEvidence = FORCE_SCOPE_UNRESOLVED ? 'unresolved' : (scopeOk ? 'pre-knife' : 'unresolved')
+if (scopeEvidence !== 'pre-knife') {
+  fail('搬前同作用域归属**算不出来** —— preMoveScopeEvidence 不能写死、也不许降级默认值。'
     + '（scopeGroupReport.ok=' + scopeGrp.ok + ' · 命中 ' + FN + ' 的成员数=' + scopeMembers
     + ' · scope=' + JSON.stringify(scopeGrp.scope)
     + ' · problems=' + JSON.stringify(scopeGrp.problems) + '）'
@@ -415,7 +423,7 @@ fs.writeFileSync(path.join(PARTS_DIR, MOD), modText)
     functions: { [FN]: createHash('sha256').update(bodyNoIndent.replace(/\r\n/g, '\n')).digest('hex') },
     preMoveScope: SCOPE,
     // ★ task-32：值**由搬前真算决定**（`scopeGroupReport`），不是写死字面量。
-    //   算不出来时上面已 fail-closed ⇒ 能走到这里就恒为 'live'（这正是它**可复核**的前提）。
+    //   算不出来时上面已 fail-closed ⇒ 能走到这里就恒为 `'pre-knife'`（这正是它**可复核**的前提）。
     preMoveScopeEvidence: scopeEvidence,
     wiring: Object.fromEntries(WIRING.map((w) => [w.key, { kind: 'accessor', target: w.target }])),
   }

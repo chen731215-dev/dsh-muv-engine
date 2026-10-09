@@ -17,14 +17,33 @@
 export const UNVERIFIED_EXIT = 2
 
 /**
+ * 组装「未验」那段输出，**不退出**（纯函数 ⇒ 可被单测直接驱动）。
+ * 与 `unverified()` 共享同一份措辞 —— 契约单测（`tests/test-verify-unverified.mjs`）钉的就是它。
+ * @param {string} what
+ * @param {string[]} [hints]
+ * @returns {string[]} 逐行输出（调用方决定怎么落地：console.log 或断言）
+ */
+export function unverifiedLines(what, hints = []) {
+  const lines = [
+    '',
+    '未验（缺 ' + what + '）—— 本门禁**没有跑完/没有跑**，这不是通过。',
+  ]
+  for (const h of hints) lines.push('   补上这一项：' + h)
+  lines.push('!! 退出码 ' + UNVERIFIED_EXIT + '（非零）：「未验」与「失败」都不等于「通过」。')
+  return lines
+}
+
+/**
  * 缺样本 / 环境前置不足 ⇒ 标「未验」并**非零退出**。
  * @param {string} what 缺的是哪一项（越具体越好：把路径或环境变量名带上）
  * @param {string[]} [hints] 可选：给出怎么补上这一项
+ * @param {(code:number)=>void} [doExit] ★ 仅测试用：注入退出函数（默认 `process.exit`）。
+ *   为什么要这个缝：本函数原先**直接** `process.exit` ⇒ 想验它的契约就只能真起子进程，
+ *   而本机沙箱禁止 node 派生 ⇒ 拿不到。把退出做成**可注入**后，契约（退出码 + 措辞）
+ *   能在**同一进程**里被逐条断言（见 `tests/test-verify-unverified.mjs`），
+ *   同时**默认行为一字未变**（生产路径仍走 `process.exit`）。
  */
-export function unverified(what, hints = []) {
-  console.log('')
-  console.log('未验（缺 ' + what + '）—— 本门禁**没有跑完/没有跑**，这不是通过。')
-  for (const h of hints) console.log('   补上这一项：' + h)
-  console.log('!! 退出码 ' + UNVERIFIED_EXIT + '（非零）：「未验」与「失败」都不等于「通过」。')
-  process.exit(UNVERIFIED_EXIT)
+export function unverified(what, hints = [], doExit = process.exit) {
+  for (const line of unverifiedLines(what, hints)) console.log(line)
+  doExit(UNVERIFIED_EXIT)
 }

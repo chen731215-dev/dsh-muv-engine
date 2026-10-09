@@ -44,6 +44,17 @@ check('裸 HTML 不折腾（本来就没有围栏）',
   extractStatusBarHtml(statusScript(DOC)) === DOC)
 check('<html> 开头（没有 doctype）也认',
   extractStatusBarHtml(statusScript('```\n<html><body>y</body></html>\n```')) === '<html><body>y</body></html>')
+// ★ task-24（2026-10-09）：真卡 `_足控天堂2`「状态栏（手机使用）」的形态 ——
+//   没写 doctype、也没写 <html>，<head> 直出、<head>+<body> 配套（14590 字实测）。
+//   与 client.js 的 muvIsPageSourceText 同口径：两个标签同时出现才认整页文档。
+const HEAD_DOC = '<head><meta charset="UTF-8"><style>a{}</style></head><body><p>y</p></body>'
+check('★ <head> 直出（无 doctype 无 <html>，head+body 配套）也认',
+  extractStatusBarHtml(statusScript('```\n' + HEAD_DOC + '\n```')) === HEAD_DOC,
+  JSON.stringify(String(extractStatusBarHtml(statusScript('```\n' + HEAD_DOC + '\n```'))).slice(0, 40)))
+const HEAD_ONLY = '<head><meta charset="UTF-8"><title>只有头没有体</title></head>'
+check('★ 只有 <head> 没有 <body> ⇒ 片段，不剥（新路径的反证）',
+  extractStatusBarHtml(statusScript('```\n' + HEAD_ONLY + '\n```')) === '```\n' + HEAD_ONLY + '\n```',
+  JSON.stringify(String(extractStatusBarHtml(statusScript('```\n' + HEAD_ONLY + '\n```'))).slice(0, 40)))
 
 // 反向：不该剥的一律不剥
 const jsBlock = '```js\nconst a = 1;\n```'
@@ -87,7 +98,10 @@ for (const nm of CARDS) {
   const fenced = /^\s*`{3,}/.test(html) || /`{3,}\s*$/.test(html)
   console.log('  ' + nm + ': ' + html.length + ' 字；首尾还有围栏=' + fenced)
   check('★ 「' + nm + '」返回值里没有残留围栏', !fenced, JSON.stringify(html.slice(0, 40)))
-  check('「' + nm + '」返回值是整页文档', /^\s*(<!doctype|<html)/i.test(html), JSON.stringify(html.slice(0, 40)))
+  // ★ task-24（2026-10-09）拓宽：真卡是 `<head>` 直出的整页文档（无 doctype/html），
+  //   老正则 `/^\s*(<!doctype|<html)/i` 与产品里被修掉的窄判据同病 —— 断言意图是
+  //   「剥完是一整页文档」，`<head…` 起步同样满足，照 muvIsPageSourceText 口径认。
+  check('「' + nm + '」返回值是整页文档', /^\s*(<!doctype|<html|<head[\s>])/i.test(html), JSON.stringify(html.slice(0, 40)))
 }
 
 console.log('\n=== ★ 替换串里的 $ 序列：必须字面量入文（照 ST 的函数式替换） ===')

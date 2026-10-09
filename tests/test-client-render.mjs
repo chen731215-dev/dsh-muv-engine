@@ -381,7 +381,10 @@ if (!cardFile || !readPngCard) {
   const card = readPngCard(cardFile)
   const data = card.data && typeof card.data === 'object' ? card.data : card
   const scripts = Array.isArray(data.extensions?.regex_scripts) ? data.extensions.regex_scripts : []
-  const fenced = scripts.filter(s => String(s?.replaceString || '').includes('```'))
+  // ★ task-24（2026-10-09）：排除 disabled —— 与产品选择规则一致（extractStatusBarHtml
+  //   的同一语义：disabled 的脚本永远不是活 HTML 来源）。真卡现有第 4 份带 ``` 的
+  //   replaceString 是已禁用的「状态栏（电脑端选用）」，不排除会把 3 数成 4。
+  const fenced = scripts.filter(s => !s.disabled && String(s?.replaceString || '').includes('```'))
   const withMedia = scripts.filter(s => /<(audio|video)/.test(String(s?.replaceString || '')))
 
   check('三条大 HTML 正则都在', fenced.length === 3, 'fenced=' + fenced.length)

@@ -83,11 +83,18 @@ const ENV_UNVERIFIED_EXIT = (() => {
 })()
 
 /**
- * 汇总输出的**判据本体**（纯函数，只看文本 + 一个 check 回调）。
+ * 汇总输出的**判据本体**（纯函数，只看文本 + 一个 check 回调 + 期望桶计数）。
  * ★ 被两处共用：⑥ 端到端（真跑输出）与 ⑦ 合成样本（本机可跑）——
  *   判据**同源**，避免"两处各写一遍、其中一处不影响通过与否"的静默失真（铁律 21）。
+ * @param {string} out  runner 的汇总输出（stdout+stderr 合并）
+ * @param {(name:string, cond:boolean, detail?:string)=>void} check
+ * @param {{abnormal:number, env:number}} want  期望的桶计数（**由调用方给出**，
+ *        因为"1 个异常"还是"2 个异常"取决于该批语料，不是判据能自行推出来的）
  */
-function assertSummary(out, check) {
+function assertSummary(out, check, want) {
+  if (!want || typeof want.abnormal !== 'number' || typeof want.env !== 'number') {
+    throw new Error('assertSummary 需要 want={abnormal,env}（期望桶计数必须由调用方给出，不许由判据自猜）')
+  }
   // ★ 关键：判"红项**条目**里有没有 c-env"**不能**用"❌ 红项 后面 300 字内出现 c-env"——
   //   runner 在红项行**之后**会紧跟一行"（另有 N 个环境不可用，未计入红项：… c-env.mjs）"
   //   ⇒ 那个 300 字窗口会**误命中**这句"声明不含"的旁注，把一条正确实现判成红。
@@ -112,18 +119,21 @@ function assertSummary(out, check) {
   check('★ 环境桶列表段**含** c-env.mjs 且**不含** d-vacuous.mjs（互斥的另一半）',
     String(envBlock).includes('c-env.mjs') && !String(envBlock).includes('d-vacuous.mjs'),
     String(envBlock).slice(0, 200))
-  check('★ 异常桶 = 1（只有空跑那个）', /异常（超时[\s\S]{0,40}：1 个/.test(out), out.slice(-500))
-  check('★ 环境桶 = 1', new RegExp('环境不可用（exit=' + ENV_UNVERIFIED_EXIT + '[^\\n]*：1 个').test(out), out.slice(-500))
+  // ★ 桶计数用调用方给的期望值（不许判据自己猜 —— 否则"几算对"就成了自说自话）
+  check('★ 异常桶 = ' + want.abnormal + ' 个',
+    new RegExp('异常（超时[\\s\\S]{0,40}：' + want.abnormal + ' 个').test(out), out.slice(-500))
+  check('★ 环境桶 = ' + want.env + ' 个',
+    new RegExp('环境不可用（exit=' + ENV_UNVERIFIED_EXIT + '[^\\n]*：' + want.env + ' 个').test(out), out.slice(-500))
 }
 
 /** 用**收集式** check 跑一遍 assertSummary，返回 pass/fail 与失败点名（供第⑦层用）。 */
-function tally(fn, out) {
+function tally(fn, out, want) {
   const failed = []
   let pass = 0
   fn(out, (name, cond, detail) => {
     if (cond) pass++
     else failed.push({ name, detail: String(detail).slice(0, 160) })
-  })
+  }, want)
   return { pass, fail: failed.length, failed }
 }
 
@@ -244,24 +254,34 @@ console.log('\n⑥ ★ 端到端（要 spawn）：真跑 runner 验证四桶在*
     })
     const out = String(r.stdout || '') + String(r.stderr || '')
     const listed = fs.readdirSync(path.join(dir, 'tests'))
-    check('mutate 自证：夹具 tests/ 里确有 4 个合成文件', listed.length === 4, '实际 ' + listed.length)
+    // ★ 夹具 tests/ 里共 **5** 个文件 = 4 个合成语料 + 1 个共享库（共享库在 CORPUS_EXCLUDE 里、会被跳过）。
+    //   （首版写成 4 —— 只数了合成语料、忘了共享库那份也要落盘。CI #37 红在这条。）
+    check('mutate 自证：夹具 tests/ 里确有 5 个文件（4 合成 + 1 共享库）', listed.length === 5, '实际 ' + listed.length)
     check('★ 有真红 ⇒ runner 退出码 = 1', r.status === 1, 'exit=' + r.status)
     // ★★ 汇总断言走**同一个纯函数** `assertSummary`（第⑦层用**同一函数**跑合成样本）。
     //   为什么要抽出来：端到端要 spawn，本机拿不到 ⇒ 若把断言写在这里，本机就**永远无法自证它会咬**。
     //   抽成纯函数后：本机用合成样本跑第⑦层（证明判据会咬），CI 用真跑输出跑本层（证明产品对）。
     //   ⇒ 判据**同源**（同一份源码文本），不是两处各写一遍。
-    assertSummary(out, check)
+    // ★ 期望桶计数（照夹具**真跑**的形态，不是照我"以为"的形态）：
+    //   · 异常桶 = **2**：`b-red.mjs`（断言失败，真红） + `d-vacuous.mjs`（报告器在场 0 断言，空跑）
+    //   · 环境桶 = **1**：`c-env.mjs`（exit=2 + 自报「环境不可用」措辞）
+    //   （首版写 abnormal=1 —— 漏算了 b-red 那份真红。CI #37 红在这条。）
+    assertSummary(out, check, { abnormal: 2, env: 1 })
     fs.rmSync(dir, { recursive: true, force: true })
   }
 }
 
 // ══ ⑦ ★★ 汇总判据的**非空跑对照**（本机可跑）：用忠实合成样本证明 assertSummary 会咬 ══
 //   房规：反证测试必须**自证它真的跑了**（打印 mutate 命中次数），且**必须**有非空跑对照。
-//   ⇒ 三组样本：① 正确输出（必须全绿）；② 把 env 错塞进异常桶（必须咬）；③ 旧式窗口正则（必须咬）。
+//   ⇒ 四组样本：① 正确输出（必须全绿）；② 把 env 错塞进异常桶（必须咬）；
+//                ③ 桶标题缺计数（必须咬）；④ 旧写法对照（证明"靠旁注蒙对"不可靠）。
+//   ★ 样本的期望桶计数**照夹具真跑**：abnormal = 2（b-red 真红 + d-vacuous 空跑）、env = 1（c-env）。
 console.log('\n⑦ ★★ 汇总判据的非空跑对照（本机可跑，不需 spawn）：合成样本必须让它咬')
 {
+  const WANT = { abnormal: 2, env: 1 }
   // 忠实合成：逐字照 `tools/run-each-test.mjs` 的 console.log 模板拼（不是"大概像"）
-  const synth = ({ abnormal, env, fixEnvIntoAbnormal }) => {
+  const synth = ({ abnormal, env }) => {
+    // ★ 合成语料 = 夹具真跑的形态：a-green/b-red 有计数；e-noco 无计数正常；共享库被跳过
     const counted = ['tests/a-green.mjs', 'tests/b-red.mjs']
     const noco = ['tests/e-noco.mjs']
     const skipped = ['tests/test-client-source.mjs']
@@ -295,18 +315,20 @@ console.log('\n⑦ ★★ 汇总判据的非空跑对照（本机可跑，不需
     return L.join('\n') + '\n'
   }
 
+  const AB = ['tests/b-red.mjs', 'tests/d-vacuous.mjs']   // b-red 真红 + d-vacuous 空跑
+  const EN = ['tests/c-env.mjs']
+
   // ① 正确输出 ⇒ assertSummary 必须**全绿**
-  const good = synth({ abnormal: ['tests/d-vacuous.mjs'], env: ['tests/c-env.mjs'] })
-  const gres = tally(assertSummary, good)
-  check('★ [对照①] 正确输出 ⇒ 五条全绿（无假红）', gres.fail === 0 && gres.pass > 0,
+  const good = synth({ abnormal: AB, env: EN })
+  const gres = tally(assertSummary, good, WANT)
+  check('★ [对照①] 正确输出 ⇒ 全部断言绿（无假红）', gres.fail === 0 && gres.pass > 0,
     'pass=' + gres.pass + ' fail=' + gres.fail + ' ' + JSON.stringify(gres.failed))
 
   // ② mutate：把 c-env 从环境桶挪进**异常桶列表条目**（= env 混进了真红）⇒ 必须**咬**
-  //    做法：把 env 桶标题下的条目行换成 c-env，同时让异常桶列表里出现 c-env
   const mutated = good
-    .replace('异常（超时 / 崩溃 / 空输出 / 空跑）：1 个\n   · tests/d-vacuous.mjs',
-      '异常（超时 / 崩溃 / 空输出 / 空跑）：2 个\n   · tests/d-vacuous.mjs\n   · tests/c-env.mjs')
-  const mres = tally(assertSummary, mutated)
+    .replace('异常（超时 / 崩溃 / 空输出 / 空跑）：2 个\n   · tests/b-red.mjs\n   · tests/d-vacuous.mjs',
+      '异常（超时 / 崩溃 / 空输出 / 空跑）：3 个\n   · tests/b-red.mjs\n   · tests/d-vacuous.mjs\n   · tests/c-env.mjs')
+  const mres = tally(assertSummary, mutated, WANT)
   check('★ [mutate②] env 混进异常桶 ⇒ assertSummary 必须红（判据没被收废）',
     mres.fail > 0, 'pass=' + mres.pass + ' fail=' + mres.fail + ' 点名=' + JSON.stringify(mres.failed))
   // ★ 咬得准：必须点名「异常桶列表段不含 c-env」那条 —— 而不是"随便红了一条"
@@ -314,33 +336,30 @@ console.log('\n⑦ ★★ 汇总判据的非空跑对照（本机可跑，不需
     mres.failed.some((f) => /异常桶列表段.*不含.*c-env/.test(f.name)),
     '实际点名=' + JSON.stringify(mres.failed.map((f) => f.name)))
 
-  // ③ mutate：把异常桶标题改成旧式宽窗口也命中不了的形态，验证「按桶标题取证」的必要性
-  //    模拟：桶标题写错（没有 `：N 个`）⇒ 取证段应取不到 ⇒ 判红（而不是静默取到错误段）
-  const noCountTitle = good.replace('异常（超时 / 崩溃 / 空输出 / 空跑）：1 个', '异常（超时 / 崩溃 / 空输出 / 空跑）：')
-  const nres = tally(assertSummary, noCountTitle)
-  check('★ [mutate③] 桶标题缺 `：N 个` ⇒ 取证失败必须判红（不许静默取错段）',
+  // ③ mutate：把异常桶标题的计数打错 ⇒ 桶计数断言必须咬（不许静默放过）
+  const wrongCount = good.replace('异常（超时 / 崩溃 / 空输出 / 空跑）：2 个', '异常（超时 / 崩溃 / 空输出 / 空跑）：1 个')
+  const nres = tally(assertSummary, wrongCount, WANT)
+  check('★ [mutate③] 桶计数打错 ⇒ 桶计数断言必须咬',
     nres.fail > 0, 'pass=' + nres.pass + ' fail=' + nres.fail + ' 点名=' + JSON.stringify(nres.failed))
-  check('★ [mutate③ 咬得准] 红色条目里点名「取证段存在：异常桶列表段非空」',
-    nres.failed.some((f) => /取证段存在/.test(f.name)),
+  check('★ [mutate③ 咬得准] 红色条目里点名「异常桶 = 2 个」',
+    nres.failed.some((f) => /异常桶 = 2 个/.test(f.name)),
     '实际点名=' + JSON.stringify(nres.failed.map((f) => f.name)))
 
-  // ④ ★★ 旧写法必须**被本房规淘汰**：证明「❌ 红项 后 300 字内出现 c-env」这条**会误判**
-  //    构造：正确输出（c-env 只在 env 桶），但红项旁注里点了 c-env 的名字 ⇒ 旧写法误红、新写法正确放行。
+  // ④ ★★ 旧写法对照：证明「❌ 红项 后 300 字内出现 c-env」这条**靠旁注蒙对**、语义不牢
   const noteCase = good   // 这份 good 的红项旁注**就含** "未计入红项：tests/c-env.mjs"
   const oldStyle = /环境不可用[\s\S]{0,300}c-env\.mjs/.test(noteCase)
-  const newRes = tally(assertSummary, noteCase)
+  const newRes = tally(assertSummary, noteCase, WANT)
   check('★ [对照④] 旧写法在本样本上**仍会绿**（它靠"最早出现"蒙对，语义不牢）',
     oldStyle === true, 'oldStyle=' + oldStyle)
-  // ★★ 关键反证：把红项旁注**删掉**（runner 无 env 时不打那行）⇒ 旧写法失去"蒙对"的来源，
-  //    而新写法**依然**正确 —— 这才证明新写法不依赖"旁注恰好出现"。
-  const noNote = good.replace('   （另有 1 个**环境不可用**，未计入红项：tests/c-env.mjs）\n', '')
-  const newRes2 = tally(assertSummary, noNote)
+  // ★★ 关键反证：把红项旁注**删掉** ⇒ 旧写法失去"蒙对"的来源，而新写法**依然**正确。
+  const noNote = good.replace(/   （另有 \d+ 个\*\*环境不可用\*\*，未计入红项：tests\/c-env\.mjs）\n/, '')
+  const newRes2 = tally(assertSummary, noNote, WANT)
   check('★ [对照④] 去掉红项旁注后，新写法**仍全绿**（不依赖旁注蒙对）',
     newRes2.fail === 0 && newRes2.pass > 0, 'pass=' + newRes2.pass + ' fail=' + newRes2.fail + ' ' + JSON.stringify(newRes2.failed))
 
-  check('★ [自证] 四次调用真的都跑了（mutate 命中数 > 0）',
-    gres.pass + gres.fail > 0 && mres.pass + mres.fail > 0 && nres.pass + nres.fail > 0 && newRes.pass + newRes.fail > 0,
-    'runs=' + [gres.pass + gres.fail, mres.pass + mres.fail, nres.pass + nres.fail, newRes.pass + newRes.fail].join(','))
+  check('★ [自证] 五次调用真的都跑了（mutate 命中数 > 0）',
+    [gres, mres, nres, newRes, newRes2].every((r) => r.pass + r.fail > 0),
+    'runs=' + [gres, mres, nres, newRes, newRes2].map((r) => r.pass + r.fail).join(','))
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败${unverified ? ', ' + unverified + ' 未验（端到端·环境）' : ''} ===`)

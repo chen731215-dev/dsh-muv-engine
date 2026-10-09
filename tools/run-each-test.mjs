@@ -13,6 +13,18 @@
  *   ③ **语料要排除共享库与生成器**（见 CORPUS_EXCLUDE）：前者不是测试，后者会**回写仓库文件**。
  *   ④ 计数分三桶报：**有计数** / **无计数（正常）** / **异常（超时·崩溃·空输出）**，
  *      这样"本来就不产计数"和"跑挂了"不会混在一张清单里。
+ *   ⑤ ★★ **「环境不可用」不许与「真红」混在一个桶里**（task-29）：
+ *      本仓口径规定「环境不可用 ⇒ 退出码 **2**」（见 `tools/verify/verify-unverified.mjs`
+ *      与 `tests/test-move-segment.mjs` 的环境预检：spawn 被禁 ⇒ `exit(2)`）。
+ *      但 runner 原来把 `status !== 0` 一律塞进 `abnormal` 桶，而 `abnormal` 又是**唯一**的红项判据
+ *      ⇒ 于是「本机沙箱禁止 node spawn」这种**环境故障**会被读成「测试跑挂了」，
+ *      与「断言真的失败」**在读数上不可区分** —— 这正是本仓反复治的
+ *      「环境故障伪装成代码故障」家族（见铁律 19）。
+ *      ⇒ 现在拆成两个互斥的桶：
+ *        · `envUnavailable`（exit=2）：**响亮单列**，并附「怎么补上」指引；
+ *        · `abnormal`（超时 / 崩溃（非 2 的非法退出）/ 空输出 / 空跑）：**真红**。
+ *      ★ 退出码：真红 ⇒ **1**；**只有**环境不可用而没有真红 ⇒ **2**
+ *        （与仓库既有约定一致，且让调用方能判别"这批到底跑没跑"）。
  *
  * 用法：
  *   node tools/run-each-test.mjs              # tests/（= npm test）
@@ -28,6 +40,14 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO = path.resolve(HERE, '..')
+
+/**
+ * ★ 环境不可用的专用退出码（与 `tools/verify/verify-unverified.mjs::UNVERIFIED_EXIT` 同值）。
+ * 本仓约定：**2 = 环境不可用**、**1 = 断言失败** ⇒ 两者不许混（见文件头 ⑤）。
+ * 这里**不 import** 那个模块：runner 要能在"被跑的那批里包含它"的情况下工作，
+ * 且一个常量不值得引入模块加载顺序的耦合；用断言把两个值钉在一起（见下方自检）。
+ */
+const ENV_UNVERIFIED_EXIT = 2
 
 /** 默认语料 = tests/；`--all` 追加门禁与复现目录。 */
 const ALL_DIRS = ['tests', 'tools/verify', 'tools/repro']
@@ -85,6 +105,30 @@ for (const rel of CORPUS_EXCLUDE.keys()) {
   }
 }
 
+// ★★ task-29 自检：`ENV_UNVERIFIED_EXIT` 必须与**权威定义**（verify-unverified.mjs）同值。
+//   为什么要有这一条：这里为了不与模块加载耦合而**本地重写了一次**这个常量 —— 而"同一事实写两遍"
+//   正是本仓第 17/24 条铁律点名会**静默漂移**的形态（一处改了、另一处照旧，且两边都不报红）。
+//   ⇒ 用一个**从权威文件真读**的断言把它钉住（读了才发现不一致 ⇒ 响亮报红，不许静默）。
+//   ★ 只在权威文件存在时检查：`--all` 之外它也在语料里，但语料目录可能被裁剪。
+{
+  const authRel = 'tools/verify/verify-unverified.mjs'
+  const authAbs = path.join(REPO, authRel)
+  if (!fs.existsSync(authAbs)) {
+    console.error('❌ 找不到 ENV_UNVERIFIED_EXIT 的权威定义文件：' + authRel + '（判据自己写错了，不是"没有定义"）')
+    process.exit(1)
+  }
+  const m = /UNVERIFIED_EXIT\s*=\s*(\d+)/.exec(fs.readFileSync(authAbs, 'utf8'))
+  if (!m) {
+    console.error('❌ 在 ' + authRel + ' 里找不到 `UNVERIFIED_EXIT = <数字>` —— 权威定义改了名/改了形态，本 runner 的判据已脱节')
+    process.exit(1)
+  }
+  if (Number(m[1]) !== ENV_UNVERIFIED_EXIT) {
+    console.error('❌ ENV_UNVERIFIED_EXIT 漂移：runner 写的是 ' + ENV_UNVERIFIED_EXIT
+      + '，而权威定义（' + authRel + '）是 ' + m[1] + ' ⇒ 两处必须同源')
+    process.exit(1)
+  }
+}
+
 if (!targets.length) {
   console.error('没找到测试文件（目录=' + dirs.join('+') + ' filter=' + JSON.stringify(filter) + '）')
   process.exit(1)
@@ -94,6 +138,25 @@ if (onlyList) {
   for (const s of skipped) console.log('跳过 ' + s + '   ← ' + CORPUS_EXCLUDE.get(s))
   console.log('共跑 ' + targets.length + ' 个，跳过 ' + skipped.length + ' 个')
   process.exit(0)
+}
+
+// ★★ task-29 · 前置自检：本 runner **必须能 spawn 子进程**，否则它跑的是空气。
+//   为什么要有这一步（本机实测）：宿主若禁止 node 派生子进程（本机 WorkBuddy 沙箱：
+//   一切 `spawnSync`/`execFileSync` 报 `EBUSY`），那么**每个**被跑文件都会拿到
+//   `status=null / error=EBUSY / 0 字节输出`，12 个文件会一起落进"崩溃/空输出"桶
+//   ⇒ 读数看起来像"全仓测试全挂"，而事实是**一条断言都没跑过**。
+//   ⇒ 口径：**开跑前**先探一次；探不通就**立刻**判「环境不可用」并以 2 退出，
+//     绝不用一批"全是红的"结果去冒充"测试结果"。
+{
+  const probe = spawnSync(process.execPath, ['-e', '0'], { encoding: 'utf8' })
+  if (probe.error || probe.status !== 0) {
+    console.error('\n⛔ 环境不可用：runner 无法 spawn 子进程'
+      + '（`spawnSync(node,-e,0)` ⇒ error=' + (probe.error && probe.error.code) + ', status=' + JSON.stringify(probe.status) + '）。')
+    console.error('   ⇒ 本批 ' + targets.length + ' 个文件**一个都没被执行**：下面**不会**输出任何"pass/fail"读数，')
+    console.error('     因为那会是一批假读数。这是**环境故障**，不是代码故障。')
+    console.error('   ⇒ 换到允许 spawn 的环境重跑（本仓 CI / DSH 宿主；本机沙箱禁止 node 派生进程）。')
+    process.exit(ENV_UNVERIFIED_EXIT)
+  }
 }
 
 /** 三种计数格式：node:test tap / node:test spec / 本仓原生摘要（`=== 结果|断言: N 通过, M 失败[, K 跳过] ===`） */
@@ -124,6 +187,53 @@ function parseCounts(text) {
   return { counterSeen: false, pass: 0, fail: 0, skipped: 0 }
 }
 
+/**
+ * ★★ task-29 · **分桶判定**（纯函数，导出以便单测 —— 这是本文件里最容易出错的一段，必须能被独立驱动）。
+ *
+ * 输入一次子进程的原始观测，输出它属于哪一个桶：
+ *   · `env`     —— **环境不可用**（宿主禁止 spawn / 被测文件自报未验·环境不可用）。**不是通过、也不是失败**。
+ *   · `abnormal`—— **真红**（超时 / 崩溃（非 0 非环境）/ 空输出 / 空跑）。
+ *   · `counted` —— 正常且产了计数。
+ *   · `noco`    —— 正常、无计数（以 exit code 为准）。
+ *   · `ok`      —— 是否算通过（仅 `counted` / `noco` 为真）。
+ *
+ * ★ 两条**互斥**纪律（本笔的主目标）：
+ *   ① 「环境不可用」**绝不**落进 `abnormal`（否则环境故障会被读成代码故障 —— 铁律 19）。
+ *   ② 「环境不可用」**也算** `ok=false`（它既不通过、也不失败；调用方必须单独看环境桶）。
+ *
+ * @param {{status:number|null, stderr?:string, stdout?:string, errorCode?:string|null, signal?:string|null, timedOut?:boolean}} obs
+ * @returns {{bucket:'env'|'abnormal'|'counted'|'noco', ok:boolean, why:string, counts:{counterSeen:boolean,pass:number,fail:number,skipped:number}}}
+ */
+export function classifyRun(obs) {
+  const text = String(obs.stdout || '') + String(obs.stderr || '')
+  const c = parseCounts(text)
+  const timedOut = !!obs.timedOut || obs.signal != null
+  const emptyOut = text.trim().length === 0
+  // 支 A · runner 自己 spawn 不动（宿主禁止 node 派生子进程）：EBUSY，status=null，0 字节输出
+  const spawnBlocked = !timedOut && obs.errorCode === 'EBUSY'
+  // 支 B · 被测文件自报环境不可用：退出码恰为 2，且输出带本仓「未验 / 环境不可用」措辞
+  //   ★ 用「恰为 2 + 措辞」双重条件，而不是仅"非 0"：避免把"恰好以 2 收尾的真断言脚本"误归环境桶
+  //     （**宁可判红，不可把真红误当环境**）。
+  const ENV_HINTS = /未验（缺 |环境不可用|退出码 2（非零）|「未验」与「失败」/
+  const envSelfReport = !timedOut && !spawnBlocked && obs.status === ENV_UNVERIFIED_EXIT && ENV_HINTS.test(text)
+  if (spawnBlocked || envSelfReport) {
+    return {
+      bucket: 'env', ok: false,
+      why: spawnBlocked ? 'runner 无法 spawn 子进程（' + obs.errorCode + '）' : '被测文件自报环境不可用（exit=' + obs.status + '）',
+      counts: c,
+    }
+  }
+  // 空跑：报告器在场却 0 项断言，或根本没报告器 + 静默退出（0 字节输出）
+  const vacuous = (c.counterSeen && c.pass === 0 && c.fail === 0 && c.skipped === 0) ||
+    (!c.counterSeen && emptyOut && !timedOut && obs.status === 0)
+  const crash = !timedOut && obs.status !== 0
+  if (timedOut) return { bucket: 'abnormal', ok: false, why: '超时', counts: c }
+  if (crash) return { bucket: 'abnormal', ok: false, why: '崩溃（exit=' + obs.status + '）', counts: c }
+  if (vacuous) return { bucket: 'abnormal', ok: false, why: emptyOut ? '无报告器且 0 字节输出（空跑）' : '报告器在场但 0 项断言（空跑）', counts: c }
+  if (c.fail > 0) return { bucket: 'abnormal', ok: false, why: '断言失败 fail=' + c.fail, counts: c }
+  return { bucket: c.counterSeen ? 'counted' : 'noco', ok: true, why: '', counts: c }
+}
+
 /** 文件名列宽按实际清单算（写死的宽度会让长路径和计数黏在一起，读起来像另一个数） */
 const W = Math.min(58, Math.max(38, ...targets.map((t) => t.length)))
 
@@ -132,7 +242,8 @@ let totalFail = 0
 let totalSkip = 0
 const counted = []        // 有计数
 const noCounterOK = []    // 无计数但正常（有输出、exit 0）
-const abnormal = []       // 异常：超时 / 崩溃 / 空输出 / 空跑
+const abnormal = []       // 异常：超时 / 崩溃 / 空输出 / 空跑（= 真红）
+const envUnavailable = [] // ★ task-29：环境不可用（exit=2 且自报未验/环境不可用）
 console.log('逐个跑 ' + targets.length + ' 个文件（' + dirs.join(' + ') + '，超时 ' + Math.round(TIMEOUT / 1000) + 's）…\n')
 
 for (const rel of targets) {
@@ -144,39 +255,57 @@ for (const rel of targets) {
     maxBuffer: 128 * 1024 * 1024,
   })
   const text = String(out.stdout || '') + String(out.stderr || '')
-  const c = parseCounts(text)
+  // ★ 分桶判定走**纯函数**（`classifyRun`，见上）—— 它被 `tests/test-runner-buckets.mjs` 直接单测，
+  //   这样这段最容易错的逻辑**不必依赖本能真跑**就能被驱动（本机沙箱禁止 node spawn ⇒ 本文件跑不了，
+  //   但 classifyRun 是纯的 ⇒ 照样能验）。
+  const obs = {
+    status: out.status,
+    stdout: out.stdout, stderr: out.stderr,
+    errorCode: out.error ? out.error.code : null,
+    signal: out.signal,
+    timedOut: !!(out.error && out.error.code === 'ETIMEDOUT') || out.signal != null,
+  }
+  const v = classifyRun(obs)
+  const c = v.counts
   totalPass += c.pass
   totalFail += c.fail
   totalSkip += c.skipped
 
-  // ★ 超时判定：spawnSync 超时的真实字段是 status=null **但 error.code==='ETIMEDOUT'**
-  //   （或 signal 非空）—— 旧写法 `status===null && !error` 在这台机器上永远为假，
-  //   于是 ⌛ 档与它的诊断分支成了死代码。
-  const timedOut = !!(out.error && out.error.code === 'ETIMEDOUT') || out.signal != null
+  const timedOut = obs.timedOut
   const emptyOut = text.trim().length === 0
-  // ★ 空跑防护（两档都要判）：
-  //   a) 报告器在场却一条断言都没跑（文件被清空 / 断言被注释 / 子进程没起来）
-  //   b) **根本没有报告器 + 静默退出**（0 字节输出）—— 这正是"免费绿灯"那一档
-  const vacuous = (c.counterSeen && c.pass === 0 && c.fail === 0 && c.skipped === 0) ||
-    (!c.counterSeen && emptyOut && !timedOut && out.status === 0)
-  const crash = !timedOut && out.status !== 0
-  const ok = !timedOut && !crash && out.status === 0 && c.fail === 0 && !vacuous
+  const spawnBlocked = v.bucket === 'env' && obs.errorCode === 'EBUSY'
+  const envUnavail = v.bucket === 'env'
+  const vacuous = v.bucket === 'abnormal' && v.why.includes('空跑')
 
-  if (timedOut || crash || vacuous) abnormal.push(rel)
-  else if (c.counterSeen) counted.push(rel)
+  if (envUnavail) envUnavailable.push(rel)
+  else if (v.bucket === 'abnormal') abnormal.push(rel)
+  else if (v.bucket === 'counted') counted.push(rel)
   else noCounterOK.push(rel)
 
-  const tag = timedOut ? '⌛ ' : crash ? '❌ ' : vacuous ? '❔ ' : '✅ '
+  const tag = envUnavail ? '🚫 ' : v.bucket === 'abnormal'
+    ? (timedOut ? '⌛ ' : vacuous ? '❔ ' : '❌ ') : '✅ '
   const counts = c.counterSeen
     ? 'pass=' + String(c.pass).padStart(4) + '  fail=' + c.fail + (c.skipped ? '  skip=' + c.skipped : '')
     : '无计数（以 exit code 为准）'
-  console.log(tag + rel.padEnd(W) + counts +
+  const envWhy = envUnavail
+    ? '   ← 环境不可用：' + v.why + ' ※ 不是代码故障、也不是通过'
+    : ''
+  console.log(tag + rel.padEnd(W) + counts + envWhy +
     (timedOut && out.signal ? '   ← signal=' + out.signal : '') +
     (vacuous ? (emptyOut ? '   ← 无报告器且 0 字节输出（空跑，判失败）' : '   ← 报告器在场但 0 项断言（空跑，判失败）') : '') +
     (timedOut ? '   ← 超时 ' + TIMEOUT + 'ms 被杀（error=' + (out.error && out.error.code) + '）' : ''))
 
-  if (!ok) {
-    if (vacuous || timedOut || emptyOut) {
+  if (!v.ok) {
+    if (envUnavail) {
+      // 环境不可用：把子进程（若有输出）或 runner 侧的成因写清楚，别让人以为"跑挂了"
+      if (spawnBlocked) {
+        console.log('     ↓ runner 侧成因：本宿主禁止 node 派生子进程（' + obs.errorCode
+          + '）⇒ 本文件**没有被执行**，本行不代表它的断言结果')
+      } else {
+        console.log('     ↓ 该文件自报的环境不可用原因：')
+        for (const l of text.split('\n').filter((l) => l.trim()).slice(-4)) console.log('       ' + l.trim().slice(0, 160))
+      }
+    } else if (vacuous || timedOut || emptyOut) {
       // 崩溃 / 超时 / 真空跑：「最后几行」才是诊断信息（错误在结尾，不在 ✖ 行里）
       console.log('     ↓ 子进程输出末尾（判断是崩溃还是真的没跑）:')
       for (const l of text.split('\n').filter((l) => l.trim()).slice(-5)) console.log('       ' + l.trim().slice(0, 160))
@@ -192,20 +321,37 @@ for (const rel of targets) {
 console.log('\n──────────────────────────────────────────────')
 console.log('合计 pass=' + totalPass + '  fail=' + totalFail + '  skipped=' + totalSkip + '  跑了 ' + targets.length + ' 个（跳过 ' + skipped.length + ' 个非测试文件）')
 
-// 三桶分开列：混在一起就分不清"本来不产计数"和"跑挂了"
+// 四桶分开列：混在一起就分不清"本来不产计数"、"跑挂了"和"环境跑不动"
 console.log('\n有计数（报告器在场）：' + counted.length + ' 个')
 for (const f of counted) console.log('   · ' + f)
 console.log('无计数（正常：有输出、exit 0）：' + noCounterOK.length + ' 个 —— 这一档只以 exit code 判定，不贡献断言数')
 for (const f of noCounterOK) console.log('   · ' + f)
 console.log('异常（超时 / 崩溃 / 空输出 / 空跑）：' + abnormal.length + ' 个')
 for (const f of abnormal) console.log('   · ' + f)
+console.log('环境不可用（exit=' + ENV_UNVERIFIED_EXIT + '，且自报未验/环境不可用）：' + envUnavailable.length + ' 个 —— 这一档**既不冒充通过也不冒充失败**，须在允许 spawn 的环境重跑')
+for (const f of envUnavailable) console.log('   · ' + f)
 if (skipped.length) {
   console.log('跳过（非测试，CORPUS_EXCLUDE）：' + skipped.length + ' 个')
   for (const s of skipped) console.log('   · ' + s + '   ← ' + CORPUS_EXCLUDE.get(s))
 }
 
+// ★★ task-29 退出码语义（可判别）：
+//   真红 ⇒ 1（最高优先级 —— 有真红就报真红，环境桶不掩盖它）
+//   只有环境不可用、无真红 ⇒ 2（= 本仓"环境不可用"约定，与 1 区分）
+//   两者皆无 ⇒ 0
 if (abnormal.length) {
-  console.error('\n❌ 红项（' + abnormal.length + ' / ' + targets.length + '）—— 逐条见上，异常桶里允许"本来就跑不动"，但必须在材料里逐个说明')
+  console.error('\n❌ 红项（' + abnormal.length + ' / ' + targets.length + '）—— 逐条见上')
+  if (envUnavailable.length) {
+    console.error('   （另有 ' + envUnavailable.length + ' 个**环境不可用**，未计入红项：'
+      + envUnavailable.join(' / ') + '）')
+  }
   process.exit(1)
+}
+if (envUnavailable.length) {
+  console.error('\n⛔ 环境不可用（' + envUnavailable.length + ' / ' + targets.length + '，退出码 '
+    + ENV_UNVERIFIED_EXIT + '）—— 这些文件**没有跑完**，不是通过、也不是失败：')
+  for (const f of envUnavailable) console.error('   · ' + f)
+  console.error('   ⇒ 换到允许 spawn 的环境重跑（本仓 CI / DSH 宿主）；本机沙箱禁止 node spawn 子进程。')
+  process.exit(ENV_UNVERIFIED_EXIT)
 }
 console.log('\n全部通过 ✅')

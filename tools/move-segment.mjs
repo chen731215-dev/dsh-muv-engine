@@ -29,7 +29,10 @@
 //   ④ 显式 bump `EXPECTED_PARTS`
 //
 // 形态约定（本工具**统一产出**）：
-//   · 接线块必须是 `/* wiring */` 或 `const __wiring = { … }`，**且必须位于片的末尾**
+//   · 接线块必须是 `/* wiring */` 或 `const __wiring = { … }`，**且必须位于片的末尾** —— ★★ **口径更正（2026-10-09）**：
+//     实现从建立之初就把块放在**片首**（紧跟片头一行注释），而注释曾写"片末"、判据也曾**声称**验"片末"
+//     （实则只验"存在"，永不报红 —— 见下方"缺陷修复"段）。现约定**统一为**：块在**片首**（注释之后、函数体之前）；
+//     判据也改为**真判位置**（按偏移，不用尾部正则）。
 //   · 接线项一律**访问器**（`x: () => MUV_X`）；值捕获会被 `moduleWiringCaptureReport` 判红（S8/P3）
 //
 // 用法：
@@ -85,6 +88,15 @@ const DUP_TARGET = !!process.env.MUV_MOVE_DUP_TARGET   // 守卫反证用：**�
 const NO_DELETE = !!process.env.MUV_MOVE_NO_DELETE
 const NO_BUMP = !!process.env.MUV_MOVE_NO_BUMP
 const VALUE_CAPTURE = !!process.env.MUV_MOVE_VALUE_CAPTURE
+// ★★ 2026-10-09 新增两条**故障注入**（都**仅供常驻反证**用；正常使用不会设它们）：
+//   · `MUV_MOVE_BAD_INDENT=1`  ⇒ 故意产出**顶格片**（缩进丢失）⇒ 必须被 ⑫ 段的缩进判据红并点名。
+//     来由：task-31 首跑实测 `indent` **恒为空串** ⇒ 模块头/接线块顶格而函数体保留原缩进 ⇒ 片缩进错乱，
+//     而**四条判据全绿**（它们只看深度/唯一性/账本，不看缩进）。⇒ 该形态此前**没有判据**，故补注入 + 判据。
+//   · `MUV_MOVE_WIRING_TAIL=1` ⇒ 故意把接线块放到**片末** ⇒ 必须被"块在片首"判据红并点名。
+//     来由：原判据用尾部正则，**对接线块在片首也 PASS**（懒惰 `[\s\S]*?` 撞上函数体收尾 `}`）
+//     ⇒ 它声称验"位置"、实则只验"存在"、且**永不报红**。现改为按偏移真判位置 ⇒ 这条注入证明它会咬。
+const BAD_INDENT = !!process.env.MUV_MOVE_BAD_INDENT
+const WIRING_TAIL = !!process.env.MUV_MOVE_WIRING_TAIL
 
 function fail(msg) { console.error('❌ move-segment：' + msg); process.exit(1) }
 const WIRING = allOf('wiring').map((s) => {
@@ -160,22 +172,137 @@ const scopeOf = (preSrc.match(new RegExp('\\bfunction\\s+' + FN.replace(/[$]/g, 
 if (scopeOf !== 1) fail('搬前源码里 `function ' + FN + '` 出现 ' + scopeOf + ' 次（要求恰好 1 次）⇒ 归属判定不可信')
 
 // ── 生成模块正文（统一产出接线形态）──
-const indent = (fnText.match(/^\s*/) || [''])[0]
+// ★★ 缺陷修复（2026-10-09，task-31 首跑揪出）：原写法
+//      `const indent = (fnText.match(/^\s*/) || [''])[0]`
+//   **恒得空串** —— 因为 `fnText = artifact.slice(s0, e0)`，而 `s0` 是 `function` **token 的 start**
+//   （**已跳过**前面的缩进空白）⇒ `/^\s*/` 永远匹配空串（实测 `s0` 前一个字符 = `"\n"`）。
+//   后果：模块头 + `/* wiring */` + `const __wiring = {` + `}` **全部顶格**，而函数**体**的行仍保持原缩进
+//   ⇒ 产出的模块片排版与代码库风格不一致（**每搬一段就多一份错乱**）。
+//   ★ 修法：缩进要从**行首**取 —— 即从 `s0` 往回走到行首，那一段就是本行的缩进。
+//   ★ 口径（血的教训）：**缩进 ≠ 深度**。这里只修排版；判"作用域在不在"必须用 tokenizer/花括号配平
+//     —— 我一度按"缩进 0 ⇒ 顶层"把本缺陷误判成"接线运行时不可达"（实测 `__wiring` 与 `MUV_SB_CSS`
+//     深度**都是 2**，可达）。
+const lineStartOf = (off) => artifact.lastIndexOf('\n', off - 1) + 1
+const indentReal = (/^[ \t]*$/.test(artifact.slice(lineStartOf(s0), s0))) ? artifact.slice(lineStartOf(s0), s0) : ''
+// ★★ 故障注入（仅供常驻反证）：`MUV_MOVE_BAD_INDENT=1` ⇒ 强制 `indent` 为空 ⇒ **复现 task-31 首跑的
+//   真实缺陷形态**（模块头/接线块顶格，而函数体保留原缩进 ⇒ 片缩进错乱）。
+//   ★ 为什么注入点在这里：这正是原来那个"恒得空串"的真实成因位置 ⇒ 注入出来的形态**逐字等于**当时产物。
+//   ★ 自证：注入生效时 `indentReal` 必须**非空**（否则本机就是顶格上下文，注入证明不了任何事）——
+//     若 `indentReal` 为空则注入**改变了什么都不知道**，那不是"没红"而是"没测到"，故 fail-closed。
+const indent = BAD_INDENT ? '' : indentReal
+if (BAD_INDENT && !indentReal) {
+  fail('BAD_INDENT 注入无法自证：本机实测缩进本就是空串（indentReal=""）⇒ 注入前后无差分，证明不了缩进判据会咬。'
+    + '⇒ 下一步：确认搬迁目标确实位于某个缩进层（工厂体内应为 4 空格）。')
+}
 let body = fnText
+// ★ 自证：缩进必须与函数声明行的实际缩进一致（若取不到 ⇒ 是**真异常**，不许静默产顶格片）。
+//   判据：函数声明行去掉缩进后必须**逐字等于** `fnText` 的开头；否则说明 `s0` 与行首之间夹了非空白。
+//   ★ 口径（2026-10-09 修）：本守卫判的是**推导**是否正确 ⇒ 必须拿 `indentReal`（**推导值**）比，
+//     而**不是** `indent`（**可能被注入清零的消费值**）。若拿 `indent` 比，`BAD_INDENT` 会撞上本守卫、
+//     使"缩进判据会咬"这条反证**实际证明的是另一条判据** ⇒ 与"判据不该被换个坏样本绕过去"同族。
+{
+  const declLine = artifact.slice(lineStartOf(s0), artifact.indexOf('\n', s0))
+  if (!declLine.startsWith(indentReal + fnText.slice(0, fnText.indexOf('\n') < 0 ? fnText.length : fnText.indexOf('\n')))) {
+    fail('缩进推导失败：函数声明行的行首到 `function` 之间取不到纯空白（indentReal=' + JSON.stringify(indentReal)
+      + ' · 行首片段=' + JSON.stringify(declLine.slice(0, 40)) + '）⇒ 下一步：核对 `s0` 是否指向 token start 而非行首。')
+  }
+}
 for (const w of WIRING) {
   const re = new RegExp('\\b' + w.target.replace(/[$]/g, '\\$&') + '\\b', 'g')
   if (!(body.match(re) || []).length) fail('函数体里没有出现 ' + w.target + ' ⇒ 这条接线是多余的（不许声明用不到的接线）')
   body = body.replace(re, '__wiring.' + w.key + '()')
 }
-const modText = [
-  indent + '// ── ' + MOD.replace(/\.js$/, '') + '：' + FN + '（档 B：**显式接线**；由 move-segment 生成）──',
+// ★★★ **两个口径必须分开**（2026-10-09 同日第三跳 —— 缩进修复**打破了与 `--ledger` 的口径一致性**）：
+//   · `bodyNoIndent` = **接线化后、不含前导缩进** —— 这是**账本指纹**的口径。
+//     依据：`build-client.mjs` 的 `fnText()` 用 `text.slice(toks[i].start, toks[close].end)`
+//     （从 `function` **token 起点**切 ⇒ **不含**前导缩进）⇒ 判据就是这么算的。
+//     ⇒ 我先前把缩进加进 `body` 后直接拿它算指纹，`--ledger` 立刻报
+//       "文本摘要与账本不符：按当前内容算出 769aea55… / 账本记的是 b1c4a4ee…"。
+//   · `bodyWithIndent` = **接线化 + 服务 `indent`** —— 这是**写进模块片**的口径。
+//   ★ 教训（同一族）：**一个变量被两处消费、而两处要的形态不同** ⇒ 必须显式分成两个名字，
+//     否则改一处就静默改坏另一处（与"`--scope`/`TARGET` 各改各的"是同一形态）。
+const bodyNoIndent = body
+// ★ 补缩进：`body` 的**首行**是 `function …`（从中段 token 起点切出 ⇒ **无前导缩进**），
+//   而**后续行与末行 `}` 的缩进都在**（它们在 fnText 内部，本来就带着原缩进）。
+//   ⇒ 只给**首行**补 `indent`（其余行**原样**，不能统一加 —— 那会让体内缩进翻倍）。
+//   ★ 自证守卫：补之前，首行必须**不以** indent 开头（否则说明 `s0` 已含缩进 ⇒ 会**重复加**）。
+{
+  const firstNL = body.indexOf('\n')
+  const firstLine = firstNL < 0 ? body : body.slice(0, firstNL)
+  if (indent && firstLine.startsWith(indent)) {
+    fail('缩进自证失败：函数体首行**已经**以 indent 开头 ⇒ 再加会**重复缩进**（首行=' + JSON.stringify(firstLine.slice(0, 40)) + '）')
+  }
+  body = indent + body
+}
+const bodyWithIndent = body
+// ★★★ **独立缩进判据**（2026-10-09 新增；`MUV_MOVE_BAD_INDENT` 注入就是为它而设的坏样本）：
+//   背景：四条既有判据（`--check`/`--levels`/`--uniqueness`/`--ledger`）**只看深度/唯一性/账本，不看缩进**
+//   ⇒ task-31 首跑"片缩进错乱"时它们**全绿**。这是一个"没有判据的形态" ⇒ 必须补一条，并证明它会咬。
+//   ★ 用**行首空白字符数**判，不用 `trim()` 后猜测；判"缩进"就直测缩进，别拿深度代替（血的教训）。
+//   ★ 本条判 **② ③**（只依赖 `bodyWithIndent`）；判 **①**（模块头）在 `modText` 构造之后。
+{
+  const widthOf = (line) => (line.match(/^[ \t]*/) || [''])[0].length
+  const lines = bodyWithIndent.split('\n')
+  const declW = widthOf(lines[0])                                             // 函数体首行（`function …`）
+  const expW = indentReal.length
+  if (declW !== expW) {
+    fail('缩进判据 ② 不成立：模块片里函数体首行缩进 = ' + declW + ' 空格，应为 ' + expW
+      + '（= 原声明行缩进）⇒ 片会与代码库风格不一致（顶格/深缩都算）。'
+      + ' · 首行=' + JSON.stringify(lines[0].slice(0, 50)))
+  }
+  if (lines.length > 2) {
+    // ★ 口径（2026-10-09 修正，避免一条**永远误红**的判据）：
+    //   第一版写成"首行之后的**所有**行取 min"⇒ 必然把**收尾 `}`**（本来就在声明行缩进）算进去
+    //   ⇒ `min ≤ declW` **恒成立** ⇒ 判据永不通过（实测：收尾 `}` 宽 4 == 声明行 4）。
+    //   第二版仍不严：体里若有**空行**（宽 0），`min` 会取到 0 ⇒ 同样误红。
+    //   ⇒ 真口径：只看**首行之后、末行（收尾 `}`）之前**的**内部非空行**；它们必须严格深于声明行。
+    const inner = lines.slice(1, -1).filter((l) => l.trim() !== '')
+    if (inner.length) {
+      const bodyW = Math.min(...inner.map(widthOf))
+      if (bodyW <= declW) {
+        fail('缩进判据 ③ 不成立：函数体内部行最小缩进 = ' + bodyW + '，未**深于**声明行 ' + declW
+          + ' ⇒ 体内缩进被压平（排版错乱）· 内部行样例='
+          + JSON.stringify(inner.slice(0, 3).map((s) => s.slice(0, 40))))
+      }
+    }
+  }
+}
+const WIRING_BLOCK = [
   indent + '/* wiring */',
   indent + 'const __wiring = {',
   ...WIRING.map((w) => indent + '  ' + w.key + ': ' + (VALUE_CAPTURE ? '' : '() => ') + w.target + ','),   // B3
   indent + '}',
-  ...body.split('\n'),
+].join('\n')
+const modText = [
+  indent + '// ── ' + MOD.replace(/\.js$/, '') + '：' + FN + '（档 B：**显式接线**；由 move-segment 生成）──',
+  ...(WIRING_TAIL
+    // ★★ 故障注入（仅供常驻反证）：把**整个接线块挪到片末**（片头注释 + 函数体 + 接线块）。
+    //   这是"块在片首"判据的**坏样本** ⇒ 它必须变红并点名。
+    ? [...bodyWithIndent.split('\n'), WIRING_BLOCK]
+    : [WIRING_BLOCK, ...bodyWithIndent.split('\n')]),
 ].join('\n') + '\n'
-if (!/const\s+__wiring\s*=\s*\{[\s\S]*?\n\s*\}\s*$/.test(modText)) fail('生成的接线块不在**片末**（现有判据要求块在片末）')
+// ★★ 缺陷修复（2026-10-09，task-31 首跑揪出）：原判据**名不副实** ——
+//   `if (!/const\s+__wiring\s*=\s*\{[\s\S]*?\n\s*\}\s*$/.test(modText)) fail('…不在**片末**…')`
+//   实测：对接线块在**片头**的文本 **PASS**；只有"完全没有接线块"才 FAIL
+//   （懒惰的 `[\s\S]*?` 撞上**函数体自己的收尾 `}`** ⇒ 正则以为那是接线块的收尾）。
+//   ⇒ 它**声称**验"位置"，实际只验"存在"，且生成器**自己就把块写在片头** ⇒ 该 fail 分支**永不响**。
+//   ★ 修法：**真判位置** —— wiring 块必须**逐字**出现在 `modText` 的**开头**（在本生成器的形态约定里，
+//     块在片**首**）。判"位置"用**偏移**，不用"尾部正则"（后者才是被骗的那种写法）。
+if (!modText.startsWith(indent + '// ── ') || modText.indexOf(WIRING_BLOCK) !== modText.indexOf('\n') + 1) {
+  fail('生成的接线块不在**片首**（现约定：紧跟在片头注释之后）⇒ 下一步：核对 WIRING_BLOCK 的拼装顺序。')
+}
+// ★★★ **缩进判据 ①**（模块头必须与函数声明行同层）：模块是从承载片**整段搬出** ⇒ 其头行应停在
+//   与原声明同一缩进层（工厂体内 = 4）。`MUV_MOVE_BAD_INDENT` 会把它顶格 ⇒ 本判据必须红并点名。
+//   ★ 与上面 ② ③ 合起来：②③ 看**函数体**、① 看**模块头**，三处共同覆盖"片缩进错乱"的全部形态。
+{
+  const widthOf = (line) => (line.match(/^[ \t]*/) || [''])[0].length
+  const headW = widthOf(modText.split('\n')[0])
+  if (headW !== indentReal.length) {
+    fail('缩进判据 ① 不成立：模块头行缩进 = ' + headW + ' 空格，应为 ' + indentReal.length
+      + '（= 原声明行缩进）⇒ 模块片与承载片风格不一致（顶格/深缩都算）。'
+      + ' · 头行=' + JSON.stringify(modText.split('\n')[0].slice(0, 50)))
+  }
+}
 // ★★ 加严（Lead 建议、采纳）：「**恰好 1 次**」口径 —— 与本会话反复用的"唯一子串 + 命中次数校验"同族。
 //   原先用 `String.replace(fnText + '\n', '')`（**只替换首次出现**）⇒ 若同一片里该原文出现 2 次，
 //   "移除"只删 1 处，而"不是原样就算过"的守卫会**放行** ⇒ 留下一个**半搬运**的产物（静默）。
@@ -245,7 +372,7 @@ const textOf = (p) => (p.path === modPath ? modText : (p.path === host.path ? ne
   }
 }
 
-const INJ = [SKIP_PARTS && 'SKIP_PARTS', NO_DELETE && 'NO_DELETE', NO_BUMP && 'NO_BUMP', VALUE_CAPTURE && 'VALUE_CAPTURE', TAMPER_LOOKUP && 'TAMPER_LOOKUP', DUP_TARGET && 'DUP_TARGET'].filter(Boolean)
+const INJ = [SKIP_PARTS && 'SKIP_PARTS', NO_DELETE && 'NO_DELETE', NO_BUMP && 'NO_BUMP', VALUE_CAPTURE && 'VALUE_CAPTURE', TAMPER_LOOKUP && 'TAMPER_LOOKUP', DUP_TARGET && 'DUP_TARGET', BAD_INDENT && 'BAD_INDENT', WIRING_TAIL && 'WIRING_TAIL'].filter(Boolean)
 console.log('  注入生效：' + (INJ.length ? INJ.join(',') + '  ★' : '（无注入）'))
 console.log('① 分片：' + host.path + ' 移除 ' + fnText.split('\n').length + ' 行；新增 ' + modPath
   + '（' + modText.split('\n').length + ' 行）' + (SKIP_PARTS ? '   ★★ 故障注入：**跳过 parts 插入**' : ''))
@@ -272,7 +399,9 @@ fs.writeFileSync(path.join(PARTS_DIR, MOD), modText)
   mf.modules[modPath] = {
     // ★ 账本必须由本工具**自己算好**（build-client 只刷新 parts/artifact，**不刷 functions 账本**）
     //   形态与既有条目同构：函数名 -> sha256(归一化后的函数文本)
-    functions: { [FN]: createHash('sha256').update(body.replace(/\r\n/g, '\n')).digest('hex') },
+    // ★★ 口径（2026-10-09）：必须用 **`bodyNoIndent`** —— 判据 `build-client.mjs::fnText()` 从
+    //   `function` **token 起点**切（不含前导缩进）。用带缩进的版本会立刻报"摘要不符"（已实测）。
+    functions: { [FN]: createHash('sha256').update(bodyNoIndent.replace(/\r\n/g, '\n')).digest('hex') },
     preMoveScope: SCOPE,
     // ★ task-32：值**由搬前真算决定**（`scopeGroupReport`），不是写死字面量。
     //   算不出来时上面已 fail-closed ⇒ 能走到这里就恒为 'live'（这正是它**可复核**的前提）。
@@ -289,7 +418,8 @@ console.log('=== 搬移无损证据（多重集合口径，不按位置配对）
 {
   const after = fs.readFileSync(path.join(REPO, 'lib', 'client.js'), 'utf8')
   const count = (h, n) => h.split(n).length - 1
-  const bodyCount = count(after, body)
+  // ★★ 口径（2026-10-09）：产物里的函数文本是**带缩进**的（写进模块片的就是 `bodyWithIndent`）⇒ 用它数。
+  const bodyCount = count(after, bodyWithIndent)
   const hostLeft = count(fs.readFileSync(path.join(REPO, host.path), 'utf8'), fnText)
   console.log('  函数体（接线化后）在产物里出现次数 = ' + bodyCount + (bodyCount === 1 ? '  ✓（恰好 1 次）' : '  ✗（应为 1）'))
   console.log('  承载片里原函数原文出现次数 = ' + hostLeft + (hostLeft === 0 ? '  ✓（确实已移走，不是复制）' : '  ✗（应为 0）'))

@@ -14,6 +14,9 @@
 //   ② **真反证**：`MUV_MOVE_SKIP_PARTS_INSERT=1`（跳过 `parts` 插入）⇒ 必须**非零**且判据**点名**
 //   ③ **fail-closed 守卫**：脏工作树 ⇒ **拒绝运行**，且**不留下半成品**
 //   ⑤⑥⑦ **B 族三条语义真实的注入**（B1 copy 而非 move / B2 不 bump / B3 值捕获）
+//   ⑧⑨ **计数守卫两侧**（出现 0 次 / 出现 ≥2 次）+ 夹具自证
+//   ⑩⑪ **同作用域组** 与 **`preMoveScopeEvidence` 真算**（task-32）及其反证
+//   ⑫ **task-31 两条新注入**（缩进判据 / 片首判据）+ **新旧判据判别力差分证明**
 //   ④ **非空跑下限** + **自证清理**（hermetic）
 //
 // ★ 失败时**必须打印子进程全量输出**（含 exit code）—— 否则"注入横幅没出现"与"判据没红"分不开。
@@ -34,7 +37,9 @@ const NODE = process.execPath
 //   （复算：node tests/test-move-segment.mjs | tail -1）。本笔新增 ⑨/⑨-正对照/同作用域组 共 6 条 ⇒ 10 → 20。
 //   ★ task-32 再新增 ⑪ 段（真算 + 两条反证 + 输入敏感性）共 11 条 ⇒ 20 → 31。
 //   ★ 笔 B' 新增 ⑩ 段的"跨作用域会咬"反证 + 其自证共 2 条 ⇒ 31 → 33。
-const MIN_ASSERTIONS = 33
+//   ★ task-31（笔 B）新增 ⑫ 段（两条新故障注入 + 新旧判据差分证明）共 11 条 ⇒ 33 → 44。
+//     明细：⑫-0 自证 1 条 · ⑫-a 4 条 · ⑫-b 3 条 · ⑫-c（新旧判别力差分）3 条 = 11。
+const MIN_ASSERTIONS = 44
 
 // ★ 搬迁目标（**参数化**：换目标只改 `TARGET` + `TARGET_SCOPE` 两处）。
 //   ★ 笔 B'（本笔）：原目标是 `ensureStatusCss`（**笔 B 要真搬走的那个**，故意留作"真搬迁预演"）。
@@ -445,6 +450,76 @@ console.log('\n⑪ ★ task-32：`preMoveScopeEvidence` 必须**真算**（不�
     check('★ ⑪-d 输入敏感性：存在另一个**不同作用域**的目标 ⇒ scope 读数不同（非恒同值）',
       other !== null && other.scope !== a.scope,
       'a.scope=' + JSON.stringify(a.scope) + ' other=' + JSON.stringify(other && other.scope))
+  }
+}
+
+console.log('\n⑫ ★ task-31：**缩进判据** 与 **片首判据** 必须各自能被证明会咬（两条新故障注入）')
+// ── 来由（task-31 首跑实测，两条**真缺陷**）─────────────────────────────────────
+//   (A) 生成器的 `indent` **恒为空串** ⇒ 模块头/接线块顶格、而函数体保留原缩进 ⇒ 片缩进错乱，
+//       而**四条既有判据全绿**（它们只看深度/唯一性/账本，不看缩进）⇒ "片缩进"这个形态**当时没有判据**。
+//   (B) 判"接线块位置"的原正则用尾部懒惰 `[\s\S]*?` ⇒ 对接线块在**片首**也 PASS（它撞上函数体自己的
+//       收尾 `}`）⇒ 自称验"位置"、实则只验"存在"、**永不报红**（生成器自己就把块写在片首）。
+//   ⇒ 本段为两条判据各配一条**语义真实的坏样本注入**，逐支证明：**注入 ⇒ 必红 + 点名 + 读数可对**。
+//   ★ 口径：若某支不红 ⇒ 结论是"判据缺失/失效"，**不是**换个坏样本绕过去（见 HANDOFF）。
+{
+  // ⑫-0 先证明注入开关**真的被 `INJ` 横幅消费**：否则"注入生效：…"那行会**谎报**"（无注入）"
+  //   ⇒ 一旦两条判据都在横幅前 fail-closed，本段若只测"红"就**永远看不到**"开关没接线"这个真故障。
+  //   ★ 手法：直接读生成器源码，断 `INJ` 那一行**同时**含两个 token（非注释命中）。
+  {
+    const genSrc = fs.readFileSync(path.join(REPO, 'tools', 'move-segment.mjs'), 'utf8')
+    const injLine = genSrc.split('\n').find((l) => /^const INJ = \[/.test(l.trim())) || ''
+    check('★ ⑫-0 自证：生成器 `INJ` 数组**同时**列出 BAD_INDENT 与 WIRING_TAIL（否则横幅会谎报"无注入"）',
+      /BAD_INDENT/.test(injLine) && /WIRING_TAIL/.test(injLine), 'INJ 行 = ' + JSON.stringify(injLine.slice(0, 200)))
+  }
+
+  // ⑫-a `MUV_MOVE_BAD_INDENT=1` ⇒ 必被**缩进判据**红并点名（且读数给出"0 空格 vs 4"这类**可对**的数）
+  {
+    const d = makeSandbox('badindent')
+    const r = runGen(d, { MUV_MOVE_BAD_INDENT: '1' })
+    const o = String(r.stderr || '') + String(r.stdout || '')
+    // ★ 不要求注入横幅：缩进判据在打印横幅**之前**（与 ⑧/TAMPER、⑨/DUP 同型）⇒ 横幅缺席是预期。
+    check('★ ⑫-a exit≠0（fail-closed，不是静默产顶格片）', r.status !== 0, fullOut(r))
+    check('★ ⑫-a 点名**缩进判据**，并给出可核对的读数（"应为 4"/"缩进"）',
+      /缩进判据/.test(o) && /应为\s*4|缩进\s*=\s*\d/.test(o), fullOut(r))
+    // ★ 关键区分：**必须是缩进判据红**，不能是别的守卫先红（否则证明的不是这条判据）
+    check('★ ⑫-a 红的**确实是缩进判据**（不是"缩进推导失败"/"接线块不在片首"这类别的分支）',
+      /缩进判据/.test(o) && !/缩进推导失败|不在\*\*片首\*\*/.test(o), fullOut(r))
+    check('★ ⑫-a 被拒后没有产出半成品（不写新模块片）',
+      !fs.existsSync(path.join(d, 'src', 'client', TARGET.module)), TARGET.module + ' 竟然存在')
+    dropSandbox(d)
+  }
+
+  // ⑫-b `MUV_MOVE_WIRING_TAIL=1` ⇒ 必被**片首判据**红并点名
+  {
+    const d = makeSandbox('wtail')
+    const r = runGen(d, { MUV_MOVE_WIRING_TAIL: '1' })
+    const o = String(r.stderr || '') + String(r.stdout || '')
+    check('★ ⑫-b exit≠0（fail-closed）', r.status !== 0, fullOut(r))
+    check('★ ⑫-b 点名**片首判据**（"不在**片首**"），且给下一步',
+      /不在\*\*片首\*\*/.test(o) && /下一步/.test(o), fullOut(r))
+    check('★ ⑫-b 被拒后没有产出半成品（不写新模块片）',
+      !fs.existsSync(path.join(d, 'src', 'client', TARGET.module)), TARGET.module + ' 竟然存在')
+    dropSandbox(d)
+  }
+
+  // ⑫-c ★★ **新旧判据判别力的差分证明**（这条是"判据本身可信"的根）：
+  //   旧写法（尾部懒惰正则）对**正确形态**与**坏形态**都返回 true ⇒ 它**根本没有判别力**；
+  //   新写法（偏移）正确形态 true、坏形态 false ⇒ 真的会咬。
+  //   ★ 若不跑这条，⑫-b 的"红"只证明"新判据在这个夹具上红了"，**不证明**"旧判据本来抓不住"
+  //     —— 而没有后者，就无法解释这条判据为何必要（本会话反复踩的"判据自己会骗人"家族）。
+  {
+    const oldRe = /const\s+__wiring\s*=\s*\{[\s\S]*?\n\s*\}\s*$/
+    const wiringBlock = '    /* wiring */\n    const __wiring = {\n      k: () => X,\n    }'
+    const headForm = '    // ── mod-x：fn ──\n' + wiringBlock + '\n    function fn() {\n      return X\n    }\n'
+    const tailForm = '    // ── mod-x：fn ──\n    function fn() {\n      return X\n    }\n' + wiringBlock + '\n'
+    const newJudge = (t) => t.split('\n')[0].startsWith('    // ── ') && t.indexOf(wiringBlock) === t.indexOf('\n') + 1
+    check('★ ⑫-c 旧判据（尾部懒惰正则）对**正确形态也要** true —— 证明它只验"存在"、不验"位置"',
+      oldRe.test(headForm) === true, 'old(headForm)=' + oldRe.test(headForm))
+    check('★ ⑫-c 旧判据对**坏形态**仍 true —— 证明它**永不报红**（无判别力）',
+      oldRe.test(tailForm) === true, 'old(tailForm)=' + oldRe.test(tailForm))
+    check('★ ⑫-c 新判据（偏移）正确形态 true、坏形态 false —— 有判别力',
+      newJudge(headForm) === true && newJudge(tailForm) === false,
+      'new(headForm)=' + newJudge(headForm) + ' new(tailForm)=' + newJudge(tailForm))
   }
 }
 

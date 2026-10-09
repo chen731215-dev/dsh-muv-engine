@@ -38,8 +38,9 @@
 
 ### 顺带：导入路径修复确认（issue #1）
 
-当前主分支已无 `../../muv-table` 形态的引用（`lib/` 下全部为 `../../dsh-muv-table/…`，
-即下方 muv-S1 工程化批次统一的那三类路径），`ERR_MODULE_NOT_FOUND` 不再出现。
+当前主分支已无 `../../muv-table` 形态的引用；`lib/` 下对同伴仓的导入为**裸包名**
+`dsh-muv-table/…`（4 处：`lib/index.js` ×2、`lib/card-scripts.js`、`lib/var-tracker.js`，
+按下方的 muv-S1 工程化批次口径），`ERR_MODULE_NOT_FOUND` 不再出现。
 
 ## 未发布（工程化 · muv-S1）★ 55 个散落脚本分家 + 统一 runner + CI + 仓库卫生闸门
 

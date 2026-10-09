@@ -60,7 +60,7 @@
         "ensureStatusCss": "769aea55df2beeb01a38e21485224d2fc7f7ba57cbb7016f26d0a6c9f6433a42"
       },
       "preMoveScope": "<箭头函数@行4>",
-      "preMoveScopeEvidence": "live",
+      "preMoveScopeEvidence": "pre-knife",
       "wiring": {
         "sbCss": {
           "kind": "accessor",

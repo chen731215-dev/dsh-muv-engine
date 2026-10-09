@@ -515,8 +515,19 @@ console.log('\n⑨ P1/P2/P3：模块**声明清单 + 非空下限 + 搬前作用
     rg4.ok === false && rg4.problems.some((p) => p.includes('≠ parts 里筛出')), rg4.problems.join(' | '))
 
   const w0 = moduleWiringCaptureReport({ parts })
-  check('P3：现有模块都还没有接线块 ⇒ 判据**不适用**（不是"跳过"，是不适用）',
-    w0.ok === true && w0.stats.modulesWithWiring === 0, JSON.stringify(w0.stats))
+  // ★★ 2026-10-09 task-31（笔 B）：**断言随真实仓库演进更新**（原断言写死了"还没有任何模块带接线块"）。
+  //   原句：`w0.ok === true && w0.stats.modulesWithWiring === 0` —— 在 `mod-status-css.js` 落地**之前**成立。
+  //   笔 B 真搬 `ensureStatusCss` 后，该模块**首次**带上档 B 接线块 ⇒ `modulesWithWiring` 从 0 → 1
+  //   ⇒ 原断言**必红**（CI #32 实测正是这一条 + ④-2）。
+  //   ★ 这不是"为了过 CI 而放宽"——是**把快照改成契约**：本判据的**本义**是
+  //     "真实仓库里凡带接线块的模块都必须是**访问器**（不许值捕获）"，而不是"不许有接线块"。
+  //     ⇒ 现在断言：真实仓库**至少 1 个**带块（下限，防"全都不带"变回假绿）+ `ok === true`（全访问器）。
+  //   ★ 若将来**没有任何**模块带接线块（例如全部回退），下面这条会因 `≥1` 下限**正确地**红
+  //     —— 那时应显式把它改回"不适用"形态并说明原因，**不许**把下限删掉。
+  check('P3：真实仓库里带接线块的模块**全部**是访问器（≥1，下限防假绿）',
+    w0.ok === true && w0.stats.modulesWithWiring >= 1, JSON.stringify(w0.stats))
+  check('P3：真实仓库**确有一个**带接线块的模块（`mod-status-css.js`，笔 B 落地）',
+    w0.stats.modulesWithWiring === 1, JSON.stringify(w0.stats))
   const bad = 'const __wiring = {\n  sbCss: MUV_SB_CSS,\n}\nfunction f() { return __wiring }\n'
   const w1 = moduleWiringCaptureReport({ parts: [{ path: 'src/client/mod-probe.js', text: bad }] })
   check('★ P3 反证：`sbCss: MUV_SB_CSS`（值捕获）⇒ 红并点名',

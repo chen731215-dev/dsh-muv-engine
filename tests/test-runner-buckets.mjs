@@ -197,9 +197,33 @@ console.log('\n⑥ ★ 端到端（要 spawn）：真跑 runner 验证四桶在*
   check('mutate 自证：夹具 tests/ 里确有 4 个合成文件', listed.length === 4, '实际 ' + listed.length)
   check('★ 有真红 ⇒ runner 退出码 = 1', r.status === 1, 'exit=' + r.status)
   check('★ 汇总里有"环境不可用"桶且点名 c-env.mjs', /环境不可用[\s\S]{0,300}c-env\.mjs/.test(out))
-  check('★ 红项行**不含** c-env.mjs', !/红项[\s\S]{0,300}c-env\.mjs/.test(out))
-  check('★ 红项行**含** b-red.mjs（反向自证）', /红项[\s\S]{0,300}b-red\.mjs/.test(out))
+
+  // ★ 关键：判"红项**条目**里有没有 c-env"**不能**用"❌ 红项 后面 300 字内出现 c-env"——
+  //   runner 在红项行**之后**会紧跟一行"（另有 N 个环境不可用，未计入红项：… c-env.mjs）"
+  //   ⇒ 那个 300 字窗口会**误命中**这句"声明不含"的旁注，把一条正确实现判成红。
+  //   （本笔首跑 CI 就是这么红的 —— 是**断言写宽了**，不是产品错。）
+  //   ⇒ 改为按**桶列表段**取证：只看「异常」桶标题到「环境不可用」标题之间那段里的条目。
+  const between = (startRe, endRe) => {
+    const s = out.search(startRe)
+    if (s < 0) return null
+    const rest = out.slice(s)
+    const e = rest.search(endRe)
+    return rest.slice(0, e < 0 ? rest.length : e)
+  }
+  // ★★ 取证要认**桶标题**（带 `：N 个`），不能认**逐文件行**上的同类字样
+  //   （每个 env 文件自己那行也含「环境不可用」，会抢在桶标题之前命中 —— 首版就栽在这样一处）。
+  const abnormalBlock = between(/异常（超时 \/ 崩溃 \/ 空输出 \/ 空跑）：\d+ 个\n/, /环境不可用（exit=/)
+  const envBlock = between(/环境不可用（exit=\d+[^\n]*：\d+ 个[^\n]*\n/, /(?:跳过（非测试|\n全部通过|\n❌ 红项|$)/)
+  check('★ 取证段存在：异常桶列表段非空', !!abnormalBlock && abnormalBlock.length > 0, 'abnormalBlock=' + JSON.stringify(String(abnormalBlock).slice(0, 120)))
+  check('★ 异常桶列表段**不含** c-env.mjs（env 未混进真红）', !String(abnormalBlock).includes('c-env.mjs'),
+    String(abnormalBlock).slice(0, 200))
+  check('★ 异常桶列表段**含** d-vacuous.mjs（反向自证：空跑确实在真红里）',
+    /d-vacuous\.mjs/.test(String(abnormalBlock)), String(abnormalBlock).slice(0, 200))
+  check('★ 环境桶列表段**含** c-env.mjs 且**不含** d-vacuous.mjs（互斥的另一半）',
+    String(envBlock).includes('c-env.mjs') && !String(envBlock).includes('d-vacuous.mjs'),
+    String(envBlock).slice(0, 200))
   check('★ 异常桶 = 1（只有空跑那个）', /异常（超时[\s\S]{0,40}：1 个/.test(out), out.slice(-500))
+  check('★ 环境桶 = 1', /环境不可用（exit=2[^\n]*：1 个/.test(out), out.slice(-500))
   fs.rmSync(dir, { recursive: true, force: true })
 }
 

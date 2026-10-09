@@ -17,6 +17,7 @@
 //   ⑧⑨ **计数守卫两侧**（出现 0 次 / 出现 ≥2 次）+ 夹具自证
 //   ⑩⑪ **同作用域组** 与 **`preMoveScopeEvidence` 真算**（task-32）及其反证
 //   ⑫ **task-31 两条新注入**（缩进判据 / 片首判据）+ **新旧判据判别力差分证明**
+//   ⑬ **task-31 审查后补：空行判据**（移除不得让"最大连续空行"增大）+ 判据层差分证明
 //   ④ **非空跑下限** + **自证清理**（hermetic）
 //
 // ★ 失败时**必须打印子进程全量输出**（含 exit code）—— 否则"注入横幅没出现"与"判据没红"分不开。
@@ -40,7 +41,9 @@ const NODE = process.execPath
 //   ★ task-31（笔 B）新增 ⑫ 段（两条新故障注入 + 新旧判据差分证明）共 11 条 ⇒ 33 → 44。
 //     明细：⑫-0 自证 1 条 · ⑫-a 4 条 · ⑫-b 3 条 · ⑫-c（新旧判别力差分）3 条 = 11。
 //   ★ task-31 首跑 CI 后：⑪-a 补 1 条（取值必须 ∈ 既有词表 `{pre-knife, reconstructed}`）⇒ 44 → 45。
-const MIN_ASSERTIONS = 45
+//   ★ task-31 审查后：⑬ 段（空行判据，承接 `8a5d48b` 未竟边界）共 7 条 ⇒ 45 → 52。
+//     明细：⑬-0 自证 1 条 · ⑬-a 判据层差分 3 条 · ⑬-b 端到端注入 3 条 = 7。
+const MIN_ASSERTIONS = 52
 
 // ★ 搬迁目标（**参数化**：换目标只改 `TARGET` + `TARGET_SCOPE` 两处）。
 //   ★ 笔 B'（本笔）：原目标是 `ensureStatusCss`（**笔 B 要真搬走的那个**，故意留作"真搬迁预演"）。
@@ -527,6 +530,63 @@ console.log('\n⑫ ★ task-31：**缩进判据** 与 **片首判据** 必须各
     check('★ ⑫-c 新判据（偏移）正确形态 true、坏形态 false —— 有判别力',
       newJudge(headForm) === true && newJudge(tailForm) === false,
       'new(headForm)=' + newJudge(headForm) + ' new(tailForm)=' + newJudge(tailForm))
+  }
+}
+
+console.log('\n⑬ ★ task-31 审查后补：**空行判据**（"移除不得让最大连续空行增大"）必须能被证明会咬')
+// ── 来由（独立审查者揪出，承接 `8a5d48b` 的未竟边界）──────────────────────────────
+//   `8a5d48b` 只保证"移除函数后**不留纯空白行**"（`^[ \t]+$`），**没管**"**前后两个分隔空行**
+//   在删除后**坍塌成连续双空行**"。实测：`dd861a9` 删 `ensureStatusCss` 后，`part-02.js` 的
+//   **最大连续空行 1 → 2**，而**当时任何判据都咬不到**（四条既有 + 三条缩进都不看空行数）。
+//   ⇒ 生成器已补一条"空行判据"+ 一条注入 `MUV_MOVE_BLANK_TWO`（吞 0 个相邻空行 ⇒ 复现旧行为）。
+//   ★ 本段的主证据是**判据层差分**（纯字符串，与 ⑫-c 同型）—— 因为**不是每个搬迁目标都能端到端证明**：
+//     `muvVarRevOf` 的前侧是 `*/`（紧接 `function`、**无前导空行**）⇒ 吞 0 个后最大连续空行仍是 1
+//     ⇒ 端到端无差分。**能**证明的是 `ensureStatusCss` 那种"**前后各 1 个空行**"的语境。
+//     ⇒ 故这里既做**判据层差分**（无条件可跑、是主证据），又做**注入会咬**的端到端支（有条件时跑）。
+{
+  // ⑬-0 自证：注入开关真的被 `INJ` 横幅消费（防"注入生效：…"谎报"（无注入）"）
+  {
+    const genSrc = fs.readFileSync(path.join(REPO, 'tools', 'move-segment.mjs'), 'utf8')
+    const injLine = genSrc.split('\n').find((l) => /^const INJ = \[/.test(l.trim())) || ''
+    check('★ ⑬-0 自证：生成器 `INJ` 数组**列出** BLANK_TWO（否则横幅会谎报"无注入"）',
+      /BLANK_TWO/.test(injLine), 'INJ 行 = ' + JSON.stringify(injLine.slice(0, 240)))
+  }
+
+  // ⑬-a ★★ **判据层差分**（主证据）：同一条判据，对"吞 1 个（正确）"绿、对"吞 0 个（坏）"红。
+  //   复现 `ensureStatusCss` 的真实上下文：前有内容 + 空行 A + function…} + 空行 B + 后有内容。
+  {
+    const maxBlank = (t) => { let m = 0; let c = 0; for (const l of t.split('\n')) { if (l === '') { c++; if (c > m) m = c } else { c = 0 } } return m }
+    const fnLine = '    function ensureStatusCss() {\n      return 1\n    }'
+    const withCtx = '    // 前一节\n\n' + fnLine + '\n\n    /** 下一节 */\n    function next1() {}\n'
+    const before = maxBlank(withCtx)
+    // 旧行为：只删 fnLine + 一个 '\n' ⇒ 空行 A、B 都留下
+    const swallow0 = withCtx.replace(fnLine + '\n', '')
+    // 修后行为：删 fnLine + '\n\n'（吞掉后随的那个空行）⇒ 空行 A 与 B 合并成一个
+    const swallow1 = withCtx.replace(fnLine + '\n\n', '')
+    const judge = (t) => maxBlank(t) > before ? 'RED' : 'GREEN'
+    check('★ ⑬-a 判据层差分：**吞 0 个**（旧行为）⇒ 最大连续空行 ' + before + '→' + maxBlank(swallow0) + ' ⇒ 必须红',
+      judge(swallow0) === 'RED' && maxBlank(swallow0) === before + 1,
+      'before=' + before + ' swallow0=' + maxBlank(swallow0))
+    check('★ ⑬-a 判据层差分：**吞 1 个**（修后）⇒ 最大连续空行不变（' + before + '）⇒ 绿',
+      judge(swallow1) === 'GREEN' && maxBlank(swallow1) === before,
+      'swallow1=' + maxBlank(swallow1))
+    check('★ ⑬-a 该差分的**判别力**：同一条判据在两种形态下结论不同（红 vs 绿）—— 不是永真/永假',
+      judge(swallow0) === 'RED' && judge(swallow1) === 'GREEN', 'RED vs GREEN')
+  }
+
+  // ⑬-b ★ 端到端支：`MUV_MOVE_BLANK_TWO=1` ⇒ 生成器必须**非零退出**（无论走"空行判据红"
+  //   还是走"注入无法自证 ⇒ fail-closed"—— 两者都是**响亮拒绝**，绝不允许静默产出双空行片）。
+  {
+    const d = makeSandbox('blanktwo')
+    const r = runGen(d, { MUV_MOVE_BLANK_TWO: '1' })
+    const o = String(r.stderr || '') + String(r.stdout || '')
+    check('★ ⑬-b `BLANK_TWO=1` ⇒ exit≠0（要么空行判据红、要么注入自证失败 fail-closed；不许静默）',
+      r.status !== 0, fullOut(r))
+    check('★ ⑬-b 两条可接受的红之一必出现（"空行判据"或"BLANK_TWO 注入无法自证"）',
+      /空行判据/.test(o) || /BLANK_TWO 注入无法自证/.test(o), fullOut(r))
+    check('★ ⑬-b 被拒后没有产出半成品（不写新模块片）',
+      !fs.existsSync(path.join(d, 'src', 'client', TARGET.module)), TARGET.module + ' 竟然存在')
+    dropSandbox(d)
   }
 }
 

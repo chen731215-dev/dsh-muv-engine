@@ -203,13 +203,17 @@ function buildDecorator(srcText, o) {
   const code = ['muvDepthFromLaterCount', 'muvTurnOfEl', 'muvSessionTurnsNow', 'decorateMessages']
     .map((n) => lift(srcText, n)).join('\n\n')
   const make = new Function(
-    'document', 'window', 'messageTargets', '_decorateOne',
-    'var _decorating = false\n' + code + '\n' +
+    'document', 'window', 'messageTargets', '_decorateOne', 'scheduleDecorate',
+    // 2026-10-17：装饰主循环新增两个接线名（撞车补跑），桩里必须显式提供 ——
+    // 缺一个就 ReferenceError，正是「新增依赖必须接线」这条判据要的响亮失败。
+    'var _decorating = false\nvar _muvDecorPending = false\n' + code + '\n' +
     'return { decorateMessages: decorateMessages,' +
     '  isDecorating: function () { return _decorating },' +
+    '  isPending: function () { return _muvDecorPending },' +
     '  setDecorating: function (v) { _decorating = v } }',
   )
-  return make(o.document, o.window, o.messageTargets, o._decorateOne)
+  return make(o.document, o.window, o.messageTargets, o._decorateOne,
+    o.scheduleDecorate || function () {})
 }
 
 /** 楼号链条：把 `data-chat-turn` 放在**第 n 个祖先**上（n=0 就是元素自己）。 */
@@ -301,6 +305,30 @@ console.log('\n④ _decorating：置位/复位成对（含抛错路径），重�
   check('重入被拦住：外层 3 条各自只装饰一次，重入那一路一条都没装饰',
     nestedDone === 3 && duringFlags.length === 3, 'nestedDone=' + nestedDone)
 
+  // ★★ 撞车补跑（2026-10-17，用户实测「生成完不转、切会话才转」）：
+  //   重入**不再是静默丢弃** —— 记一拍，本轮跑完立刻补扫。旧行为 `return` 会把
+  //   "流式刚结束"那一拍丢掉，之后要等 3s 扫摆或切会话。
+  let sched = 0
+  let release
+  const gate = new Promise((r) => { release = r })
+  const dp = buildDecorator(SRC, {
+    window: { __DSH_TAVERN_CTX__: ctxStub(16, 13) },
+    messageTargets: targets,
+    _decorateOne: async () => { await gate },
+    scheduleDecorate: () => { sched++ },
+  })
+  const firstRun = dp.decorateMessages()
+  await Promise.resolve()
+  check('撞车样本的前置：装饰确实在进行中', dp.isDecorating() === true)
+  await dp.decorateMessages()   // 撞车那一拍
+  check('★★ 撞车那一拍被记账（_muvDecorPending=true），不是静默丢弃',
+    dp.isPending() === true, String(dp.isPending()))
+  check('撞车那一拍不会立刻重入装饰（scheduleDecorate 还没被调）', sched === 0, String(sched))
+  release()
+  await firstRun
+  check('★★ 本轮跑完补扫一拍（scheduleDecorate 被调用）', sched >= 1, 'sched=' + sched)
+  check('补扫之后旗标复位（不会每轮都白跑一次）', dp.isPending() === false)
+
   // 抛错路径：finally 必须仍然复位
   let t2
   t2 = buildDecorator(SRC, {
@@ -331,8 +359,10 @@ console.log('\n④ _decorating：置位/复位成对（含抛错路径），重�
   // ★ 替换文本必须**保留 `try/finally` 结构**：整块删掉会变成 `try {}` 无 catch/finally，
   //   那是 `SyntaxError`（构建期就炸，测不到"复位缺失"这个行为），不是我们要的坏样本。
   const noReset = mutateOnce(SRC,
-    '} finally {\n            _decorating = false\n          }',
-    '} finally {\n            void 0\n          }')
+    // needle 只到 `_decorating = false` 这一行（2026-10-17）：finally 里随后还有补跑块，
+    // 整段 needle 会命中 0 次 ⇒ mutateOnce 响亮抛错（这是要的，但会遮住本条反证）。
+    '} finally {\n            _decorating = false\n',
+    '} finally {\n            void 0\n')
   let t3
   t3 = buildDecorator(noReset, {
     window: { __DSH_TAVERN_CTX__: ctxStub(16, 13) },
@@ -394,7 +424,7 @@ console.log('\n⑥ 两种 EOL 形态（CI 是 LF、Windows 普通 clone 是 CRLF
 
   // ★ 归一化真的在起作用（不是空操作）：同一颗 needle 在 CRLF 原文里**命中 0 次**，
   //   归一化之后必须命中。如果哪天有人把 lf() 去掉，这一对断言立刻报红。
-  const needle = '} finally {\n            _decorating = false\n          }'
+  const needle = '} finally {\n            _decorating = false\n'
   const rawHits = CRLF.split(needle).length - 1
   const lfHits = lf(CRLF).split(needle).length - 1
   check('CRLF 原文里该 needle 命中 0 次（所以"不归一化"这条是**真的会红**）',

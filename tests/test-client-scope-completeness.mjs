@@ -71,8 +71,10 @@ const MIGRATION_SETS = [
     label: '④ 装饰主循环',
     entries: ['muvDepthFromLaterCount', 'muvTurnOfEl', 'muvSessionTurnsNow', 'decorateMessages'],
     // `_decorating` 是**活变量**（会被回写）⇒ 必须走访问器，不能当只读快照接线
-    required: ['messageTargets', '_decorateOne', '_decorating'],
-    live: ['_decorating'],
+    // `_muvDecorPending` 同理（2026-10-17 新增：撞车补跑的记账旗标，跑完要回写 false）
+    // `scheduleDecorate` 是补跑入口 —— 只读引用即可
+    required: ['messageTargets', '_decorateOne', '_decorating', '_muvDecorPending', 'scheduleDecorate'],
+    live: ['_decorating', '_muvDecorPending'],
   },
 ]
 
@@ -219,8 +221,11 @@ console.log('\n【九】活变量：必须**从函数体反推**出来（不许�
   //   和 finally 里的 `= false` 两处写点，少改一处它照样是活变量。）
   const READ_ONLY = mutateOnce(
     mutateOnce(SRC, '_decorating = true', 'var _everTrue = true'),
-    '} finally {\n            _decorating = false\n          }',
-    '} finally {\n            void 0\n          }')
+    // ★ needle 只取到 `_decorating = false` 这一行（2026-10-17）：finally 里随后新增了
+    //   `_muvDecorPending` 补跑块，整段 needle 会变成"命中 0 次"⇒ 变异自检直接抛错
+    //   （这正是本文件要的：判据找不到落点时**必须响亮失败**，不许静默空转）。
+    '} finally {\n            _decorating = false\n',
+    '} finally {\n            void 0\n')
   const rRo = wiringReport({
     src: READ_ONLY,
     entries: MIGRATION_SETS[3].entries,
@@ -328,8 +333,10 @@ console.log('\n【十二】★ 右端校验：`provided` 里的名字，在新�
   const group = MIGRATION_SETS[3]
   const targetSrc = [
     "import { messageTargets } from './sampling.js'",
-    "import { _decorateOne } from './decorate-one.js'",
+    "import { _decorateOne, scheduleDecorate } from './decorate-one.js'",
     'let _decorating = false',
+    // 2026-10-17：撞车补跑的记账旗标（活变量，右端必须真的落地）
+    'let _muvDecorPending = false',
     ...group.entries.map((e) => extractFunction(SRC, e)),
     'export { decorateMessages, muvTurnOfEl, muvSessionTurnsNow, muvDepthFromLaterCount }',
   ].join('\n')
@@ -339,8 +346,9 @@ console.log('\n【十二】★ 右端校验：`provided` 里的名字，在新�
   })
   check('两端联合判定：左端不漏名字 + 右端全部落地 ⇒ ok',
     land.ok, JSON.stringify({ missing: land.missing, unlanded: land.unlanded }))
-  check('右端认下了这三个接线名',
-    ['messageTargets', '_decorateOne', '_decorating'].every((n) => land.landedBindings.includes(n)),
+  check('右端认下了这五个接线名',
+    ['messageTargets', '_decorateOne', '_decorating', '_muvDecorPending', 'scheduleDecorate']
+      .every((n) => land.landedBindings.includes(n)),
     JSON.stringify(land.landedBindings))
   check('右端没把 import 的**导出名**误当本地名', !land.landedBindings.includes('sampling'))
 
@@ -384,7 +392,7 @@ console.log('\n【十三】两种 EOL 形态（CI 是 LF、Windows 普通 clone 
     SRC.length + ' -> ' + CRLF.length)
 
   // ★ 归一化是**有效变换**，不是空操作 —— 否则"修好了"是假的
-  const needle = '} finally {\n            _decorating = false\n          }'
+  const needle = '} finally {\n            _decorating = false\n'
   check('CRLF 原文里该 needle 命中 0 次（⇒ 不归一化真的会红）',
     CRLF.split(needle).length - 1 === 0)
   check('归一化之后命中 1 次（⇒ 归一化真的在做事）',
@@ -406,8 +414,9 @@ console.log('\n【十三】两种 EOL 形态（CI 是 LF、Windows 普通 clone 
   const grp = MIGRATION_SETS[3]
   const tgt = [
     "import { messageTargets } from './sampling.js'",
-    "import { _decorateOne } from './one.js'",
+    "import { _decorateOne, scheduleDecorate } from './one.js'",
     'let _decorating = false',
+    'let _muvDecorPending = false',
   ].join('\r\n')
   const land = landingReport({
     src: CRLF, entries: grp.entries, provided: new Set(grp.required), targetSrc: tgt,
@@ -415,7 +424,8 @@ console.log('\n【十三】两种 EOL 形态（CI 是 LF、Windows 普通 clone 
   check('CRLF 形态下两端联合判定照常 ok（左端 + 右端都归一化了）', land.ok,
     JSON.stringify({ missing: land.missing, unlanded: land.unlanded }))
   check('CRLF 形态下 targetBindings 照常认出绑定',
-    ['messageTargets', '_decorateOne', '_decorating'].every((n) => targetBindings(tgt).has(n)),
+    ['messageTargets', '_decorateOne', '_decorating', '_muvDecorPending', 'scheduleDecorate']
+      .every((n) => targetBindings(tgt).has(n)),
     JSON.stringify([...targetBindings(tgt)].sort()))
 
   // 最要紧的一处：在 CRLF 形态的目标模块上做一次受控变异，右端判据必须跟着变

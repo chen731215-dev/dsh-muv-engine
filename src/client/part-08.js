@@ -6,7 +6,7 @@
         // 加了 era_data 之后最后一块可能只是个消息键，指纹会退化成"同一会话同长度就一样"。
         var joined = blocks.join('\n')
         var sig = sid + '|' + joined.length + '|' + joined.slice(0, 80) + '|' + joined.slice(-80)
-        if (muvVarFedSig[sig]) return
+        if (muvVarFedSig[sig]) { muvEraPushSoon(); return }
         muvVarFedSig[sig] = 1
         var keys = Object.keys(muvVarFedSig)
         if (keys.length > 512) { for (var d = 0; d < 128; d++) delete muvVarFedSig[keys[d]] }
@@ -77,6 +77,31 @@
       for (var i = 0; i < delays.length; i++) {
         setTimeout(muvEraPushNow, delays[i])
       }
+    }
+
+    /**
+     * **去抖重推**（2026-10-17，同一会话里"有时有数据、有时全未知"的修复）。
+     *
+     * 症状：切走再切回，同一楼的状态栏有时是具体值、有时全「未知」；再切几次又好了。
+     *
+     * 根因：切回会话时 React 会**重建所有 card iframe**，而变量回灌有去重账本
+     * （`muvVarFedSig`）—— 同一批消息第二次进来直接 `return`，**不再 schedule push**。
+     * 新帧于是收不到 `era:getCurrentVars`，卡就停在模板的「未知」初值上；偶尔
+     * TTL 到期/别的路径触发一次 push，才又变成具体值。
+     *
+     * 所以：帧被重建后必须**无条件补推一次**，但每次装饰会遍历几十条楼，不能每条
+     * 都排三次定时器 ⇒ 这里做 400ms 去抖，一轮装饰最多补一次。
+     * @returns {void}
+     */
+    var muvEraSoonTimer = 0
+    function muvEraPushSoon() {
+      try {
+        if (muvEraSoonTimer) return
+        muvEraSoonTimer = setTimeout(function () {
+          muvEraSoonTimer = 0
+          try { muvEraPushNow() } catch (_) {}
+        }, 400)
+      } catch (_) {}
     }
 
     /** 回灌去重账本（`会话|长度|块头 120 字` → 1）。声明口径同 muvHelloAt。@type {Object<string, number>} */

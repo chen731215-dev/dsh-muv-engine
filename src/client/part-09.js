@@ -172,6 +172,40 @@
     }
 
     /**
+     * **自动状态栏**（2026-10-17）：正文里只有 `_.set` 变量、没有任何状态栏载体时，
+     * 用内置模板补一张。
+     *
+     * 为什么需要：社区卡里有一大类（黄金庭院、Reborn 系改卡…）的世界书只教模型写
+     * `_.set(...)`，并不强制输出 `<StatusPlaceHolderImpl/>` / `<Status_block>`。
+     * 模型偶尔漏掉时，这一轮就**完全没有状态栏**；下一轮又有了 —— 用户感知就是
+     * 「有时候显示有时候不显示」「要切会话才渲染」。变量本来就是有结构的，补一张
+     * 内置状态栏的成本远低于让用户对着空白猜。
+     *
+     * 判据全部是「已有就不动」：占位符 / `<Status_block>` / 卡皮肤 / 文本级状态栏 /
+     * 卡 iframe / 内置 `.muv-sb` 任一存在即原样返回。`buildDefaultStatusBar` 没有
+     * 可展示变量时返回空串，这里也就不会加任何东西。
+     * @param {string} result 已做完级联的产物
+     * @param {string} sourceText 本条正文（取 `_.set` 变量用）
+     * @param {string} sbHtml 卡自带状态栏 HTML（有就认为卡自己有载体）
+     * @returns {string}
+     */
+    function muvAutoStatusBar(result, sourceText, sbHtml) {
+      try {
+        var s = String(result == null ? '' : result)
+        if (!s) return result
+        if (STATUS_PH_TEST.test(s)) return result
+        if (/<\s*Status_block\s*>/i.test(s)) return result
+        if (s.indexOf('muv-statusbar-wrap') >= 0) return result
+        if (/<iframe[^>]*muv-iframe/i.test(s)) return result
+        if (/class="muv-sb[ "]/i.test(s)) return result
+        var bar = buildDefaultStatusBar(sourceText)
+        if (!bar) return result
+        ensureStatusCss()
+        return bar + s
+      } catch (_) { return result }
+    }
+
+    /**
      * 把「状态折叠块」的正文交给服务端既有的 loose 级联渲染。
      *
      * 为什么不在这里自己解析：`<details><summary>[角色状态]</summary>```- 😃 名字…```</details>`
@@ -344,11 +378,19 @@
      *   字符串，键里不带 `|fp` 就会互相命中（封面楼的满宽产物被后续楼复用，或反之）。
      *   详见 `muvFullpageFloor` 的长注释。
      *
-     * ★ **变量修订号 `|v<n>` 也进键**（2026-09-25）：缓存边界从"只缓存 iframe 楼"
-     *   放宽到"也缓存状态栏楼"（用户实测反馈：切回会话状态栏要重新渲染）。产物虽是
-     *   纯函数，但状态栏的**观感**依赖变量，所以键里带一道变量维度保险 ——
-     *   任何真实变量变更都会 `muvVarRevBump()`，把带变量的产物一次作废。
-     *   同会话内数值不变 ⇒ 切走切回仍是同一键 ⇒ 命中（这正是要的秒开）。
+     * ★ **变量修订号 `|v<n>` 默认不进键**（2026-10-17 改，原为 2026-09-25 的"保险"）：
+     *   加它的理由是"状态栏的观感依赖变量，变量一变就该作废"。但**产物链是纯函数**——
+     *   `/apply-regex-card`、`/render-status` 都不读会话变量（见 lib/index.js 两个
+     *   handler），客户端里的第 5 级模板 `buildDefaultStatusBar(text)` 也只用**本条
+     *   正文**里的赋值。真正随变量走的只有卡 iframe 的**运行时**（era postMessage），
+     *   跟缓存里的外壳无关。
+     *   代价却非常实在：`muvFeedVariables` 每轮都会 `muvVarRevBump()` 一次 ⇒ **每生成
+     *   一条新消息，该会话所有老楼的缓存键集体 +1 ⇒ 全部 miss**。于是"切走再切回"
+     *   每次都把整屏重算一遍（用户实测反馈的"切回来要重新渲染"就是它）。
+     *   ⇒ 默认不带 `|v`：同会话内正文不变 ⇒ 键不变 ⇒ 切回命中 ⇒ 秒开。
+     *   真遇到"缓存把变量冻住"的卡，可临时在 Console 里设
+     *   `window.__MUV_CACHE_STRICT_REV = true` 再把那一楼刷一次（键里重新带 `|v`）。
+     *   修订号本身保留（`__muvDump()` 会带出来），只是不再参与默认键。
      *
      * ★ 会话 id 只认**权威**来源（会话服务 / URL）：`currentSessionId()` 的第三档
      *   DOM 属性兜底在切换瞬间是**旧会话**的值，拿它当键会把 A 会话的产物错记到
@@ -375,10 +417,13 @@
         if (!sid) return null
         var fp = false
         try { fp = muvFullpageFloorNow() === true } catch (_) {}
-        var vr = 0
-        try { vr = muvVarRevOf(sid) } catch (_) {}
+        // 严格档（默认关，见函数上方注释）：只有显式打开才把变量修订号塞进键。
+        var vrSeg = ''
+        try {
+          if (window.__MUV_CACHE_STRICT_REV === true) vrSeg = '|v' + muvVarRevOf(sid)
+        } catch (_) {}
         var d = (typeof depth === 'number' && isFinite(depth)) ? depth : 0
-        return sid + '|' + muvCompatKey(text) + '|d' + d + (fp ? '|fp' : '') + '|v' + vr
+        return sid + '|' + muvCompatKey(text) + '|d' + d + (fp ? '|fp' : '') + vrSeg
       } catch (_) { return null }
     }
 
@@ -592,6 +637,12 @@
             //    命中时把正文开头那串裸 `[键:值]` 换成状态栏卡片、把 `<details>` 状态
             //    折叠块换成折叠 UI（内容仍出自既有 loose 级联）。
             result = await muvApplyTextStatus(result, muvStatusAlreadyRendered(result, sbHtml))
+            // ★ 2026-10-17：**自动状态栏兜底**。模型只写了 `_.set` 变量、没给占位符 /
+            //   `<Status_block>`（黄金庭院这类卡常见）⇒ 以前这一轮完全没有状态栏，
+            //   用户看到「这轮有、下轮没有」「要切会话才渲染」。只要正文里有可展示的
+            //   `_.set` 变量就补一张内置状态栏；已有任何载体（占位符 / 卡皮肤 / 文本级 /
+            //   整页 iframe）一律不动。
+            result = muvAutoStatusBar(result, regText, sbHtml)
             // 卡里「主页 / 正文美化」这类正则产出的是被 markdown 围栏包住的整页 HTML，
             // 必须在这里换成 iframe，否则 DSH 会把它当代码块渲染成几十 KB 文本。
             return muvDecorStore(muvCk, text, renderFencedHtml(result))
@@ -641,7 +692,14 @@
       // 不做任何替换 ⇒ markdown 完好、选项照旧出现）。
       // 文本被改过（『📅…|⏰…|📍…』表头被折成一行）时仍然必须交回新文本 —— 那是
       // 状态栏那一路，属于下一类要处理的迁移，本次不动。
-      if (normalized === text) { muvBeautifyTrace('exit-unchanged', opts && opts.depth, 'len=' + muvTrimmedLen); return normalized }
+      if (normalized === text) {
+        // ★ 2026-10-17：文本没被改写、但正文里有 `_.set` 变量 ⇒ 补一张自动状态栏
+        //   （否则这一轮又是空白；见 muvAutoStatusBar 的长注释）。
+        var autoBar = muvAutoStatusBar(normalized, normalized, '')
+        if (autoBar !== normalized) return muvDecorStore(muvCk, text, renderFencedHtml(autoBar))
+        muvBeautifyTrace('exit-unchanged', opts && opts.depth, 'len=' + muvTrimmedLen)
+        return normalized
+      }
       return muvDecorStore(muvCk, text, renderFencedHtml(replaceChoices(normalized)))
     }
 
@@ -652,6 +710,15 @@
      */
     function muvBeautifyTrace(tag, depth, detail) {
       try { console.debug('[muv-trace]', tag, 'depth=' + depth, detail) } catch (_) {}
+      // ★ 同时进环形缓冲（2026-10-17）：Console 的 verbose 默认看不见，而"为什么这一楼
+      //   没转"恰恰要看这条链。`__muvDump()` 会把最近 80 条一起打出来。
+      try {
+        var ring = window.__MUV_TRACE__
+        if (ring && typeof ring.push === 'function') {
+          ring.push({ t: Date.now() % 1000000, k: 'beautify.' + tag, d: depth, x: String(detail == null ? '' : detail).slice(0, 80) })
+          while (ring.length > 600) ring.shift()
+        }
+      } catch (_) {}
     }
 
     /**

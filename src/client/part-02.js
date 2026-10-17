@@ -10,6 +10,13 @@
     let _vrObs = null
     let _muvMsgObs = null
     let _muvSweepTimer = null
+    // ★ 「生成完就转」的三个计时器/旗标（2026-10-17）：也放在工厂作用域，
+    //   让 teardown 能真正清掉 —— 否则插件重载后旧的 setTimeout 仍会在新实例里触发。
+    let _muvDecorPending = false
+    let _muvDecorIdleTimer = 0
+    let _muvDecorTails = []
+    // ★ 「裸文本自愈」的 1s 扫摆（2026-10-17）：同样是工厂作用域，teardown 要能清掉。
+    let _muvWatchTimer = null
     // Decoration entry points published for the tavern panel. Assigned inside
     // the startup IIFE (where the DOM helpers live) and called through here.
     let _decorateOneHook = null
@@ -84,6 +91,14 @@
       + '.muv-sb-details{margin:4px 0}'
       + '.muv-sb-details>summary{cursor:pointer;font-size:11px;letter-spacing:.6px;opacity:.6;font-weight:600;padding:3px 0}'
       + '.muv-sb-details[open]>summary{margin-bottom:2px}'
+      // ★ 2026-10-17：`<UpdateVariable>` 的 JSONPatch 状态卡（`muvVarStatusCard`）。
+      //   与内置状态栏同一套 `.muv-sb*`，只补三件它没有的：容器留白、delta 的涨跌色、
+      //   以及长文本的换行（"足部特征描述"这类字段一行放不下，必须允许折行）。
+      + '.muv-varcard{margin:10px 0}'
+      + '.muv-varcard .muv-varedit,.muv-varcard .muv-jsonpatch{margin-top:6px}'
+      + '.muv-sb-vars .muv-sb-line span{word-break:break-word}'
+      + '.muv-sb-delta{color:#10b981;font-weight:600;font-variant-numeric:tabular-nums}'
+      + '.muv-sb-delta[data-neg]{color:#ef4444}'
 
     /** 按顶层逗号切分参数（跳过引号内的逗号）。 */
 
@@ -406,6 +421,30 @@
         }
         if (svc && svc.list && typeof svc.list.getSnapshot === 'function') {
           var snap = svc.list.getSnapshot()
+          // ★★ 2026-10-17（串台真根）：**DSH 的列表快照没有 `current` 字段** ——
+          //   实测初始形状是 `{ids, byId, phase, projectionsBySession}`。旧代码读
+          //   `snap.current` 永远 undefined ⇒ 退化到 URL（dsh-app:// 不带 id）⇒
+          //   再退化到 `data-dsh-current-session`（切换后仍是**旧值**）⇒ 装饰链拿着
+          //   **上一场的 session id** 去取卡 ⇒ 上一张卡的状态栏被画进当前会话。
+          //   这与酒馆客户端 `dshMainViewSessionId()` 是同一处修正，别只修一半：
+          //   权威信号是列表行上的 `retainedBy.mainView > 0`（DSH 自己切会话时更新，
+          //   空白新会话也有 id）。
+          var rows = snap && snap.byId
+          if (rows) {
+            var keys = Object.keys(rows)
+            for (var ri = 0; ri < keys.length; ri++) {
+              var row = rows[keys[ri]]
+              if (!row) continue
+              var rb = row.retainedBy || {}
+              if (!((rb.mainView || 0) > 0)) continue
+              var rid = String(row.id || keys[ri] || '')
+              if (!rid) continue
+              var mid = /^(session-)?[a-f0-9-]{20,}$/i.test(rid) ? ('session-' + rid.replace(/^session-/, '')) : rid
+              try { document.documentElement.setAttribute('data-dsh-current-session', mid) } catch (_) {}
+              return mid
+            }
+          }
+          // 兼容：万一将来 DSH 在快照上补了 current 字段
           var cur = snap && snap.current
           if (cur && /^(session-)?[a-f0-9-]{20,}$/i.test(String(cur))) {
             var sid = 'session-' + String(cur).replace(/^session-/, '')
@@ -560,19 +599,21 @@
             return null
           }
         } else {
-          // 认不出会话（与"判定为非酒馆"是两回事）：退回面板当前预设。
+          // ★★ 2026-10-17（用户实测，串台根治）：**认不出会话 ⇒ 不取卡、不美化**。
           //
-          // ★ 这一档是**有意的取舍**，不是漏掉：`verify-tavern-card-locator.mjs`
-          //   的 B1/B2/D2 把"认不出会话时必须带 presetId 兜底"钉死了（那条判据当时的
-          //   理由是：空参请求 ⇒ 服务端 default ⇒ 剧本 0 条 ⇒ 正文裸奔）。
-          //   代价必须写清楚：这个值来自酒馆面板的 `dataset.presetId` /
-          //   `localStorage['dsh-tavern-active-preset']`，**切换会话后可能仍是上一个
-          //   会话的预设**。所以只要**能认出会话**，就绝不走这里 —— 那条路径已经改成
-          //   先问 `/api/tavern/current-session`（读会话日志）再带该会话自己的
-          //   `presetId + preferPreset=1`（见上面 `if (sid)` 分支）。
-          //   净效果：正常的酒馆会话不再串台；只有"连会话都认不出"这一档会退回旧行为。
-          var pid = currentPresetId()
-          if (pid) params.push('presetId=' + encodeURIComponent(pid))
+          //   旧行为：退回面板「当前预设」（`localStorage['dsh-tavern-active-preset']`）。
+          //   面板最后点过哪张卡，就会用那张卡的剧本改写**这条会话**的正文 —— 用户看到的
+          //   「另一场的状态栏跑到我会话里」「有时全是未知、有时又有具体值」就是这条：
+          //   卡的模板被照出来了，但这条会话没有对应的 `_.set` 变量 ⇒ 字段全是"未知"；
+          //   偶尔正文里恰好带着变量块 ⇒ 又变成具体值。
+          //
+          //   一次不美化是可恢复的（下一条消息会重新问权威来源）；用错卡照出来的东西
+          //   不可恢复。所以这一档必须 fail-closed，与酒馆侧「只认顶部预设」对齐。
+          muvCardFetchInconclusive = true
+          try {
+            console.warn('[muv] 认不出会话 id：本次不取卡、不美化（fail-closed，避免把别场的卡画进来）')
+          } catch (_) {}
+          return null
         }
         var qs = params.length ? '?' + params.join('&') : ''
         // ★ 定位留痕：不许静默。一个定位参数都没有时这一请求必然落到服务端默认预设，
@@ -594,6 +635,49 @@
       } catch (_) {
         muvCardFetchInconclusive = true // ★ 网络失败 = 未决，允许重试
         return null
+      }
+    }
+
+    /**
+     * **用卡的 initvar 给空会话播种**（2026-10-17）。
+     *
+     * 真机症状：状态栏只出现本会话"被写过"的那几个角色，其余角色整块消失
+     * （卡的状态栏是按 `stat_data` 的 key 渲染的，没有 key 就没有卡）。
+     *
+     * 根因：ST 的会话在**开场白**里带 `<UpdateVariable>`，把全部角色/系统变量初始化一遍；
+     * 而 DSH 这边可能用自定义开场（或开场白没走回灌），于是只有模型后续 `_.set`
+     * 提到的角色存在。卡自己的 `initvarData` 就带着完整初值（`/api/muv-table/tavern-card`
+     * 直接返回），用它补种即可。
+     *
+     * 口径（宁可少做）：
+     *   · 每个会话只种一次；
+     *   · **只在服务端状态为空时种** —— 已有值的会话绝不能被初值覆盖；
+     *   · 种完清 era 缓存并补推一次，卡马上拿到完整角色表。
+     * @returns {Promise<void>}
+     */
+    var muvSeededSid = Object.create(null)
+    async function muvEnsureSeeded() {
+      var sid = ''
+      try { sid = currentSessionId() } catch (_) { sid = '' }
+      if (!sid || muvSeededSid[sid]) return
+      muvSeededSid[sid] = 1
+      try {
+        const rs = await fetch('/api/muv-engine/state?sessionId=' + encodeURIComponent(sid))
+        const state = await rs.json().catch(function () { return null })
+        const cur = state && state.state && state.state.data
+        if (cur && typeof cur === 'object' && Object.keys(cur).length) return
+        const card = await fetchTavernCard()
+        const init = card && (card.initvarData || card.initvar)
+        if (!init || typeof init !== 'object' || !Object.keys(init).length) return
+        await fetch('/api/muv-engine/state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: sid, data: init, merge: true })
+        })
+        try { muvEraVars.data = null } catch (_) {}
+        try { muvEraSchedulePush() } catch (_) {}
+      } catch (_) {
+        delete muvSeededSid[sid]
       }
     }
 

@@ -161,6 +161,233 @@
       }
 
       /**
+       * 从 `<UpdateVariable>` / `<JSONPatch>` 的文本里取出 RFC6902 操作数组。
+       *
+       * 两种输入形态都要吃：
+       *   ① **元素形态**：`el.querySelector('jsonpatch').textContent` 就是纯数组；
+       *   ② **整块文本**：`<UpdateVariable>` 里还混着 `<Analysis>` 的英文分析行 ⇒
+       *      退而取「第一段 `[…]`」。
+       * 解析失败返回 null（调用方退回"原样折叠"，绝不吞内容）。
+       * @param {string} text
+       * @returns {Array<object>|null}
+       */
+      function muvVarPatchOps(text) {
+        var s = String(text == null ? '' : text).trim()
+        if (!s) return null
+        var cands = []
+        if (s.charAt(0) === '[') cands.push(s)
+        // ★ 优先取「`[` 后面紧跟 `{`」的那一段（`<Analysis>` 里也常出现方括号，
+        //   如 `[calculate time passed]` —— 直接从第一个 `[` 扫到最后一个 `]`
+        //   会把分析文字一起吞进来、JSON.parse 必失败，于是又退回折叠）。
+        var start = -1
+        var idx = s.lastIndexOf('[')
+        while (idx >= 0) {
+          var rest = s.slice(idx + 1).replace(/^\s+/, '')
+          if (rest.charAt(0) === '{') { start = idx; break }
+          // ★ `lastIndexOf('[', -1)` 会被**夹到 0**（不是返回 -1）⇒ 不显式跳出就是死循环
+          //   （真机复现：`'[]'` 卡死整条装饰链）。这一行不能省。
+          if (idx === 0) break
+          idx = s.lastIndexOf('[', idx - 1)
+        }
+        if (start >= 0) {
+          var endAt = s.lastIndexOf(']')
+          if (endAt > start) cands.push(s.slice(start, endAt + 1))
+        }
+        var m = /\[[\s\S]*\]/.exec(s)
+        if (m && m[0] !== s) cands.push(m[0])
+        for (var i = 0; i < cands.length; i++) {
+          var arr = null
+          try { arr = JSON.parse(cands[i]) } catch (_) {}
+          if (!arr) {
+            // 模型偶尔写尾逗号（`…}, ]`）。只做这一层最保守的修，不猜结构 ——
+            // 猜错的代价是把正文当 JSON 显示，比"折起来给原文"更糟。
+            try { arr = JSON.parse(cands[i].replace(/,\s*([\]}])/g, '$1')) } catch (_) {}
+          }
+          if (arr && Object.prototype.toString.call(arr) === '[object Array]') return arr
+        }
+        return null
+      }
+
+      /** 变量值 → 一行可读文本（null / 布尔 / 数字 / 对象都收）。 */
+      function muvVarValueText(v, op) {
+        if (v === undefined) return op === 'remove' ? '（已移除）' : ''
+        if (v === null) return '—'
+        var t = typeof v
+        if (t === 'number') return String(v)
+        if (t === 'boolean') return v ? '是' : '否'
+        if (t === 'object') {
+          try { return JSON.stringify(v) } catch (_) { return '' }
+        }
+        return String(v)
+      }
+
+      /** 超长截断（状态栏里"足部特征描述"这类字段动辄上百字，整段铺开会淹没数值）。 */
+      function muvVarClip(s, max) {
+        s = String(s == null ? '' : s)
+        return s.length <= max ? s : s.slice(0, max - 1) + '…'
+      }
+
+      /**
+       * **把 `<UpdateVariable>` 的 JSONPatch 渲染成一张可读的状态卡**（2026-10-17）。
+       *
+       * 为什么要有它：这类消息（世界书只要求输出变量块、没有角色卡状态栏模板）之前
+       * 只剩一个「🔧 变量更新」折叠行 —— 用户看到的"状态栏"就是一行标题，展开是一坨
+       * 原始 JSON（用户原话：「他只有这一行，展开就是一堆代码」）。变量本身是**有结构**
+       * 的（路径 = 分组 / 段 / 字段），完全可以按路径分组铺成状态栏。
+       *
+       * 布局（全部复用内置状态栏 `.muv-sb*`，与 `STATUS_PLACEHOLDER` 那条路同一套视觉）：
+       *   · 顶部一行：时间 / 日期 / 天气 / 地点 / 位置 / 季节（各取第一条，带图标）
+       *   · 分组：`/世界与系统/x` ⇒ 「世界与系统」；`/NPC状态/岁岁/x` ⇒ 「NPC状态 · 岁岁」
+       *   · 行：`字段名  值`；`delta` 显示成 `+40` / `-3`
+       *   · 长文本截断到 140 字（`title` 里留全文）
+       *
+       * 边界：解析不出数组、或一条可展示字段都没有 ⇒ 返回 null（调用方退回原折叠）。
+       * `_` 开头的只读字段按 MVU 约定不展示。
+       * @param {string} text
+       * @returns {Element|null}
+       */
+      function muvVarStatusCard(text) {
+        var ops = muvVarPatchOps(text)
+        if (!ops || !ops.length) return null
+        var chipIcons = { '时间': '🕒', '日期': '📅', '天气': '🌤️', '地点': '📍', '位置': '📍', '季节': '🍃' }
+        var chips = []
+        var chipSeen = {}
+        var groups = []
+        var byName = {}
+        var rows = 0
+
+        /** 往某个分组里塞一行（超过 120 行就停，防止一条消息把面板撑成书）。 */
+        function addRow(gname, label, value, kind, full) {
+          if (rows >= 120) return
+          var g = byName[gname]
+          if (!g) {
+            g = { name: gname, items: [] }
+            byName[gname] = g
+            groups.push(g)
+          }
+          g.items.push({ label: label, value: value, kind: kind, full: full })
+          rows++
+        }
+
+        for (var i = 0; i < ops.length && rows < 120; i++) {
+          var op = ops[i]
+          if (!op || typeof op.path !== 'string' || !op.path) continue
+          var parts = op.path.split('/')
+          var clean = []
+          for (var p = 0; p < parts.length; p++) if (parts[p]) clean.push(parts[p])
+          if (!clean.length) continue
+          var hidden = false
+          for (var h = 0; h < clean.length; h++) if (clean[h].charAt(0) === '_') hidden = true
+          if (hidden) continue
+          var leaf = clean[clean.length - 1]
+          var kind = String(op.op || (op.value === undefined ? 'remove' : 'replace'))
+          var raw = op.value
+          // ★ 值是对象（`insert /背包物品/趾甲 {数量,类型,描述}` 这种）⇒ **对象自己当分组**，
+          //   字段逐行铺开。不展开的话用户看到的是一行 `{ "数量": 5, … }` —— 等于把
+          //   "展开就是一堆代码"从折叠里搬到面板里，白改。
+          if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+            var okeys = Object.keys(raw)
+            if (!okeys.length) continue          // 空对象（`当前岛屿影响: {}`）纯噪声
+            var og = clean.join(' · ')
+            for (var oi = 0; oi < okeys.length; oi++) {
+              var ok = okeys[oi]
+              if (ok.charAt(0) === '_') continue
+              var ov = raw[ok]
+              if (ov && typeof ov === 'object') {
+                try { ov = JSON.stringify(ov) } catch (_) { ov = '' }
+              }
+              addRow(og, ok, muvVarValueText(ov, 'replace'), 'replace', String(ov))
+            }
+            continue
+          }
+          var val = muvVarValueText(raw, kind)
+          if (kind === 'delta') {
+            var n = Number(raw)
+            val = (isFinite(n) && n > 0 ? '+' : '') + String(raw)
+          }
+          // 顶部速览：只认「世界与系统 / 系统 / 环境」这一层（`/NPC状态/xx/当前所在位置`
+          // 里的"位置"不该跑到顶上去），每个字段取第一条。
+          var isWorld = clean.length === 2 && /世界|系统|环境/.test(clean[0])
+          var chipKey = ''
+          if (isWorld) {
+            for (var ck in chipIcons) {
+              if (leaf.indexOf(ck) >= 0) { chipKey = ck; break }
+            }
+          }
+          if (chipKey && !chipSeen[chipKey] && kind !== 'remove') {
+            chipSeen[chipKey] = 1
+            chips.push({ icon: chipIcons[chipKey], text: muvVarClip(val, 48) })
+            continue
+          }
+          // 数组下标（`/…/累计获得的称号/-`、`/…/0`）不是字段名 ⇒ 标签写成「新增」，
+          // 分组退一级（否则会出现一行 `<b>-</b> 评选场·第3组第一`）。
+          var isIndex = leaf === '-' || /^\d+$/.test(leaf)
+          var gparts = clean.slice(0, -1)
+          var gname = gparts.join(' · ') || '变量'
+          addRow(gname, isIndex ? '新增' : leaf, val, kind, String(raw == null ? '' : raw))
+        }
+        if (!chips.length && !rows) return null
+        try { ensureStatusCss() } catch (_) {}
+        var card = document.createElement('div')
+        card.className = 'muv-sb muv-sb-vars'
+        if (chips.length) {
+          var hd = document.createElement('div')
+          hd.className = 'muv-sb-hd'
+          for (var ci = 0; ci < chips.length; ci++) {
+            var sp = document.createElement('span')
+            sp.textContent = chips[ci].icon + ' ' + chips[ci].text
+            hd.appendChild(sp)
+          }
+          card.appendChild(hd)
+        }
+        for (var gi = 0; gi < groups.length; gi++) {
+          var sect = document.createElement('div')
+          sect.className = 'muv-sb-sect'
+          sect.textContent = groups[gi].name
+          card.appendChild(sect)
+          var sub = document.createElement('div')
+          sub.className = 'muv-sb-sub'
+          for (var it = 0; it < groups[gi].items.length; it++) {
+            var item = groups[gi].items[it]
+            var row = document.createElement('div')
+            row.className = 'muv-sb-line'
+            var b = document.createElement('b')
+            b.textContent = item.label
+            row.appendChild(b)
+            var span = document.createElement('span')
+            span.textContent = muvVarClip(item.value, 140)
+            if (item.kind === 'delta') {
+              span.className = 'muv-sb-delta'
+              if (String(item.value).charAt(0) === '-') span.setAttribute('data-neg', '1')
+            }
+            if (item.full.length > 140) row.setAttribute('title', item.full)
+            row.appendChild(span)
+            sub.appendChild(row)
+          }
+          card.appendChild(sub)
+        }
+        return card
+      }
+
+      /**
+       * 「状态卡 + 原始 JSON 折叠」的组合块。解析不出 patch 时返回 null，
+       * 调用方退回原来的"整块折叠"（行为与改动前一致）。
+       * @param {string} text
+       * @param {string} foldCls
+       * @param {string} foldTitle
+       * @returns {Element|null}
+       */
+      function muvVarBlockCard(text, foldCls, foldTitle) {
+        var card = muvVarStatusCard(text)
+        if (!card) return null
+        var wrap = document.createElement('div')
+        wrap.className = 'muv-varcard'
+        wrap.appendChild(card)
+        wrap.appendChild(muvDetailsBlock(foldCls, foldTitle, String(text == null ? '' : text).trim(), 'pre'))
+        return wrap
+      }
+
+      /**
        * 变量块 / 推演块 / 摘要块的 DOM 渲染（第三类）。
        *
        * 原生路径上这些标签**一个渲染器都没有**（只有酒馆路径的 `_tavernRenderTags` 有），
@@ -193,13 +420,21 @@
           var etag = String(el.tagName || '').toLowerCase()
           var block = null
           if (etag === 'updatevariable' || etag === 'variableedit' || etag === 'variableinsert') {
-            // 整块内容（含嵌套的 Analysis/JSONPatch 文本）收进折叠卡 —— 与文本形态的
-            // "JSON 解析不出就原样展示"同一口径；标签名作为元素时不占文本，无需剔除
-            block = muvDetailsBlock('muv-varedit', '🔧 变量更新', el.textContent, 'pre')
+            // ★ 2026-10-17：先把 `<JSONPatch>` 单独取出来（外层一换，内层就没了），
+            //   能解析成 patch 就渲染**状态卡**（用户要的"状态栏"），原始 JSON 另折一层；
+            //   解析不出就退回整块折叠（老行为，内容一个字不丢）。
+            var jpText = ''
+            try {
+              var jpe = el.querySelector('jsonpatch')
+              if (jpe) jpText = String(jpe.textContent || '')
+            } catch (_) {}
+            block = muvVarBlockCard(jpText || el.textContent, 'muv-varedit', '🔧 原始变量') ||
+              muvDetailsBlock('muv-varedit', '🔧 变量更新', el.textContent, 'pre')
           } else if (etag === 'variablethink') {
             block = muvDetailsBlock('muv-varthink', '💭 变量推演', String(el.textContent || '').trim(), 'div')
           } else if (etag === 'jsonpatch') {
-            block = muvDetailsBlock('muv-jsonpatch', '🔧 变量补丁', String(el.textContent || '').trim(), 'pre')
+            block = muvVarBlockCard(String(el.textContent || ''), 'muv-jsonpatch', '🔧 原始补丁') ||
+              muvDetailsBlock('muv-jsonpatch', '🔧 变量补丁', String(el.textContent || '').trim(), 'pre')
           } else if (etag === 'analysis') {
             block = 'remove' // 给模型的思考痕迹，不给用户看（与 MUV_TAG_RULES 的 remove 同语义）
           }
@@ -216,7 +451,8 @@
           var pretty = raw
           // 能解析成 JSON 就美化缩进（与酒馆路径一致），否则原样展示
           try { pretty = JSON.stringify(JSON.parse(raw), null, 2) } catch (_) {}
-          return muvDetailsBlock('muv-varedit', '🔧 变量更新', pretty, 'pre')
+          return muvVarBlockCard(raw, 'muv-varedit', '🔧 原始变量') ||
+            muvDetailsBlock('muv-varedit', '🔧 变量更新', pretty, 'pre')
         })
         n += muvReplaceTagBlocks(root, /<VariableThink>([\s\S]*?)<\/VariableThink>/gi, function (hit) {
           return muvDetailsBlock('muv-varthink', '💭 变量推演', String(hit[1] || '').trim(), 'div')

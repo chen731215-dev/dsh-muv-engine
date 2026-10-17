@@ -495,7 +495,10 @@ check('排除 display:none / visibility:hidden / 零尺寸元素',
 check('每个元素取 max(rect.height, scrollHeight)（兜住被 overflow 裁掉的子元素）',
   boot.includes('Math.max(r.height,el.scrollHeight'))
 check('★ 包围盒量不出来时不报数（body.scrollHeight 视口回声兜底已被 §15.3 禁用）',
-  /if\(e>0\)window\.parent\.postMessage/.test(boot) && !boot.includes('document.body.scrollHeight'))
+  // 2026-10-17：postMessage 的目标从 `window.parent` 改成
+  // `(window.__muvRealParent||window.parent)`（父页垫片会遮住 window.parent），
+  // 判据只钉「e>0 才发、且不发 scrollHeight」，不钉接收者的拼写。
+  /if\(e>0\)[\s\S]{0,80}?postMessage/.test(boot) && !boot.includes('document.body.scrollHeight'))
 check('.muv-frame 度量不带 documentElement.scrollHeight（那是视口回显）',
   !boot.includes('document.documentElement.scrollHeight'))
 check('有 ResizeObserver + 防抖 + 定时兜底',
@@ -748,8 +751,16 @@ check('★★ _decorateOne 按 isOldestFloor 置旗标、且两处都在 finally
 check('★★ 状态栏楼也进产物缓存（接受条件含 muv-statusbar-wrap）',
   extractFunction(SRC, 'muvDecorStore').includes('muv-statusbar-wrap'),
   '状态栏楼仍被挡在缓存外 ⇒ 切回会话仍会重渲染')
-check('★★★ 缓存键含变量修订号 |v（否则缓存会把变量冻住）',
-  keySeg.includes("'|v'") && keySeg.includes('muvVarRevOf(sid)'), '缓存键缺变量维度')
+// ★★ 2026-10-17 改判：`|v` 从**默认键**里撤掉（原判据见 git 历史）。
+//   撤的理由是取证过的：产物链是纯函数（`/apply-regex-card`、`/render-status` 都不读
+//   会话变量；第 5 级模板只用本条正文）。而 `muvFeedVariables` 每轮都 bump 修订号 ⇒
+//   **每生成一条消息，该会话所有老楼的键集体 +1、全部 miss** ⇒ "切回会话"每次都整屏
+//   重算（用户实测的"切回来要重新渲染"）。保留成 opt-in 严格档，便于排查"缓存冻变量"。
+check('★★★ 缓存键默认**不带**变量修订号（否则每轮 bump 把整会话缓存作废 ⇒ 切回必重渲染）',
+  keySeg.includes('__MUV_CACHE_STRICT_REV') && !/return[^\n]*'\|v' \+ vr/.test(keySeg),
+  '默认键仍含 |v ⇒ 切回会话必然 miss')
+check('★★ 变量修订号保留成 opt-in 严格档（排查"缓存冻住变量"时能打开）',
+  /'\|v' \+ muvVarRevOf\(sid\)/.test(keySeg), '严格档没了 ⇒ 出问题时没有退路')
 check('★★ 变量修订号有 bump 口', /function muvVarRevBump\(\)/.test(SRC), '找不到 muvVarRevBump')
 check('★★★ bump 恰好挂在 2 个真实变更点上、不挂 TTL 重取',
   (SRC.match(/try \{ muvVarRevBump\(\) \}/g) || []).length === 2,
@@ -788,6 +799,74 @@ check('★★ 楼号读自 data-chat-turn',
   /function muvTurnOfEl\(/.test(SRC) && SRC.includes("getAttribute('data-chat-turn')"), '楼号读取缺失')
 check('★★ 首楼判据也用权威楼号（虚拟化下"DOM 第一个"未必最旧）',
   decorMsgsSrc.includes('turns.first'), '首楼仍按 DOM 序判')
+
+// ★★★ 「生成完就转」的触发链（2026-10-17，用户真机实测：生成完是一大坨原始
+//   `<UpdateVariable>`/`JSONPatch`，**必须切走再切回**才变成状态栏）。
+//   根因不在产物质量，而在触发：旧观察配置只有 `{childList, subtree}`，而 DSH 流式
+//   结束是**摘掉 `[data-streaming]` 属性**（属性变更不是 childList）⇒ 最后一次
+//   childList 发生在"还被 streaming 守卫挡着"的时刻，之后再无触发。
+//   下面五条各钉一条腿；删掉任一条，对应的兜底就静默失效（用户又得靠切会话）。
+const obsSrc = (() => {
+  const at = SRC.indexOf('_muvMsgObs = new MutationObserver')
+  return at >= 0 ? SRC.slice(at, at + 1400) : ''
+})()
+// ★ 只取 `observe(...)` 调用**参数块**：切片区里紧邻的注释也写着 `` `attributes: true` ``，
+//   直接对切片做 `attributes: true` 正则会被注释"白送"通过（本仓反复栽的那类假绿）。
+const observeSrc = (() => {
+  const at = SRC.indexOf('_muvMsgObs.observe(')
+  if (at < 0) return ''
+  const end = SRC.indexOf('})', at)
+  return SRC.slice(at, end > at ? end + 2 : at + 400)
+})()
+check('★★★ 消息观察器监听属性（否则「流式结束」永远不触发装饰）',
+  /attributes:\s*true/.test(observeSrc), 'observe 参数块里没有 attributes: true')
+check('★★★ 属性过滤只盯 data-streaming（全量属性观察会拖死主线程）',
+  /attributeFilter:\s*\[\s*'data-streaming'\s*\]/.test(observeSrc), '缺 attributeFilter')
+check('★★ 摘掉 data-streaming 的那一拍会立刻补扫（不是只等 3s 扫摆）',
+  obsSrc.includes('muvDecorAfterStreamEnd') && obsSrc.includes("getAttribute('data-streaming') === null"),
+  '没有"属性被摘 ⇒ 立刻装饰"这条分支')
+const afterSrc = (() => {
+  const at = SRC.indexOf('function muvDecorAfterStreamEnd')
+  return at >= 0 ? SRC.slice(at, at + 800) : ''
+})()
+check('★★ 流结束后尾随补扫 ≥2 拍（React 的收尾 commit 常晚于 rAF）',
+  /\[200,\s*800(?:,\s*2000)?\]/.test(afterSrc), '缺 200/800ms 尾随补扫')
+check('★★ 文本空闲 400ms 兜底触发（别的 DSH 版本可能没有 data-streaming）',
+  /_muvDecorIdleTimer = setTimeout\([\s\S]{0,160}?,\s*400\)/.test(SRC),
+  '缺空闲判据 ⇒ 属性形态一变就退回「切会话才转」')
+check('★★ 撞车不丢触发（装饰串行时记一拍，跑完补扫）',
+  decorMsgsSrc.includes('_muvDecorPending') && decorMsgsSrc.includes('scheduleDecorate()'),
+  'decorateMessages 撞车时仍静默 return')
+check('★ 新增计时器在 teardown 里清掉（插件重载后不许旧定时器打新实例）',
+  /clearTimeout\(_muvDecorIdleTimer\)/.test(SRC) && /_muvDecorTails\.pop\(\)/.test(SRC),
+  'cleanup 漏了新增计时器')
+// ★★★ 裸文本自愈（2026-10-17）：三路触发只保证"有事件时会转"；转完之后 DSH 的收尾
+//   commit 可能把我们写进 DOM 的状态栏重建掉，而 `data-muv-decorated` 钉在**被复用的
+//   那个正文元素**上 ⇒ 之后每一条触发（含 3s 扫摆）都在第一行被挡回。
+//   下面四条钉住"看见裸标记就撤钉重来"这条兜底，缺一条就等于把自愈关掉。
+check('★★★ 自愈扫摆存在且是 1s 一拍（不依赖任何 DSH 事件）',
+  /_muvWatchTimer = setInterval\(muvRawWatchdogTick,\s*1000\)/.test(SRC), '缺裸文本自愈扫摆')
+check('★★★ 自愈判据只认"卡会消费的标记"（不许把 <content> 这类正文标签算进去）',
+  (() => {
+    const at = SRC.indexOf('var MUV_RAW_MARKER_RE')
+    const seg = at >= 0 ? SRC.slice(at, at + 420) : ''
+    return seg.includes('UpdateVariable') && seg.includes('StatusPlaceHolderImpl') && !seg.includes('<content')
+  })(), '标记词表缺失或把正常正文标签算进去了 ⇒ 会变成每秒重跑全链')
+check('★★★ 命中裸标记时撤钉（否则 DECORATED_ATTR 把重试永久挡在外面）',
+  /if \(body\.getAttribute\(DECORATED_ATTR\) === '1'\) body\.removeAttribute\(DECORATED_ATTR\)/.test(SRC),
+  '自愈没有撤钉 ⇒ 内容被重建后永远不再转')
+check('★★ 自愈有退避上界（∞ 重试会把取卡往返烧成常态）',
+  /var MUV_RAW_BACKOFF = \[0, 1, 3, 10, 30, 60\]/.test(SRC) && SRC.includes('data-muv-raw-next'),
+  '缺退避 ⇒ 故意保留标记的卡会被无限重跑')
+check('★★ 产物落地后清自愈计数（否则下一条消息继承上一条的退避）',
+  /muvHasOwnArtifacts\(body\)\) \{\s*body\.removeAttribute\('data-muv-raw-retry'\)/.test(SRC),
+  '没有清 data-muv-raw-retry')
+// ★★★ 诊断探针（2026-10-17）：用户 Console 里要能一行拿到现场，而不是靠反复切会话猜。
+check('★★ 诊断探针：__muvDump 与 __MUV_TRACE__ 都挂到 window',
+  SRC.includes('window.__muvDump = function') && SRC.includes('window.__MUV_TRACE__ = __muvTrace'),
+  '缺诊断出口 ⇒ 排错只能靠猜')
+check('★ 诊断探针里能看到"产物链"留痕（beautify.* 进环形缓冲）',
+  SRC.includes("k: 'beautify.' + tag"), '装饰产物链没有进 trace')
 check('★ 表头折叠挂在 muvSanitizeNode 上', extractFunction(SRC, 'muvSanitizeNode').includes('muvFoldStatusHeader('))
 check('★ 表头折叠复用 normalizeStatusHeader（两条路径不各说各话）',
   extractFunction(SRC, 'muvFoldStatusHeader').includes('normalizeStatusHeader('))
@@ -886,6 +965,60 @@ check('通用块替换：决定不处理时推过这一段继续找（不是 bre
   /from = hit\.index \+ hit\[0\]\.length; continue/.test(replaceSrc))
 console.log('  NOTE 真浏览器判据（折叠卡成型 + JSON 美化 + 不解析 HTML + 无注入 + markdown 存活）')
 console.log('       在 verify-varblocks-dom.mjs。')
+
+// ── 14b. 变量状态卡（2026-10-17）────────────────────────────────────────────
+//
+// 背景（用户真机截图）：世界书只要求模型输出 `<UpdateVariable>`、没有角色卡状态栏
+// 模板的会话里，这条链的终点是一个「🔧 变量更新」折叠行 —— 用户原话「他只有这一行，
+// 展开就是一堆代码」。JSONPatch 本身是**有结构**的（路径 = 分组/字段），所以这里
+// 把它按路径铺成状态卡；解析不出就退回原折叠（一个字不丢）。
+console.log('\n[14b] 变量状态卡（JSONPatch → 可读状态栏）')
+{
+  const mkEl = (tag) => {
+    const el = {
+      tagName: String(tag).toUpperCase(), className: '', children: [], attrs: {}, _text: '',
+      appendChild(c) { this.children.push(c); return c },
+      setAttribute(k, v) { this.attrs[k] = v },
+      get textContent() { return this.children.length ? this.children.map((c) => c.textContent).join('') : this._text },
+      set textContent(v) { this._text = String(v); this.children = [] },
+    }
+    return el
+  }
+  const cardFn = new Function('document', 'ensureStatusCss',
+    [extractFunction(SRC, 'muvVarPatchOps'), extractFunction(SRC, 'muvVarValueText'),
+      extractFunction(SRC, 'muvVarClip'), extractFunction(SRC, 'muvVarStatusCard')].join('\n') +
+    '\nreturn muvVarStatusCard')(
+    { createElement: mkEl }, () => {})
+
+  const patch = JSON.stringify([
+    { op: 'replace', path: '/世界与系统/当前时间', value: '新历1024年09月04日 23:50' },
+    { op: 'replace', path: '/世界与系统/当前天气', value: '阴' },
+    { op: 'delta', path: '/攻略模式数据/玩家数据/持有金币数量', value: 40 },
+    { op: 'delta', path: '/攻略模式数据/统计记录/学期考核倒计时', value: -3 },
+    { op: 'insert', path: '/背包物品/趾甲', value: { 数量: 5, 类型: '留档物', 描述: '摆成扇形收在小碟里' } },
+    { op: 'replace', path: '/_只读/不该出现', value: 'x' },
+    { op: 'replace', path: '/世界与系统/当前岛屿影响', value: {} },
+  ])
+  const card = cardFn(patch)
+  check('★★ 能出卡（不是退回折叠）', !!card && card.className.includes('muv-sb-vars'))
+  const flat = []
+  const walk = (el) => { if (!el || !el.children) return; for (const c of el.children) { if (c.tagName) { flat.push(c); walk(c) } } }
+  walk(card)
+  const texts = flat.map((e) => e.textContent)
+  const cls = flat.map((e) => e.className || '')
+  check('★★ 顶部速览：时间/天气各取一条（带图标）',
+    texts.some((t) => t.includes('🕒')) && texts.some((t) => t.includes('🌤️')), texts.slice(0, 4).join('|'))
+  check('★★ delta 带涨跌样式（+40 绿 / -3 红）',
+    cls.filter((c) => c.includes('muv-sb-delta')).length === 2 &&
+    flat.some((e) => (e.attrs || {})['data-neg'] === '1'), JSON.stringify(cls))
+  check('★★ 对象值按字段铺开（背包/趾甲 ⇒ 数量 5，不是一行 JSON）',
+    texts.includes('数量') && texts.includes('5') && !texts.some((t) => t.includes('"数量"')),
+    texts.slice(-8).join('|'))
+  check('★★ `_` 开头的只读字段不展示', !texts.some((t) => t.includes('只读') || t.includes('不该出现')))
+  check('★ 空对象不产出空行（当前岛屿影响: {}）', !texts.some((t) => t === '{}'))
+  check('★★ 解析不出 JSON ⇒ 返回 null（调用方退回原折叠，不吞内容）',
+    cardFn('这不是 JSON') === null && cardFn('[]') === null)
+}
 
 // ── 15. 第三类之二/之三：展示类标签 + 内部块（表驱动） ────────────────────────
 //

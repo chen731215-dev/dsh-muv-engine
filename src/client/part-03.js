@@ -800,7 +800,7 @@
         //   读走就清（consume-once）—— 下一个定时/RO 触发的测量绝不会继承它，
         //   否则"测量修正"会退化成"任何测量都能一次收缩"，那正是要避免的语义漂移。
         'var mf=window.__muvHMediaFix?1:0;window.__muvHMediaFix=0;var e=extent(mf);' +
-        'if(e>0)window.parent.postMessage({__muvFrameHeight:e},"*");' +
+        'if(e>0)(window.__muvRealParent||window.parent).postMessage({__muvFrameHeight:e},"*");' +
         // ★ 注入判据用的**专属 token**（见 withFrameHeightBootstrap 的守卫注释）：
         //   它只出现在引导脚本里，卡自己的 `window.__muvH=1` 或 `__muvHello` 都**不含**它，
         //   所以"注入了几次"数这个才数得准（数 `window.__muvH=1` 会被卡自己的拷贝污染，

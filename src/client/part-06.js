@@ -46,8 +46,11 @@
         // **专属 token**，见 `withCardCompat` 的注释。卡自己写 `window.__muvCompat=1`
         // 不再能顶掉整段垫片。
         'if(window.__muvCompatOn)return;window.__muvCompatOn=1;' +
+        // ★ 2026-10-17：先把**真父页**存下来 —— 本段末尾会把 window.parent 遮成自身
+        //   （见那里的注释），之后所有宿主通信必须走这个引用。
+        'try{window.__muvRealParent=window.parent}catch(e){}' +
         'function S(v){return v==null?"":String(v)}' +
-        'function post(m){try{window.parent.postMessage(m,"*")}catch(e){}}' +
+        'function post(m){try{(window.__muvRealParent||window.parent).postMessage(m,"*")}catch(e){}}' +
         // ── 0. 首屏遮蔽的「我初始化完了」信号（2026-09-25，足控天堂主题闪烁）──────
         // 宿主给"自带初始主题属性"的卡文档起了遮蔽（`iframe.muv-iframe[data-muv-mask]`
         // 的 `opacity:0`），免得用户看到卡的**未初始化态**。足控天堂实测：
@@ -172,7 +175,7 @@
         // 没有意义；用 source 比对才是有效凭据）。
         'window.addEventListener("message",function(ev){' +
         'try{' +
-        'if(ev.source!==window.parent)return;' +
+        'if(ev.source!==(window.__muvRealParent||window.parent))return;' +
         'var d=ev.data;if(!d||typeof d!=="object")return;' +
         'if(d.__muvVH!==undefined)window.__muvVH=d.__muvVH;' +
         'if(d.type==="TH_UPDATE_VIEWPORT_HEIGHT"||d.__muvVH!==undefined)setVh(window.__muvVH);' +
@@ -740,6 +743,14 @@
         'def("waitGlobalInitialized",__wgi);}' +
         // 开工就先问一次 MVU 数据（此刻宿主可能还没预热完 ⇒ 回来后走 `__muvMvuReq` 的补齐队列）。
         'mvuReq();' +
+        // ★★ 2026-10-17（真机：jquery 抛 SecurityError ⇒ 状态栏字段全「未知」）：
+        //   给**卡脚本**看的 `parent` / `top` 指向自身。
+        //   ST 里卡页就是顶层文档，卡代码习惯用 `parent.document` / `parent.innerHeight`
+        //   找会话；我们的沙箱是不透明来源，访问真父页会抛 SecurityError，整段脚本中断。
+        //   遮成自身后，卡的探测落到自己的文档（与 ST 的"顶层"语义一致），而宿主通信
+        //   全部走上面存下的 `__muvRealParent`（post / 高度 / 事件来源判定已改）。
+        'try{Object.defineProperty(window,"parent",{configurable:true,get:function(){return window}})}catch(e){}' +
+        'try{Object.defineProperty(window,"top",{configurable:true,get:function(){return window}})}catch(e){}' +
         '})();'
     }
 

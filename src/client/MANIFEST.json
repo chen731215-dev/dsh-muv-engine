@@ -3,8 +3,8 @@
   "linesNote": "各分片 lines 之和 = 产物 split('\\n') 的长度；产物的 \\n 个数比它少 1（末行无尾随换行）。",
   "artifact": {
     "path": "lib/client.js",
-    "bytes": 563355,
-    "sha256": "962634e34ed2387147e7567d0af808c67109f174e79fb38d69f1e8c74c4e94cc"
+    "bytes": 601674,
+    "sha256": "b1610c03c27c7a2774b8195fc4d976bba0a18c3960f4a7494c05aef1d02a627b"
   },
   "modules": {
     "src/client/mod-text.js": {
@@ -94,9 +94,9 @@
       "path": "src/client/part-02.js",
       "startLine": 61,
       "endLine": 771,
-      "lines": 710,
-      "bytes": 42258,
-      "sha256": "7bde0a10ca45171fc67be2fee743016866d05986b49b5ed7ee11438c06c13d07",
+      "lines": 794,
+      "bytes": 47030,
+      "sha256": "dcab53d3e921710ec6da4eba4a88726711e0210a72e04f3bcf815146fcb5f2b0",
       "depthAtStart": 2,
       "depthAtEnd": 2
     },
@@ -115,8 +115,8 @@
       "startLine": 786,
       "endLine": 1639,
       "lines": 863,
-      "bytes": 60318,
-      "sha256": "0298253a130d0592fa4402af0cf296a59f7d3c1c8ad1b949fa2abedb61e38008",
+      "bytes": 60344,
+      "sha256": "8e3e2b789cb19b77c932131e48eb5707ae25d1dbdb1b6bdde6a528b3438da944",
       "depthAtStart": 2,
       "depthAtEnd": 2
     },
@@ -144,9 +144,9 @@
       "path": "src/client/part-06.js",
       "startLine": 2690,
       "endLine": 3663,
-      "lines": 974,
-      "bytes": 81347,
-      "sha256": "5b9f57f0debb8d14a9954a4b1721a006179d5807d974ba66fac1189b08d9daad",
+      "lines": 985,
+      "bytes": 82517,
+      "sha256": "627a86493bf1f934420d32edf26510837754665d7bf349c1fdb07329dc88fee9",
       "depthAtStart": 2,
       "depthAtEnd": 4
     },
@@ -164,9 +164,9 @@
       "path": "src/client/part-08.js",
       "startLine": 4406,
       "endLine": 5104,
-      "lines": 699,
-      "bytes": 37227,
-      "sha256": "d9abcee63790a0c0fd041f0c5bec0e036a42efbdc691b53c3b9088f89618c95b",
+      "lines": 724,
+      "bytes": 38417,
+      "sha256": "e41a0ceee900057fe73db50d783e76183ddd6e9b3a1a9ee951f3d5425e83555a",
       "depthAtStart": 4,
       "depthAtEnd": 2
     },
@@ -174,9 +174,9 @@
       "path": "src/client/part-09.js",
       "startLine": 5105,
       "endLine": 5825,
-      "lines": 789,
-      "bytes": 49147,
-      "sha256": "5993af594d6bff6a8a3cf731e1271af3f21c93fa1bce58c054cd64771ffe78f4",
+      "lines": 856,
+      "bytes": 53400,
+      "sha256": "c84c9dd0d3d64561a9f7df810cd822c7665bd31cc6af9c4e46607ec0a35bfc5a",
       "depthAtStart": 2,
       "depthAtEnd": 3
     },
@@ -204,9 +204,9 @@
       "path": "src/client/part-11.js",
       "startLine": 6584,
       "endLine": 7324,
-      "lines": 741,
-      "bytes": 50591,
-      "sha256": "2f2c006736c39b41dba2e5ceec7d5fa983aab1d13537284441c345e17898b1f1",
+      "lines": 977,
+      "bytes": 61969,
+      "sha256": "23d59746b78da4d4d194d4b08af1a99aeeb1dd6201499c85060f02d717e74ef3",
       "depthAtStart": 3,
       "depthAtEnd": 4
     },
@@ -244,9 +244,9 @@
       "path": "src/client/part-13.js",
       "startLine": 7714,
       "endLine": 8167,
-      "lines": 454,
-      "bytes": 22515,
-      "sha256": "443b4dcffe5a540215e76f47cfe758e20d14f1d66e290da8799d9be6f1e36d30",
+      "lines": 465,
+      "bytes": 23414,
+      "sha256": "f24b7e5b7bc0b3e77dbe5a1d335e4de83ac9247a03b5627c9915cd51f56d41ef",
       "depthAtStart": 4,
       "depthAtEnd": 4
     },
@@ -264,9 +264,9 @@
       "path": "src/client/part-14.js",
       "startLine": 8229,
       "endLine": 8852,
-      "lines": 624,
-      "bytes": 35565,
-      "sha256": "092b76e60620e5dcedbd34b1054eef433026fd85927bc5d93e77ce455a744d95",
+      "lines": 879,
+      "bytes": 50196,
+      "sha256": "55b19dd8e598f09a5a6002b7f9b8811d571a1b6229f8788a5d321e15fb4b8d5e",
       "depthAtStart": 4,
       "depthAtEnd": 4
     }

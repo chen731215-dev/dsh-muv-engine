@@ -325,7 +325,11 @@
         }
 
         async function decorateMessages() {
-          if (_decorating) return
+          // ★★ 撞车不许丢触发（2026-10-17）：装饰是 async 串行的（取卡要 200ms+），
+          //   而「流式刚结束」那次触发恰恰最容易被撞掉 —— 旧写法 `if (_decorating) return`
+          //   把这一拍**静默丢弃**，之后要等 3s 扫摆或切会话，用户看到的就是
+          //   「生成完是原始 JSON，切走再切回才变成状态栏」。改成记账，跑完补一拍。
+          if (_decorating) { _muvDecorPending = true; return }
           _decorating = true
           try {
             var targets = messageTargets()
@@ -353,6 +357,13 @@
             }
           } finally {
             _decorating = false
+            // ★ 补跑被撞掉的那一拍（见函数开头的长注释）。用 scheduleDecorate 而不是
+            //   直调 decorateMessages：后者在递归里会把 _decorating 复位时机搞乱，
+            //   而且 rAF 让 DOM 先 commit 完再扫。
+            if (_muvDecorPending) {
+              _muvDecorPending = false
+              try { scheduleDecorate() } catch (_) {}
+            }
           }
         }
 

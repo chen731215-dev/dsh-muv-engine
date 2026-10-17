@@ -124,6 +124,9 @@
           // 放在这里（而不是 `beautifyMuv` 里）是因为上面两行已经把「流式中的消息」
           // 和「已装饰过的消息」都挡掉了 ⇒ 每条消息**只记一次**，不会把 80 条上限
           // 灌满半截文本。
+          // ★ 先用卡的 initvar 给空会话播种（每个会话一次，只在状态为空时做）。
+          //   否则状态栏只渲染"本会话写过的角色"，其余角色整块消失。
+          try { await muvEnsureSeeded() } catch (_) {}
           muvPushChatLog(raw)
           // ★ 运行时变量回灌：消息里带 <UpdateVariable>/<initvar>/<VariableEdit>/<era_data>
           //   就喂给服务端（ERA 增量块按消息键时序重放）—— era 桥从此有运行时数值可送
@@ -208,6 +211,14 @@
               body.removeAttribute('data-muv-sanitized')
               if (typeof muvSanitizeNode === 'function') muvSanitizeNode(body)
             } catch (_) {}
+            // ★ 2026-10-17：这条楼落地了状态栏/卡 iframe ⇒ 补一次变量推送。
+            //   切回会话时 React 重建所有卡帧，而变量回灌有去重账本（同一批消息不会
+            //   再 schedule push）⇒ 新帧收不到 era:getCurrentVars，卡停在「未知」初值。
+            //   这里去抖补推（一轮装饰最多一次），见 muvEraPushSoon 的长注释。
+            try {
+              if (String(html).indexOf('muv-statusbar-wrap') >= 0 ||
+                  String(html).indexOf('muv-iframe') >= 0) muvEraPushSoon()
+            } catch (_) {}
           }
           // ★ 最后一步：把"与 iframe 内容重复"的整页源码块藏起来（ST 的 `hidden!`）。
           //   放在装饰之后：整页文档**已经变成 iframe** 的那些，正文里对应的 `<pre>`
@@ -217,7 +228,27 @@
           // ★ 取卡「未决」时不钉已装饰标记（2026-09-24）：否则切会话瞬间的那条
           //   greeting 会因为会话 id 探测滞后被永久钉死成"已装饰、无产物"，
           //   重试通道（扫摆）从此进不来 —— 苍玄界首楼裸 `【GameStart】` 的实锤根因。
-          if (!muvCardFetchInconclusive) body.setAttribute(DECORATED_ATTR, '1')
+          //
+          // ★★ 2026-10-17 再加一条：**裸标记还在就绝不钉**。取卡可能是"确定的空"
+          //   （`fetchTavernCard` 的 `known && presetId === 'default'` 那一档），那一档
+          //   会把 `muvCardFetchInconclusive` 置 false ⇒ 旧写法照样钉死 ⇒ 扫摆与自愈
+          //   全被第一行挡回，只能靠切会话换一个新元素。而这一档恰恰是**流式刚结束**
+          //   最容易命中的（权威会话/预设还没落盘）。判据只用"卡会消费的标记"，
+          //   纯散文楼（没有任何标记）照旧钉死，不会退化成反复取卡。
+          var pinOk = !muvCardFetchInconclusive
+          try {
+            if (pinOk && !muvHasOwnArtifacts(body) && MUV_RAW_MARKER_RE.test(body.textContent || '')) pinOk = false
+          } catch (_) {}
+          if (pinOk) body.setAttribute(DECORATED_ATTR, '1')
+          // ★ 自愈计数清零（2026-10-17）：这次真的落地了我们的产物 ⇒ 之前"裸文本重试"
+          //   的账一笔勾销。只在**有产物**时清：没有产物（卡没匹配）时保留退避计数，
+          //   否则自愈扫摆会退化成"每秒重跑一遍全链"。
+          try {
+            if (muvHasOwnArtifacts(body)) {
+              body.removeAttribute('data-muv-raw-retry')
+              body.removeAttribute('data-muv-raw-next')
+            }
+          } catch (_) {}
         }
 
         var STATUS_OPEN_RE = /<\s*(?:Status_block|状况)\s*>/i
@@ -592,8 +623,225 @@
         }
 
         scheduleDecorate()
-        _muvMsgObs = new MutationObserver(scheduleDecorate)
-        _muvMsgObs.observe(document.body, { childList: true, subtree: true })
+
+        // ★★★ 「生成完就转」—— 流式一结束就装饰，不再等切会话（2026-10-17，用户实测）
+        //
+        // 病症（用户截图原话）：生成完，正文里的 `<UpdateVariable>…</UpdateVariable>`、
+        //   `JSONPatch` 一大坨 JSON 原样露着；**必须切走再切回**才变成状态栏。
+        //
+        // 根因（两条，都在"触发"这一侧，与产物质量无关）：
+        //   ① 旧观察配置只有 `{ childList: true, subtree: true }` —— **不看属性**。
+        //      而 DSH 流式结束时是**摘掉 `[data-streaming]`**（属性变更，不是 childList），
+        //      最后那一次 childList 又发生在"消息还被 streaming 守卫挡着"的时刻 ⇒
+        //      `_decorateOne` 直接 return，之后**再无触发** ⇒ 裸着到天荒地老。
+        //      切会话之所以"能显示"，是因为整棵子树重建 ⇒ childList 命中（且新节点不带
+        //      streaming 属性）—— 这正是用户摸索出来的那个"偏方"。
+        //   ② `decorateMessages` 是 async 串行（取卡 ~200ms+），旧写法撞车时 `return`，
+        //      **静默丢掉这一拍**。流式结束那一瞬间恰好最容易撞上。
+        //
+        // 三路兜底，任何一路先到都会转（互相不依赖，单路失效不影响另两路）：
+        //   A. `attributes` + `attributeFilter: ['data-streaming']`：属性被摘 ⇒ 立刻 +
+        //      尾随 200ms / 800ms 各补一拍（React 摘属性后还会再 commit 一次收尾 UI，
+        //      rAF 常常比那次 commit 早 —— 与 HANDOFF 里"切会话挂载晚于回调"同型）。
+        //   B. **文本空闲判据**：任何 childList 变化都重置 400ms 计时器；停止流入 400ms
+        //      就试一拍。不依赖 data-streaming 是否存在（别的 DSH 版本可能没有这个属性），
+        //      流式途中试也无害 —— `_decorateOne` 的 `[data-streaming]` 守卫会原样返回。
+        //   C. 既有 3s 低频扫摆（保留，防 A/B 都漏；也让"取卡未决"的楼最终一致）。
+        function muvDecorAfterStreamEnd() {
+          scheduleDecorate()
+          // ★ 2000ms 那一拍是 2026-10-17 补的：DSH 关楼之后还会再 commit 一次
+          //   「操作条 / 用量 / 停止标记」，实测那次 commit 可能晚到 1s 以上；
+          //   只到 800ms 时会漏掉"刚装饰完又被 React 重建一次"的那条楼。
+          var delays = [200, 800, 2000]
+          for (var i = 0; i < delays.length; i++) {
+            ;(function (ms) {
+              _muvDecorTails.push(setTimeout(function () { scheduleDecorate() }, ms))
+              // 有界：连续多轮生成时不许计时器无限累积
+              while (_muvDecorTails.length > 12) {
+                try { clearTimeout(_muvDecorTails.shift()) } catch (_) {}
+              }
+            })(delays[i])
+          }
+        }
+
+        _muvMsgObs = new MutationObserver(function (mrs) {
+          var ended = false
+          try {
+            for (var i = 0; i < mrs.length; i++) {
+              var m = mrs[i]
+              if (m.type === 'attributes' && m.attributeName === 'data-streaming' &&
+                  m.target && m.target.getAttribute &&
+                  m.target.getAttribute('data-streaming') === null) {
+                ended = true
+              }
+            }
+          } catch (_) {}
+          if (ended) { muvTrace('stream.end'); muvDecorAfterStreamEnd(); return }
+          // B：文本仍在流入 ⇒ 重置空闲计时器（流式中每帧一次，开销只有 clearTimeout+setTimeout）
+          try {
+            if (_muvDecorIdleTimer) clearTimeout(_muvDecorIdleTimer)
+            _muvDecorIdleTimer = setTimeout(function () {
+              _muvDecorIdleTimer = 0
+              muvTrace('stream.idle')
+              scheduleDecorate()
+            }, 400)
+          } catch (_) {}
+          scheduleDecorate()
+        })
+        // ★ 注意 `attributes: true` 必须配 `attributeFilter`：DSH 的消息列表每次流式
+        //   token 都会改一堆 class/style，全量属性观察会把主线程拖死。
+        _muvMsgObs.observe(document.body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['data-streaming']
+        })
+
+        // ══ 裸文本自愈（2026-10-17）══════════════════════════════════════════
+        //
+        // 为什么还留这一层：上面三路触发都是"尽力而为"——它们只保证**有事件**时会转，
+        // 但转完之后 DSH 的那次收尾 commit 可能把我们写进 DOM 的状态栏**重建掉**
+        // （React 手里没有我们插的节点）。更隐蔽的是 `data-muv-decorated="1"` 钉在
+        // **被复用的那个正文元素**上：内容被重建回裸 markdown，钉子还在 ⇒ 之后每一路
+        // 触发（含 3s 扫摆）都在 `_decorateOne` 第一行被原样挡回，用户看到的就是
+        // "一直是原始 JSON，切走再切回才好"（切会话会换一个新元素，钉子自然没了）。
+        //
+        // 判据刻意只看**会被卡消费掉的标记**（变量块/占位符），不看 `<content>` 这类
+        // 正常正文标签 —— 后者在"卡不产出任何产物"的楼里永远存在，拿它当判据会变成
+        // 每 20s 重跑一次全链，白烧取卡往返。
+        var MUV_RAW_MARKER_RE = /<\s*\/?\s*(?:UpdateVariable|JSONPatch|VariableEdit|VariableInsert|StatusPlaceHolderImpl|Status_block|StatusBlock|era_data|initvar)\b/i
+        // 重试退避（秒）：0 / 1 / 3 / 10 / 30 / 60，之后**停手**。
+        // 停手是必须的：有的卡本来就故意让 `<UpdateVariable>` 留在正文里当可读内容，
+        // 无限重试会把取卡往返烧成常态。前 6 拍足以覆盖"取卡未决 / React 重建"的窗口。
+        var MUV_RAW_BACKOFF = [0, 1, 3, 10, 30, 60]
+
+        /**
+         * 这条消息体是不是**该转却还是裸的**？
+         *
+         * 三条同时成立才算：① 有我们的标记、② 没有我们的产物、③ 不在流式中。
+         * 钉没钉过不参与判断 —— 钉过但产物被重建掉的，正是要救的那一类。
+         * @param {Element} body
+         * @returns {boolean}
+         */
+        function muvLooksRawUndecorated(body) {
+          try {
+            if (!body || !body.getAttribute) return false
+            if (body.closest && body.closest('[data-streaming]')) return false
+            if (muvHasOwnArtifacts(body)) return false
+            var t = ''
+            try { t = body.textContent || '' } catch (_) { t = '' }
+            if (!t) return false
+            return MUV_RAW_MARKER_RE.test(t)
+          } catch (_) { return false }
+        }
+
+        /**
+         * 撤掉钉子并记一次重试；返回 true = 这一拍可以重跑装饰。
+         * @param {Element} body
+         * @param {number} now
+         * @returns {boolean}
+         */
+        function muvUnpinForRework(body, now) {
+          try {
+            var n = Number(body.getAttribute('data-muv-raw-retry') || 0) || 0
+            if (n >= MUV_RAW_BACKOFF.length) return false
+            var nextAt = Number(body.getAttribute('data-muv-raw-next') || 0) || 0
+            if (nextAt && now < nextAt) return false
+            body.setAttribute('data-muv-raw-retry', String(n + 1))
+            body.setAttribute('data-muv-raw-next', String(now + MUV_RAW_BACKOFF[n] * 1000))
+            if (body.getAttribute(DECORATED_ATTR) === '1') body.removeAttribute(DECORATED_ATTR)
+            return true
+          } catch (_) { return false }
+        }
+
+        /**
+         * 1s 一拍的自愈扫摆。只看**最后 8 条**消息体（要救的永远是刚生成的那条；
+         * 老楼由切会话那条路负责），命中即撤钉 + 触发装饰。
+         */
+        function muvRawWatchdogTick() {
+          try {
+            if (typeof document.visibilityState === 'string' && document.visibilityState !== 'visible') return
+            if (_decorating) return
+            var targets = messageTargets()
+            var from = Math.max(0, targets.length - 8)
+            var need = false
+            var hits = 0
+            var now = Date.now()
+            for (var i = from; i < targets.length; i++) {
+              var body = targets[i].body
+              if (!muvLooksRawUndecorated(body)) continue
+              if (!muvUnpinForRework(body, now)) continue
+              need = true
+              hits++
+            }
+            if (need) { muvTrace('watch.hit', { n: hits, last: targets.length }); scheduleDecorate() }
+          } catch (_) {}
+        }
+
+        // ══ 诊断探针（2026-10-17 · 只读）═════════════════════════════════════
+        //
+        // 读法（DevTools Console，粘这一行就够）：
+        //     copy(JSON.stringify(__muvDump(), null, 1))
+        // 返回的是**当场现算**的 DOM 快照 + 最近 80 条触发/装饰留痕：
+        //   · 每条消息：长度 / 钉子 / 有无产物 / 是否还在流式 / 残留标记 / 重试次数
+        //   · 缓存：条目数与总字节（切回会话"秒开"靠它）
+        //   · trace：`stream.*`（属性摘除）、`watch.hit`（自愈命中）、`beautify.*`（产物链）
+        var __muvTrace = []
+        function muvTrace(kind, extra) {
+          try {
+            var row = { t: Date.now() % 1000000, k: kind }
+            if (extra) { for (var k in extra) row[k] = extra[k] }
+            __muvTrace.push(row)
+            while (__muvTrace.length > 600) __muvTrace.shift()
+          } catch (_) {}
+        }
+        try {
+          window.__MUV_TRACE__ = __muvTrace
+          window.__muvDump = function () {
+            var out = { at: new Date().toISOString(), href: String(location.href) }
+            try {
+              var svc = window.__DSH_TAVERN_SESSIONS__
+              if (svc && svc.list && typeof svc.list.getSnapshot === 'function') {
+                var sn = svc.list.getSnapshot()
+                out.session = (sn && sn.current) || null
+              }
+            } catch (_) {}
+            try { out.cache = { entries: Object.keys(muvDecorCache).length, bytes: muvDecorBytes } } catch (_) {}
+            try {
+              out.varRev = out.session ? muvVarRevOf('session-' + String(out.session).replace(/^session-/, '')) : 0
+              out.strictRev = window.__MUV_CACHE_STRICT_REV === true
+            } catch (_) {}
+            out.msgs = []
+            try {
+              var ts = messageTargets()
+              for (var i = 0; i < ts.length; i++) {
+                var b = ts[i].body
+                var tx = ''
+                try { tx = b.textContent || '' } catch (_) {}
+                var mk = tx.match(MUV_RAW_MARKER_RE)
+                var rect = null
+                try { rect = b.getBoundingClientRect() } catch (_) {}
+                out.msgs.push({
+                  i: i,
+                  turn: muvTurnOfEl(ts[i].root),
+                  len: tx.length,
+                  pinned: b.getAttribute(DECORATED_ATTR) === '1',
+                  artifacts: muvHasOwnArtifacts(b),
+                  streaming: !!(b.closest && b.closest('[data-streaming]')),
+                  marker: mk ? mk[0] : null,
+                  retry: b.getAttribute('data-muv-raw-retry') || '0',
+                  w: rect ? Math.round(rect.width) : -1,
+                  h: rect ? Math.round(rect.height) : -1
+                })
+              }
+            } catch (e) { out.msgsError = String((e && e.message) || e) }
+            try { out.trace = __muvTrace.slice(-80) } catch (_) { out.trace = [] }
+            return out
+          }
+          muvTrace('probe.ready', { msgs: messageTargets().length })
+        } catch (_) {}
+
+        _muvWatchTimer = setInterval(muvRawWatchdogTick, 1000)
 
         // ★ 装饰扫摆（2026-09-24，真机实锤的兜底）：切会话时 React 的挂载常晚于
         //   MutationObserver 的最后一次回调 —— rAF 跑的时候新消息还没 commit，
@@ -615,6 +863,13 @@
         // actually reach them — inside the IIFE they were unreachable here.
         if (_muvMsgObs) { _muvMsgObs.disconnect(); _muvMsgObs = null }
         if (_muvSweepTimer) { clearInterval(_muvSweepTimer); _muvSweepTimer = null }
+        if (_muvWatchTimer) { clearInterval(_muvWatchTimer); _muvWatchTimer = null }
+        // 「生成完就转」的计时器同样归工厂作用域管，见 part-02 的声明处注释。
+        if (_muvDecorIdleTimer) { clearTimeout(_muvDecorIdleTimer); _muvDecorIdleTimer = 0 }
+        try {
+          while (_muvDecorTails.length) clearTimeout(_muvDecorTails.pop())
+        } catch (_) {}
+        _muvDecorPending = false
         if (_vrObs) { _vrObs.disconnect(); _vrObs = null }
       }
     }

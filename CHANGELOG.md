@@ -1,5 +1,155 @@
 # Changelog
 
+## 0.4.3（2026-10-17）★ 生成完就转 + 状态栏数值修复
+
+### 本次新增（数值/角色卡完整性，都来自真机会话 `session-f415af89`）
+
+- **变量路径 `[0]` 语义**：`_.set('系统.时间[0]', '23:10', '00:30')` 现在落成
+  `{系统:{时间:['00:30']}}`。此前被存成**字面键** `"时间[0]"` ⇒ 卡读
+  `_.get(sys,'时间')[0]` 永远拿不到 ⇒ 状态栏全「未知」。
+- **三参 `_.set(path, 旧值, 新值)`**：取**第三参**为新值；第三参是 `{scope:'chat'}` 这类
+  选项对象时仍取第二参。
+- **卡脚本父页访问**：沙箱 iframe 内先把真父页存到 `__muvRealParent`，再把卡脚本看到的
+  `parent` / `top` 遮成自身（与 ST「卡页是顶层文档」一致）。修掉
+  `jquery.min.js: Uncaught SecurityError ... allow-same-origin` 导致状态栏脚本整段中断、
+  字段停在「未知」；宿主通信（高度 / KV / ready / era 推送）全部改走真父页引用。
+- **会话 id 取 mainView**：DSH 的会话列表快照没有 `current` 字段 ⇒ 装饰链会退到 URL /
+  缓存属性（**切换后仍是旧值**）⇒ 拿上一张卡渲染当前会话。改用列表行
+  `retainedBy.mainView > 0`（与酒馆客户端 `dshMainViewSessionId()` 同一判据）。
+- **取卡 fail-closed**：认不出会话 ⇒ 不取卡、不美化；不再退回面板「当前预设」。
+- **initvar 播种**：空会话在装饰前用卡自带 `initvarData` 播种（每会话一次；**已有数据的
+  会话不动**），修「状态栏只出现本会话写过的角色，其余角色整块消失」。
+- **era 补推**：切回会话时 React 重建所有卡 iframe，而变量回灌有去重账本 ⇒ 新帧收不到
+  `era:getCurrentVars`。现在装饰落地状态栏/iframe 后去抖补推一次（400ms，一轮最多一次）。
+- **自动状态栏**：正文只有 `_.set` 变量、既无占位符也无 `<Status_block>` 时，补一张内置
+  状态栏（模型漏标记不再导致整轮空白）。
+
+### 兼容性
+
+- 无 API 变更；`lib/var-tracker.js` 的路径语义修正对既有平铺键向后兼容
+  （不含 `[n]` 的路径原样走）。
+- 会话变量是内存态：升级后重启 DSH，旧会话会按消息重新回灌。
+
+### 生成完就转：状态栏不再等「切走再切回」
+
+### 病症（用户真机截图）
+
+生成完，正文里那一大坨 `<UpdateVariable>…</UpdateVariable>` / `<JSONPatch>…` 原样露着；
+**必须切走会话再切回**，它才变成状态栏。用户的描述是「切一次就正常，所以是不是没缓存」。
+
+### 根因：不在产物，在**触发**（两条，都在装饰链的入口）
+
+1. 消息观察器只写了 `{ childList: true, subtree: true }` —— **不看属性**。
+   而 DSH 流式结束时是**摘掉 `[data-streaming]`**（属性变更，不是 childList）：
+   - 最后那一次 childList 发生在「消息还带着 streaming 属性」的时刻 ⇒ `_decorateOne`
+     被 `[data-streaming]` 守卫原样挡回；
+   - 之后 DOM 再无 childList 变化 ⇒ **再也没有触发** ⇒ 消息永久裸着。
+   - 切会话之所以"能救"，是因为整棵消息子树重建 ⇒ childList 命中，且新节点不带
+     streaming 属性 —— 这正是用户摸出来的那个偏方。
+2. `decorateMessages` 是 async 串行（取卡一次 200ms+），旧写法撞车时直接 `return`，
+   **静默丢掉这一拍**。而"流式刚结束"那一拍恰好最容易撞上。
+
+⇒ 与缓存**第一版结论**有关：内存产物缓存（`muvDecorCache`，键含 sid/正文散列/depth/fullpage）
+在 0.3.11 就已经在了；用户看到的"切会话才好"，首先不是"算了没存"，而是**根本没算**。
+
+### 修法之一：三路兜底 + 撞车记账（互相独立，单路失效不影响另两路）
+
+- **A. 属性触发**：`observe(..., { attributes: true, attributeFilter: ['data-streaming'] })`，
+  摘属性那一拍立刻装饰，并在 +200ms / +800ms / +2000ms 各补一拍（React 的收尾 commit 常晚于
+  rAF，与 HANDOFF §"切会话挂载晚于回调"同型；2s 那拍是关楼后再 commit 操作条/用量时用的）。
+- **B. 文本空闲判据**：任何 childList 变化都重置 400ms 计时器；停止流入 400ms 就试一拍。
+  不依赖 `data-streaming` 是否存在（别的 DSH 版本未必有这个属性）。流式中途试也无害 ——
+  `_decorateOne` 的 `[data-streaming]` 守卫会原样 return。
+- **C. 3s 低频扫摆**：原样保留（防 A/B 都漏、也让"取卡未决"的楼最终一致）。
+- **撞车不丢触发**：`if (_decorating) return` → 记 `_muvDecorPending`，本轮 `finally` 里
+  补一次 `scheduleDecorate()`（只在有记账时才补，不会每轮白跑）。
+- 新增的计时器与旗标都放**工厂作用域**（`part-02`），teardown 里一并清掉 ——
+  否则插件重载后旧 `setTimeout` 会在新实例里触发。
+
+### 修法之二：裸文本自愈（1s 扫摆）+「裸标记还在就不钉」
+
+三路触发只保证"**有事件**时会转"。真机上还有两类**事件之外**的失败，只能靠"看结果"救：
+
+1. **转完被重建**：DSH 关楼后还会 commit 一次（操作条/用量），React 手里没有我们插入的
+   节点 ⇒ 状态栏被重建回裸 markdown，而 `data-muv-decorated="1"` 钉在**被复用的那个正文
+   元素**上 ⇒ 之后每一路触发（含 3s 扫摆）都在 `_decorateOne` 第一行被挡回。
+2. **"确定的空卡"钉死**：`fetchTavernCard` 的 `known && presetId === 'default'` 那一档把
+   `muvCardFetchInconclusive` 置 false ⇒ 旧写法照样钉死。而流式刚结束时，权威会话/预设
+   恰好最可能还没落盘。
+
+为此新增两条**结果判据**（不看事件，只看 DOM 真相）：
+
+- **裸文本自愈**：1s 一拍，只看**最后 8 条**消息体；"有会被卡消费的标记（`UpdateVariable`
+  / `JSONPatch` / `StatusPlaceHolderImpl` …）**且**没有我们的产物"⇒ 撤钉 + 触发装饰。
+  退避 `0/1/3/10/30/60` 秒，共 6 拍后停手（故意保留标记当正文的卡不会被无限重跑）。
+- **不钉守卫**：装饰结束时若"仍没有产物、正文里还留着标记"⇒ **不置** `DECORATED_ATTR`，
+  交给扫摆/自愈重试。纯散文楼（无标记）照旧钉死，不退化。
+
+### 修法之三：缓存键默认不再带变量修订号（"切回秒开"）
+
+加 `|v<n>` 的初衷是"状态栏观感依赖变量"，但**产物链是纯函数**：`/apply-regex-card`、
+`/render-status` 都不读会话变量，客户端第 5 级模板 `buildDefaultStatusBar(text)` 只用本条
+正文里的赋值；真正随变量走的只有卡 iframe 的**运行时**（era postMessage），与缓存外壳无关。
+
+代价却很实在：`muvFeedVariables` **每轮**都 `muvVarRevBump()` ⇒ 每生成一条消息，该会话
+所有老楼的键集体 +1 ⇒ **全部 miss** ⇒ 切回会话整屏重算（用户实测的"切回来要重新渲染"）。
+⇒ 默认键改为 `sid|正文散列|d<depth>[|fp]`；变量维度保留成 opt-in：
+Console 里设 `window.__MUV_CACHE_STRICT_REV = true` 即恢复 `|v<n>`（排查"缓存冻变量"用）。
+
+### 修法之四：能一行拿到现场的诊断出口
+
+- `window.__MUV_TRACE__`：环形缓冲（600 条），记 `stream.end` / `stream.idle` /
+  `watch.hit` / `beautify.*`（产物链的 enter / card / apply / cache-hit / exit-unchanged）。
+- `window.__muvDump()`：**当场现算**的 DOM 快照 —— 每条消息的长度 / 钉子 / 有无产物 /
+  是否仍在流式 / 残留标记 / 自愈重试次数 / 尺寸，外加缓存条目数与总字节。
+- 读法：`copy(JSON.stringify(__muvDump(), null, 1))`。
+  （上一轮把探针打进了 **desktop** 配置，而实际在跑的是 **web** 配置 ⇒ 用户 Console 里
+  `typeof window.__muvDump` 是 `undefined`。这次随源码进产物，两个 profile 都有。）
+
+### 修法之五：`<UpdateVariable>` 的 JSONPatch → 可读状态卡（2026-10-17 第二轮）
+
+**病症**（用户第二轮截图）：修完触发之后，那条消息末尾变成一个「🔧 变量更新」折叠行，
+展开是原始 JSON —— 用户原话「他只有这一行，展开就是一堆代码」。期望的是状态栏。
+
+**为什么之前只有折行**：这个会话（`preset-fixture` / 夹具卡·足）**没有角色卡**——
+没有卡就没有卡级状态栏模板（`extractStatusBarHtml` 无源），世界书只教了模型输出
+`<UpdateVariable><JSONPatch>…`。内置状态栏那条路又只认 `<StatusPlaceHolderImpl/>`，
+且 `collectVars` 只读 `_.set/_add`，读不了 JSONPatch ⇒ 什么都不出，只剩兜底折叠。
+
+**做法**：在变量块的 DOM 渲染处（`muvRenderVariableBlocks`，元素形态 + 文本形态两条路）
+先把 `<JSONPatch>` 解析出来，能解析就按**路径**铺成状态卡（复用内置 `.muv-sb*` 那一套）：
+
+- 顶部速览：`世界/系统/环境` 这一层里的 时间 / 日期 / 天气 / 地点 / 位置 / 季节（各取第一条、带图标）
+- 分组：路径除末段外全拼（`/NPC状态/岁岁/好感度` ⇒ 「NPC状态 · 岁岁」）
+- 行：`字段名 值`；`delta` 显示成 `+40` / `-3`（绿/红）；数组下标 `-` 写成「新增」
+- 对象值（`insert /背包物品/趾甲 {数量,类型,描述}`）**按字段铺开**，不再塞一行 JSON
+- `_` 开头的只读字段跳过；空对象跳过；单条上限 120 行、长文本截断 140 字（`title` 留全文）
+- 原始 JSON 另折成「🔧 原始变量」（默认收起），随时可查；**解析失败就退回原折叠**，一个字不丢
+
+**门禁**：`test-client-render` **417/0**（新增 7 条行为断言：出卡、顶部速览、delta 涨跌色、
+对象按字段铺开、`_` 字段跳过、空对象不产空行、解析失败返回 null）。
+
+> 这 7 条当场咬出一个真 bug：`s.lastIndexOf('[', -1)` 会被**夹到 0**（不是返回 -1），
+> 于是"往前找上一个 `[`"的循环对 `'[]'` 这种输入**死循环**，整条装饰链卡死。
+> 已修（`idx === 0` 显式 break），并让 `cardFn('[]')` 常驻断言 —— 这类回归不靠人眼。
+
+### 读数与判据
+
+- `test-client-render` **417/0**（原 402 + 8 触发/自愈 + 7 变量状态卡）。
+- `test-decorate-invariants` **54/0**、`test-client-scope-completeness` **100/0**、
+  `test-client-parts` **80/0**、`test-client-source-convergence` **33/0**、
+  `test-status-cascade` **84/0**。
+- `check-syntax` 78 文件全过；`build-client --check` 20 分片逐字节一致（591951 字节）。
+- `check-repo-hygiene` / `test-move-segment` / `test-repo-hygiene-bom` 在本机沙箱里因
+  **`spawnSync` EPERM** 无法执行（环境故障，不是代码故障；CI 上跑）。
+
+### 未做（明确边界）
+
+- **没加跨进程持久化**（localStorage/磁盘）：同一次运行内的"切回秒开"由内存缓存负责；
+  跨重启要另做持久层（配额、失效、脏数据三件事都要单独判据），不在本笔范围。
+- **没在真机 DSH 上验证**：本机安装版是 0.3.11、源码基线 0.4.2 —— 本笔把产物装进 web
+  配置后需重启 DSH，再按「发一条长消息 ⇒ 不切会话 ⇒ 状态栏应 ≤1s 出现」验收。
+
 ## v0.4.2 (2026-10-17)
 
 ### 📝 文档：README 顶部章节长期停在 v0.3.4 ⇒ 逛 GitHub 的人以为最新版是 0.3.4

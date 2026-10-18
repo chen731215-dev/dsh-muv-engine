@@ -1,7 +1,7 @@
-{
+﻿{
   "name": "dsh-muv-engine",
-  "version": "0.4.3",
-  "description": "DSH 原生 MUV 引擎 —— 正则脚本、状态栏级联（任意字段/行动选项）、变量追踪、LaTeX、宏展开、标签 CSS、visual 代码块渲染（信纸/终端/报纸/手机），内置 diag.mjs 诊断工具。需与伴生插件 dsh-muv-table 一起安装",
+  "version": "0.4.4",
+  "description": "DSH 鍘熺敓 MUV 寮曟搸 鈥斺€?姝ｅ垯鑴氭湰銆佺姸鎬佹爮绾ц仈锛堜换鎰忓瓧娈?琛屽姩閫夐」锛夈€佸彉閲忚拷韪€丩aTeX銆佸畯灞曞紑銆佹爣绛?CSS銆乿isual 浠ｇ爜鍧楁覆鏌擄紙淇＄焊/缁堢/鎶ョ焊/鎵嬫満锛夛紝鍐呯疆 diag.mjs 璇婃柇宸ュ叿銆傞渶涓庝即鐢熸彃浠?dsh-muv-table 涓€璧峰畨瑁?,
   "type": "module",
   "main": "lib/index.js",
   "exports": {

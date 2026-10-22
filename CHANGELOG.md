@@ -119,7 +119,7 @@ Console 里设 `window.__MUV_CACHE_STRICT_REV = true` 即恢复 `|v<n>`（排查
 **病症**（用户第二轮截图）：修完触发之后，那条消息末尾变成一个「🔧 变量更新」折叠行，
 展开是原始 JSON —— 用户原话「他只有这一行，展开就是一堆代码」。期望的是状态栏。
 
-**为什么之前只有折行**：这个会话（`preset-fixture` / 夹具卡·足）**没有角色卡**——
+**为什么之前只有折行**：这个会话（`preset-fixture-zujie` / 夹具卡·足）**没有角色卡**——
 没有卡就没有卡级状态栏模板（`extractStatusBarHtml` 无源），世界书只教了模型输出
 `<UpdateVariable><JSONPatch>…`。内置状态栏那条路又只认 `<StatusPlaceHolderImpl/>`，
 且 `collectVars` 只读 `_.set/_add`，读不了 JSONPatch ⇒ 什么都不出，只剩兜底折叠。

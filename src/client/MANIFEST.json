@@ -3,8 +3,8 @@
   "linesNote": "各分片 lines 之和 = 产物 split('\\n') 的长度；产物的 \\n 个数比它少 1（末行无尾随换行）。",
   "artifact": {
     "path": "lib/client.js",
-    "bytes": 601889,
-    "sha256": "c7d2594fe442729d2cde10b20a270421d3b2cb6b1ee7e0368b272fdd7c1d50e6"
+    "bytes": 601914,
+    "sha256": "22e61d4bb694e61a3de88c963d5faf0506d89d1c80e05b8a2560932e9b289533"
   },
   "modules": {
     "src/client/mod-text.js": {
@@ -145,8 +145,8 @@
       "startLine": 2690,
       "endLine": 3663,
       "lines": 985,
-      "bytes": 82517,
-      "sha256": "627a86493bf1f934420d32edf26510837754665d7bf349c1fdb07329dc88fee9",
+      "bytes": 82522,
+      "sha256": "9d35c32ce580a85400a6b81305e2f37c9457c545ac8f82e1b29c319ae6c30fc8",
       "depthAtStart": 2,
       "depthAtEnd": 4
     },
@@ -175,8 +175,8 @@
       "startLine": 5105,
       "endLine": 5825,
       "lines": 856,
-      "bytes": 53400,
-      "sha256": "c84c9dd0d3d64561a9f7df810cd822c7665bd31cc6af9c4e46607ec0a35bfc5a",
+      "bytes": 53415,
+      "sha256": "7c02f1046311bfe7ce48e6b9817f62e6403ca28b4c88b07bb28e77cf1d2e4b9e",
       "depthAtStart": 2,
       "depthAtEnd": 3
     },
@@ -185,8 +185,8 @@
       "startLine": 5826,
       "endLine": 6545,
       "lines": 720,
-      "bytes": 50673,
-      "sha256": "83b6d56136ad2db6646edeb84c416fd64d7fa2b5dc25b32421a3d9de4eadea1c",
+      "bytes": 50678,
+      "sha256": "6ec16bfe2fce10461cc545c449fd65d43f5b3d58cf8cc142f79661b9326c4887",
       "depthAtStart": 3,
       "depthAtEnd": 3
     },

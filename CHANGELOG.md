@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.8（2026-11-01）★ 思维链不再被当成正文装饰
+
+用户实测（Grok-4.7）：状态栏被贴进了**思维链**里。
+
+- 根因：DSH 的 reasoning 块是 `div[data-variant="think"]`，而它**内部同样用 `_markdown_*`
+  正文容器**（`ReasoningContent` → `MarkdownText`）。`messageTargets()` 只按「类名形状 +
+  有块级子节点」取样 ⇒ 把思维链当成一条普通回复：思维链里出现角色名 / 日期 / `_.set` 时
+  就被判成「有状态」，于是往上贴一张状态栏；卡的正则也会改写思维链正文。
+- 修法：新增 `muvIsReasoningBody()`，判据是 DSH 自己的属性 `[data-variant="think"]`
+  （祖先链查 6 层，不猜 CSS Modules 哈希 —— 哈希每次重建都会变）。`messageTargets()`
+  第一道门就把它挡掉，整楼不装饰。
+- 接线清单同步：`test-client-scope-completeness`（新增依赖必须登记）与
+  `test-decorate-invariants`（取样桩要把新判据一起接上，否则 `messageTargets` 会返回空）。
+- 产物重建；`npm test` 14 个文件全绿，`build-client --check` 逐字节一致。
+
 ## 0.4.7（2026-10-22）★ 更新说明不再写出真实 id
 
 - 0.4.6 的说明里又把两个真实预设 id 写出来了；本版说明只用占位。

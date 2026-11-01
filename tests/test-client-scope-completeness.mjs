@@ -57,7 +57,7 @@ const MIGRATION_SETS = [
   },
   {
     label: '② 消息取样 + 可见性护栏',
-    entries: ['messageRootOf', 'muvIsVisibleInDom', 'messageTargets'],
+    entries: ['messageRootOf', 'muvIsVisibleInDom', 'muvIsReasoningBody', 'messageTargets'],
     required: ['MSG_BODY_RE'],
     live: [],
   },

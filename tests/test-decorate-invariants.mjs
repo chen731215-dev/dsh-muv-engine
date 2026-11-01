@@ -132,7 +132,7 @@ console.log('\n① muvKvKeyOf：KV 命名空间必须带会话栅栏 <卡键>@<�
 // ── 不变量 ②：`messageTargets` 必须只取当前可见会话（真的调 `muvIsVisibleInDom`）──
 
 function buildMessageTargets(srcText, doc) {
-  const code = ['muvIsVisibleInDom', 'messageRootOf', 'messageTargets']
+  const code = ['muvIsVisibleInDom', 'muvIsReasoningBody', 'messageRootOf', 'messageTargets']
     .map((n) => lift(srcText, n)).join('\n\n')
   // MSG_BODY_RE 是外层绑定：**逐字从源码取**，不在测试里抄一份会漂的正则
   const re = verbatimDecl(srcText, 'MSG_BODY_RE')
@@ -159,7 +159,7 @@ console.log('\n② messageTargets：把别的会话留在 DOM 里的隐藏消息
   const wr = wiringReport({
     src: SRC,
     entries: ['messageTargets'],
-    provided: new Set(['MSG_BODY_RE', 'messageRootOf', 'muvIsVisibleInDom']),
+    provided: new Set(['MSG_BODY_RE', 'messageRootOf', 'muvIsVisibleInDom', 'muvIsReasoningBody']),
   })
   check('把它当成一次搬迁并全部接线后：不漏名字（missing 为空）',
     wr.missing.length === 0, wr.missing.join(','))

@@ -220,6 +220,35 @@
          * @returns {boolean}
          */
 
+        /**
+         * 这个正文容器是不是**思维链**？（是就整楼跳过装饰）
+         *
+         * 用户实测（2026-11-01，Grok-4.7）：DSH 把 reasoning 块渲染成
+         * `div[data-variant="think"]`，而**它内部同样用 `_markdown_*` 正文容器**
+         * （`ReasoningContent` → `MarkdownText`）。于是装饰链会把思维链当普通回复：
+         *   · 思维链里一旦出现角色名 / 日期 / `_.set`，就被判成"有状态"，往上贴一张
+         *     状态栏 ⇒ 用户看到「思维链里也在生成状态栏」；
+         *   · 卡的正则脚本还会把思维链正文一起改写（本该只改正文）。
+         * 判据用 DSH 自己的属性，不猜类名哈希：
+         *   ① 自身或祖先带 `data-variant="think"`（ReasoningRow 根节点）；
+         *   ② `[data-turn-process-inline]` 里的 reasoning 成员（ProcessReasoning）。
+         * 用户自己的正文永远不带这两个属性 ⇒ 不会误杀。
+         * @param {Element} el
+         * @returns {boolean}
+         */
+        function muvIsReasoningBody(el) {
+          try {
+            if (!el || el.nodeType !== 1) return false
+            if (el.closest && el.closest('[data-variant="think"]')) return true
+            var p = el.parentElement
+            for (var up = 0; up < 6 && p; up++) {
+              if (p.getAttribute && p.getAttribute('data-variant') === 'think') return true
+              p = p.parentElement
+            }
+          } catch (_) {}
+          return false
+        }
+
         function messageTargets() {
           var out = []
           try {
@@ -228,6 +257,8 @@
               var body = all[i]
               var cls = body.className
               if (typeof cls !== 'string' || !MSG_BODY_RE.test(cls)) continue
+              // ★ 思维链不是正文：整楼不装饰（见 muvIsReasoningBody 的长注释）
+              if (muvIsReasoningBody(body)) continue
               // 同名模式也用在文件类型图标上，正文一定含块级子节点
               if (!body.querySelector('p, pre, ul, ol, blockquote, table, h1, h2, h3')) continue
               // ★ 只取**当前可见会话**的消息：别的会话留在 DOM 里的隐藏消息一旦被美化，

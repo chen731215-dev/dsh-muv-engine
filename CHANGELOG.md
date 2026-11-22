@@ -1,5 +1,91 @@
 # Changelog
 
+## 0.4.9（2026-11-22）★ 侧边栏图标不再被填成白色实心块（issue #3）
+
+用户报告（@pingping97，深色主题 / `maid-atelier` 皮肤的 dark 模式）：启用本插件后
+DSH Web UI 左侧边栏的**所有图标变成白色实心块**，图标中间的镂空细节完全看不到；
+禁用插件即恢复正常。
+
+### 根因
+
+`lib/client.js` 的 `injectUiCss()` 会把 `UI_CSS` 注入宿主页面 `<head>`，其中**三处**
+规则带了 `fill:currentColor !important`：
+
+- `button.Kad6XG_iconButton svg{… fill:currentColor !important;}`
+- `html body [data-pane="sidebar"] … button svg, … [role="button"] svg{… fill:currentColor !important; …}`
+- `html body [data-pane="sidebar"] … .hHd-Xa_iconButton, .qDHVXG_iconButton, …{… fill:currentColor !important; …}`
+
+DSH 侧边栏图标是**描边型** SVG —— `svg` 上 `fill="none"`，颜色靠子元素
+`stroke="currentColor"` 描边继承（实测 `dsh-client-ui-sidebar-terminal` 的
+`TerminalIcon.tsx` 就是这个形态）。CSS 的 `fill:currentColor` 会覆盖掉
+`fill="none"`，把镂空区域填成实心；叠加 `color` 在深色主题下解析为白色
+⇒ 整个图标变成一块白色实心块、细节全糊。
+
+这一批 CSS 是「第 40 轮」为修**浅色主题对比度**（浅蓝字压浅底，实测 1.06:1）改的，
+当时把写死的浅蓝换成了 `var(--dsw-alias-label-primary)`，但 `fill` 那几处一起留了下来
+—— 颜色本身没问题，问题只在 `fill`。
+
+### 修法
+
+**删掉这三处 `fill:currentColor !important`**，让 SVG 自己的 `fill` / `stroke` 属性说话。
+
+- 没有反手改成 `stroke:currentColor !important`：那会波及少数**填充型**图标，
+  把它们变成描边空壳。删掉才是对两类图标都安全的最小改动。
+- 颜色仍然跟随宿主主题：`color` 那条继续生效，描边图标经
+  `stroke="currentColor"` 继承，深色 / 浅色主题都正常。
+- 在分片 `src/client/part-11.js` 对应位置补了长注释，写明「不许再加 fill」的理由，
+  避免下一次调侧栏配色时又被加回去。
+
+### 改动范围
+
+只改 CSS 一行内容 × 3 处 + 注释。**运行时不改任何 JavaScript 逻辑**；
+`lib/client.js` 由 `src/client/` 20 个分片重新生成，`build-client --check` 逐字节一致。
+
+### 验证
+
+- `node tools/build-client.mjs --check` → 与分片逐字节一致（604365 字节）
+- `node tools/build-client.mjs` 产物内 `fill:currentColor` 命中 **0** 处（修复前 3 处）
+- `npm run check`（`check-syntax`）→ 78 个文件全通过
+- `npm test`（逐文件）→ 13/15 通过；2 个红项（`test-move-segment` / `test-repo-hygiene-bom`）
+  是**本机沙箱禁止 spawn 子进程**（`spawnSync(node,-e,0)` EPERM）导致的环境故障，
+  与本次改动无关（这两个文件只做 git/子进程扫描，不涉及 CSS）
+- `test-client-parts` / `test-client-render` / `test-client-scope-completeness` 等
+  客户端相关套件全绿
+
+### 🧪 新增回归测试：`tests/test-sidebar-icon-fill.mjs`（8 项）
+
+这个 bug 原本**没有任何测试兜底** —— 复核方做过变异验证：把 `fill:currentColor !important`
+重新注回分片并重建产物，四个客户端套件**全绿不变**。也就是说「下次调侧栏配色时又加回去」
+CI 抓不到。现在补一条棘轮：
+
+| # | 钉住什么 |
+|---|---|
+| ① | 产物里**没有任何 CSS 属性** `fill:` 命中侧栏 `svg`（只认 CSS 属性；注释里提到 fill 不算违规） |
+| ② | 也不许反手给侧栏 svg 硬加 `stroke:`（那会把少数**填充型**图标变成描边空壳） |
+| ③ | 颜色仍用 `var(--dsw-alias-*)` 跟随宿主主题（否则「修完变成另一头坏」：图标不再跟主题） |
+| ④ | **反向自证**：把 issue #3 的三条原规则塞进样本，判据必须报红（否则只是在"测自己抄得对不对"） |
+
+第 ④ 条对**每条原规则单独**各验一次（三条选择器分别抓），避免某一条选择器失灵被另外两条掩盖。
+
+变异验证：把 `fill:currentColor !important` 加回产物 ⇒ 本测试**变红**；还原 ⇒ 8/8 绿。
+判据统一走收口点 `clientSource()` 读产物，不自己开 `fs.readFile("lib/client.js")` 的读口
+（本仓 `test-client-source-convergence` 有判据盯着"只有收口点能读产物"）。
+
+### 📌 一个如实记录的边界
+
+issue #3 报的三条规则里，选择器用的是 CSS Modules 哈希（`Kad6XG` / `hHd-Xa` / `qDHVXG`）
+与 `[data-pane="sidebar"]`。在**本机** DSH 0.2.2-rc.5 的 `app.asar` 里全文扫描这三个哈希
+与 `data-pane=` 均为 **0 命中**（当前 layout 用的是 `data-sidebar-collapsed` 等），
+所以这个 bug **无法在本机端到端复现**。修复依据是：
+
+1. 机制本身成立 —— 解包确认 DSH 的侧栏图标确实是描边型 SVG
+   （`dsh-client-ui-sidebar-terminal/src/client/TerminalIcon.tsx`：`<svg fill="none">` +
+   `<path stroke="currentColor">`），给 svg 上 `fill:currentColor` 必然把它填实；
+2. 删 `fill` 对两类图标都安全 —— DSH 侧栏里另有 4 处 `fill="currentColor"` 的**填充型**图标，
+   删掉这条 CSS 只是让它们回到自己的属性，不会被反向改成描边空壳。
+
+如果在你那边仍能看到变白的图标，请把 DSH 版本与主题一起告诉我 —— 那说明还有别处也在覆盖 fill。
+
 ## 0.4.8（2026-11-01）★ 思维链不再被当成正文装饰
 
 用户实测（Grok-4.7）：状态栏被贴进了**思维链**里。

@@ -52,6 +52,40 @@ DSH 侧边栏图标是**描边型** SVG —— `svg` 上 `fill="none"`，颜色�
 - `test-client-parts` / `test-client-render` / `test-client-scope-completeness` 等
   客户端相关套件全绿
 
+### 🧪 新增回归测试：`tests/test-sidebar-icon-fill.mjs`（8 项）
+
+这个 bug 原本**没有任何测试兜底** —— 复核方做过变异验证：把 `fill:currentColor !important`
+重新注回分片并重建产物，四个客户端套件**全绿不变**。也就是说「下次调侧栏配色时又加回去」
+CI 抓不到。现在补一条棘轮：
+
+| # | 钉住什么 |
+|---|---|
+| ① | 产物里**没有任何 CSS 属性** `fill:` 命中侧栏 `svg`（只认 CSS 属性；注释里提到 fill 不算违规） |
+| ② | 也不许反手给侧栏 svg 硬加 `stroke:`（那会把少数**填充型**图标变成描边空壳） |
+| ③ | 颜色仍用 `var(--dsw-alias-*)` 跟随宿主主题（否则「修完变成另一头坏」：图标不再跟主题） |
+| ④ | **反向自证**：把 issue #3 的三条原规则塞进样本，判据必须报红（否则只是在"测自己抄得对不对"） |
+
+第 ④ 条对**每条原规则单独**各验一次（三条选择器分别抓），避免某一条选择器失灵被另外两条掩盖。
+
+变异验证：把 `fill:currentColor !important` 加回产物 ⇒ 本测试**变红**；还原 ⇒ 8/8 绿。
+判据统一走收口点 `clientSource()` 读产物，不自己开 `fs.readFile("lib/client.js")` 的读口
+（本仓 `test-client-source-convergence` 有判据盯着"只有收口点能读产物"）。
+
+### 📌 一个如实记录的边界
+
+issue #3 报的三条规则里，选择器用的是 CSS Modules 哈希（`Kad6XG` / `hHd-Xa` / `qDHVXG`）
+与 `[data-pane="sidebar"]`。在**本机** DSH 0.2.2-rc.5 的 `app.asar` 里全文扫描这三个哈希
+与 `data-pane=` 均为 **0 命中**（当前 layout 用的是 `data-sidebar-collapsed` 等），
+所以这个 bug **无法在本机端到端复现**。修复依据是：
+
+1. 机制本身成立 —— 解包确认 DSH 的侧栏图标确实是描边型 SVG
+   （`dsh-client-ui-sidebar-terminal/src/client/TerminalIcon.tsx`：`<svg fill="none">` +
+   `<path stroke="currentColor">`），给 svg 上 `fill:currentColor` 必然把它填实；
+2. 删 `fill` 对两类图标都安全 —— DSH 侧栏里另有 4 处 `fill="currentColor"` 的**填充型**图标，
+   删掉这条 CSS 只是让它们回到自己的属性，不会被反向改成描边空壳。
+
+如果在你那边仍能看到变白的图标，请把 DSH 版本与主题一起告诉我 —— 那说明还有别处也在覆盖 fill。
+
 ## 0.4.8（2026-11-01）★ 思维链不再被当成正文装饰
 
 用户实测（Grok-4.7）：状态栏被贴进了**思维链**里。

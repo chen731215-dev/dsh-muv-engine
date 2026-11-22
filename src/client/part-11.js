@@ -857,7 +857,7 @@ html body [data-dsh-vr-entry]{position:fixed !important;left:auto !important;top
 .dshv-root.dshv-scene .dshv-sc-say{flex:1;color:#3a2f1d;line-height:1.7;}
 button.Kad6XG_iconButton{width:26px !important;height:26px !important;color:#3b7ff0 !important;background:rgba(59,127,240,.12) !important;border:1px solid rgba(59,127,240,.4) !important;border-radius:6px !important;opacity:1 !important;pointer-events:auto !important;display:inline-flex !important;align-items:center !important;justify-content:center !important;}
 button.Kad6XG_iconButton:hover{color:#fff !important;background:#3b7ff0 !important;}
-button.Kad6XG_iconButton svg{width:16px !important;height:16px !important;fill:currentColor !important;}
+button.Kad6XG_iconButton svg{width:16px !important;height:16px !important;}
 .nFunOq_iconButton,.nFunOq_rerollButton{color:#3b7ff0 !important;opacity:1 !important;border-color:rgba(59,127,240,.5) !important;background:rgba(59,127,240,.1) !important;}
 .nFunOq_iconButton:hover,.nFunOq_rerollButton:hover{color:#fff !important;background:#3b7ff0 !important;}
 /* ★ 第 40 轮：原来这一行把侧栏的 --dsw-alias-label-* 全部 !important 重写成浅蓝
@@ -865,10 +865,19 @@ button.Kad6XG_iconButton svg{width:16px !important;height:16px !important;fill:c
    侧栏调**的，浅色主题下侧栏底色是 rgb(249,250,251)，浅蓝字压浅底 = 实测对比度
    1.06:1（dsh-live23「浅色·首页侧栏」）。DSH 自己在深色下给侧栏的就是
    --dsw-alias-label-primary（实测 rgb(249,250,251)，比我们这条更亮），所以**直接
-   去掉重写**、让宿主变量生效即可 —— 两个主题都跟宿主，观感也统一。 */
-html body [data-pane="sidebar"][data-pane="sidebar"] button,html body [data-pane="sidebar"][data-pane="sidebar"] button span,html body [data-pane="sidebar"][data-pane="sidebar"] button svg,html body [data-pane="sidebar"][data-pane="sidebar"] [role="button"] svg{color:var(--dsw-alias-label-primary) !important;fill:currentColor !important;opacity:1 !important;text-shadow:none !important;}
+   去掉重写**、让宿主变量生效即可 —— 两个主题都跟宿主，观感也统一。
+
+   ★★ 同理，这里**不许**再给侧栏 svg 设 fill 为 currentColor（issue #3）。
+   DSH 侧栏图标是**描边型** SVG：svg 上 fill="none"，颜色由子元素 stroke="currentColor"
+   描边继承（实测 dsh-client-ui-sidebar-terminal 的 TerminalIcon.tsx 就是这个形态）。
+   一旦给 svg 上 fill（值为 currentColor），它会把 fill="none" 覆盖掉 ⇒ 镂空处被填成实心；
+   叠加深色主题下 color 解析为白色 ⇒ 整个图标变成一块白色实心块、细节全糊。
+   描边图标**不需要**任何 fill，删掉即可；颜色由 color 走 stroke="currentColor" 继承。
+   注意：也不要反手改成 stroke:currentColor !important —— 那会波及少数**填充型**图标，
+   让它们变成描边空壳。让它自己的 fill / stroke 属性说话。 */
+html body [data-pane="sidebar"][data-pane="sidebar"] button,html body [data-pane="sidebar"][data-pane="sidebar"] button span,html body [data-pane="sidebar"][data-pane="sidebar"] button svg,html body [data-pane="sidebar"][data-pane="sidebar"] [role="button"] svg{color:var(--dsw-alias-label-primary) !important;opacity:1 !important;text-shadow:none !important;}
 html body [data-pane="sidebar"][data-pane="sidebar"] button:hover,html body [data-pane="sidebar"][data-pane="sidebar"] button:hover span,html body [data-pane="sidebar"][data-pane="sidebar"] button:hover svg{color:var(--dsw-alias-label-primary) !important;}
-html body [data-pane="sidebar"][data-pane="sidebar"] .hHd-Xa_iconButton.hHd-Xa_iconButton,html body [data-pane="sidebar"][data-pane="sidebar"] .qDHVXG_iconButton.qDHVXG_iconButton,html body [data-pane="sidebar"][data-pane="sidebar"] .qDHVXG_searchButton.qDHVXG_searchButton,html body [data-pane="sidebar"][data-pane="sidebar"] .qDHVXG_headerActions.qDHVXG_headerActions,html body [data-pane="sidebar"][data-pane="sidebar"] .qDHVXG_sectionLabel.qDHVXG_sectionLabel{color:var(--dsw-alias-label-secondary) !important;fill:currentColor !important;background:transparent !important;border-color:transparent !important;}
+html body [data-pane="sidebar"][data-pane="sidebar"] .hHd-Xa_iconButton.hHd-Xa_iconButton,html body [data-pane="sidebar"][data-pane="sidebar"] .qDHVXG_iconButton.qDHVXG_iconButton,html body [data-pane="sidebar"][data-pane="sidebar"] .qDHVXG_searchButton.qDHVXG_searchButton,html body [data-pane="sidebar"][data-pane="sidebar"] .qDHVXG_headerActions.qDHVXG_headerActions,html body [data-pane="sidebar"][data-pane="sidebar"] .qDHVXG_sectionLabel.qDHVXG_sectionLabel{color:var(--dsw-alias-label-secondary) !important;background:transparent !important;border-color:transparent !important;}
 `;
 
 

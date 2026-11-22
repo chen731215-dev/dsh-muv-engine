@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.4.9（2026-11-22）★ 侧边栏图标不再被填成白色实心块（issue #3）
+
+用户报告（@pingping97，深色主题 / `maid-atelier` 皮肤的 dark 模式）：启用本插件后
+DSH Web UI 左侧边栏的**所有图标变成白色实心块**，图标中间的镂空细节完全看不到；
+禁用插件即恢复正常。
+
+### 根因
+
+`lib/client.js` 的 `injectUiCss()` 会把 `UI_CSS` 注入宿主页面 `<head>`，其中**三处**
+规则带了 `fill:currentColor !important`：
+
+- `button.Kad6XG_iconButton svg{… fill:currentColor !important;}`
+- `html body [data-pane="sidebar"] … button svg, … [role="button"] svg{… fill:currentColor !important; …}`
+- `html body [data-pane="sidebar"] … .hHd-Xa_iconButton, .qDHVXG_iconButton, …{… fill:currentColor !important; …}`
+
+DSH 侧边栏图标是**描边型** SVG —— `svg` 上 `fill="none"`，颜色靠子元素
+`stroke="currentColor"` 描边继承（实测 `dsh-client-ui-sidebar-terminal` 的
+`TerminalIcon.tsx` 就是这个形态）。CSS 的 `fill:currentColor` 会覆盖掉
+`fill="none"`，把镂空区域填成实心；叠加 `color` 在深色主题下解析为白色
+⇒ 整个图标变成一块白色实心块、细节全糊。
+
+这一批 CSS 是「第 40 轮」为修**浅色主题对比度**（浅蓝字压浅底，实测 1.06:1）改的，
+当时把写死的浅蓝换成了 `var(--dsw-alias-label-primary)`，但 `fill` 那几处一起留了下来
+—— 颜色本身没问题，问题只在 `fill`。
+
+### 修法
+
+**删掉这三处 `fill:currentColor !important`**，让 SVG 自己的 `fill` / `stroke` 属性说话。
+
+- 没有反手改成 `stroke:currentColor !important`：那会波及少数**填充型**图标，
+  把它们变成描边空壳。删掉才是对两类图标都安全的最小改动。
+- 颜色仍然跟随宿主主题：`color` 那条继续生效，描边图标经
+  `stroke="currentColor"` 继承，深色 / 浅色主题都正常。
+- 在分片 `src/client/part-11.js` 对应位置补了长注释，写明「不许再加 fill」的理由，
+  避免下一次调侧栏配色时又被加回去。
+
+### 改动范围
+
+只改 CSS 一行内容 × 3 处 + 注释。**运行时不改任何 JavaScript 逻辑**；
+`lib/client.js` 由 `src/client/` 20 个分片重新生成，`build-client --check` 逐字节一致。
+
+### 验证
+
+- `node tools/build-client.mjs --check` → 与分片逐字节一致（604365 字节）
+- `node tools/build-client.mjs` 产物内 `fill:currentColor` 命中 **0** 处（修复前 3 处）
+- `npm run check`（`check-syntax`）→ 78 个文件全通过
+- `npm test`（逐文件）→ 13/15 通过；2 个红项（`test-move-segment` / `test-repo-hygiene-bom`）
+  是**本机沙箱禁止 spawn 子进程**（`spawnSync(node,-e,0)` EPERM）导致的环境故障，
+  与本次改动无关（这两个文件只做 git/子进程扫描，不涉及 CSS）
+- `test-client-parts` / `test-client-render` / `test-client-scope-completeness` 等
+  客户端相关套件全绿
+
 ## 0.4.8（2026-11-01）★ 思维链不再被当成正文装饰
 
 用户实测（Grok-4.7）：状态栏被贴进了**思维链**里。
